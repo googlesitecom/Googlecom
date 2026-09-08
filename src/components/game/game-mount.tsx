@@ -23,7 +23,13 @@ export function GameMount() {
     game.audio.start()
     game.audio.setVolume(useGame.getState().settings.volume)
     game.init(canvas3dRef.current!, overlayRef.current!, minimapRef.current!)
-    game.net.connect(playerName || 'Operador')
+    const st = useGame.getState()
+    game.net.connect(playerName || 'Operador', {
+      mode: st.mode,
+      roomCode: st.roomCode,
+      fillBots: st.fillBots,
+      difficulty: st.botDifficulty,
+    })
     if (process.env.NODE_ENV === 'development') {
       ;(window as unknown as Record<string, unknown>).__game = game
     }

@@ -1,0 +1,1494 @@
+     1→// ============================================================
+     2→// FRONTERA CERO — Motor del juego (Three.js)
+     3→// Movimiento, colisiones, cámara, armas, efectos, minimapa
+     4→// ============================================================
+     5→import * as THREE from 'three'
+     6→import {
+     7→  GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B,
+     8→  type Team, type WeaponId, type NetSnapshot, type NetPlayerState,
+     9→} from './shared'
+    10→import { AudioEngine } from './audio'
+    11→import { Effects } from './effects'
+    12→import { RemotePlayers } from './remote-players'
+    13→import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
+    14→import { makeWorldTextures, makeSkyTexture } from './textures'
+    15→import { useGame } from './store'
+    16→import { NetClient } from './net'
+    17→
+    18→interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
+    19→interface HitMarker { t: number; headshot: boolean }
+    20→interface DamageDir { angle: number; t: number }
+    21→interface Ping { x: number; z: number; t: number }
+    22→
+    23→interface WeaponRuntime { mag: number; reserve: number }
+    24→
+    25→const PRIMARY_PREF: WeaponId[] = ['awp338', 'cr4', 'ar47', 'breacher', 'mp9']
+    26→const SECONDARY_PREF: WeaponId[] = ['aguila', 'p9']
+    27→const HALF_W = 0.36
+    28→const EYE_STAND = 1.62
+    29→const EYE_CROUCH = 1.14
+    30→const BASE_FOV = 75
+    31→
+    32→export class Game {
+    33→  // three
+    34→  private renderer!: THREE.WebGLRenderer
+    35→  private scene!: THREE.Scene
+    36→  private camera!: THREE.PerspectiveCamera
+    37→  private sunLight!: THREE.DirectionalLight
+    38→
+    39→  // canvas
+    40→  private canvas3d!: HTMLCanvasElement
+    41→  private overlay!: HTMLCanvasElement
+    42→  private octx!: CanvasRenderingContext2D
+    43→  private minimap!: HTMLCanvasElement
+    44→  private mctx!: CanvasRenderingContext2D
+    45→  private mapStatic!: HTMLCanvasElement
+    46→
+    47→  // módulos
+    48→  audio = new AudioEngine()
+    49→  private effects!: Effects
+    50→  private remotes!: RemotePlayers
+    51→  net!: NetClient
+    52→
+    53→  // estado del jugador local
+    54→  pos = new THREE.Vector3(SPAWN_A[0], 0.02, SPAWN_A[2])
+    55→  private vel = new THREE.Vector3()
+    56→  yaw = Math.PI * 0.25
+    57→  pitch = 0
+    58→  private keys = new Set<string>()
+    59→  private onGround = true
+    60→  private crouching = false
+    61→  private sprinting = false
+    62→  dead = false
+    63→  hp = 100
+    64→  armor = 0
+    65→  money = 1000
+    66→  team: Team = 'A'
+    67→  private owned: WeaponId[] = ['knife', 'p9']
+    68→  private ammo: Partial<Record<WeaponId, WeaponRuntime>> = {}
+    69→  weapon: WeaponId = 'p9'
+    70→  private lastWeapon: WeaponId = 'knife'
+    71→  frags = 0
+    72→
+    73→  // runtime de armas
+    74→  private nextShotAt = 0
+    75→  private sprayIdx = 0
+    76→  private lastShotTime = 0
+    77→  private reloading = false
+    78→  private reloadEndAt = 0
+    79→  private reloadStage = 0
+    80→  private ads = false
+    81→  private adsAmt = 0
+    82→  private recoilP = 0
+    83→  private recoilY = 0
+    84→  private trauma = 0
+    85→  private sprintAmt = 0
+    86→  private bobT = 0
+    87→  private stepT = 0
+    88→  private throwCooldown = 0
+    89→  private lastInputSent = 0
+    90→
+    91→  // viewmodel
+    92→  private vmHolder!: THREE.Group
+    93→  private vmGroup: THREE.Group | null = null
+    94→  private vmMuzzle: THREE.Object3D | null = null
+    95→  private drawT = 1
+    96→  private swayX = 0
+    97→  private swayY = 0
+    98→  private vmKick = 0
+    99→
+   100→  // overlay 2D
+   101→  private dmgNumbers: DamageNumber[] = []
+   102→  private hitMarkers: HitMarker[] = []
+   103→  private dmgDirs: DamageDir[] = []
+   104→  private pings: Ping[] = []
+   105→  private deathT = 0
+   106→  private hurtFlash = 0
+   107→
+   108→  // granadas visibles
+   109→  private grenadeViews = new Map<string, { group: THREE.Group; last: THREE.Vector3; trailT: number }>()
+   110→
+   111→  // minimapa / mundo
+   112→  private shootables: THREE.Object3D[] = []
+   113→  private raycaster = new THREE.Raycaster()
+   114→  private clock = new THREE.Clock()
+   115→  private raf = 0
+   116→  private fpsFrames = 0
+   117→  private fpsT = 0
+   118→  private minimapT = 0
+   119→  private scoreboardT = 0
+   120→  private mapMeshes: THREE.Mesh[] = []
+   121→  private disposed = false
+   122→
+   123→  // ----------------------------------------------------------
+   124→  // Inicialización
+   125→  // ----------------------------------------------------------
+   126→  init(canvas3d: HTMLCanvasElement, overlay: HTMLCanvasElement, minimap: HTMLCanvasElement): void {
+   127→    this.canvas3d = canvas3d
+   128→    this.overlay = overlay
+   129→    this.minimap = minimap
+   130→    this.octx = overlay.getContext('2d')!
+   131→    this.mctx = minimap.getContext('2d')!
+   132→
+   133→    const quality = useGame.getState().settings.quality
+   134→
+   135→    this.renderer = new THREE.WebGLRenderer({
+   136→      canvas: canvas3d,
+   137→      antialias: quality !== 'baja',
+   138→      powerPreference: 'high-performance',
+   139→    })
+   140→    this.renderer.setPixelRatio(quality === 'alta' ? Math.min(devicePixelRatio, 2) : quality === 'media' ? Math.min(devicePixelRatio, 1.5) : 1)
+   141→    this.renderer.setSize(innerWidth, innerHeight)
+   142→    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+   143→    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+   144→    this.renderer.toneMappingExposure = 1.06
+   145→    this.renderer.shadowMap.enabled = quality !== 'baja'
+   146→    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+   147→
+   148→    this.scene = new THREE.Scene()
+   149→    this.scene.fog = new THREE.FogExp2(0xd8bd97, 0.0075)
+   150→
+   151→    this.camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 300)
+   152→    this.scene.add(this.camera)
+   153→
+   154→    this.buildSky()
+   155→    this.buildLights(quality !== 'baja')
+   156→    this.buildMap()
+   157→    this.buildMinimapStatic()
+   158→
+   159→    this.effects = new Effects(this.scene)
+   160→    this.remotes = new RemotePlayers(this.scene)
+   161→
+   162→    // viewmodel holder
+   163→    this.vmHolder = new THREE.Group()
+   164→    this.camera.add(this.vmHolder)
+   165→    this.setWeapon('p9', true)
+   166→
+   167→    // eventos
+   168→    this.bindEvents()
+   169→
+   170→    this.net = new NetClient(this)
+   171→
+   172→    this.clock.start()
+   173→    this.loop()
+   174→  }
+   175→
+   176→  private buildSky(): void {
+   177→    const skyTex = makeSkyTexture()
+   178→    const sky = new THREE.Mesh(
+   179→      new THREE.SphereGeometry(180, 24, 16),
+   180→      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
+   181→    )
+   182→    this.scene.add(sky)
+   183→    // sol
+   184→    const sunDir = new THREE.Vector3(0.55, 0.6, -0.45).normalize()
+   185→    const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+   186→      map: makeSkyTexture(), color: 0xfff5d0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, fog: false,
+   187→    }))
+   188→    sunSprite.position.copy(sunDir.clone().multiplyScalar(160))
+   189→    sunSprite.scale.setScalar(24)
+   190→    this.scene.add(sunSprite)
+   191→  }
+   192→
+   193→  private buildLights(shadows: boolean): void {
+   194→    const sun = new THREE.DirectionalLight(0xffe6bf, 2.1)
+   195→    sun.position.set(38, 42, -30)
+   196→    if (shadows) {
+   197→      sun.castShadow = true
+   198→      sun.shadow.mapSize.set(2048, 2048)
+   199→      sun.shadow.camera.left = -48
+   200→      sun.shadow.camera.right = 48
+   201→      sun.shadow.camera.top = 48
+   202→      sun.shadow.camera.bottom = -48
+   203→      sun.shadow.camera.far = 160
+   204→      sun.shadow.bias = -0.0006
+   205→      sun.shadow.normalBias = 0.02
+   206→    }
+   207→    this.scene.add(sun)
+   208→    this.sunLight = sun
+   209→
+   210→    const hemi = new THREE.HemisphereLight(0xcfdce8, 0xc9a870, 0.55)
+   211→    this.scene.add(hemi)
+   212→  }
+   213→
+   214→  private buildMap(): void {
+   215→    const texs = makeWorldTextures()
+   216→
+   217→    // suelo
+   218→    const groundMat = new THREE.MeshLambertMaterial({ map: texs.sand })
+   219→    groundMat.map!.repeat.set(22, 22)
+   220→    const ground = new THREE.Mesh(new THREE.PlaneGeometry(110, 110), groundMat)
+   221→    ground.rotation.x = -Math.PI / 2
+   222→    ground.receiveShadow = true
+   223→    this.scene.add(ground)
+   224→    this.shootables.push(ground)
+   225→
+   226→    // cajas del mapa
+   227→    for (const b of MAP_BOXES) {
+   228→      let mesh: THREE.Mesh
+   229→      if (b.mat === 'barrel') {
+   230→        mesh = new THREE.Mesh(
+   231→          new THREE.CylinderGeometry(0.36, 0.36, b.h, 12),
+   232→          new THREE.MeshLambertMaterial({ map: texs.barrel }),
+   233→        )
+   234→      } else {
+   235→        const tex = texs[b.mat].clone()
+   236→        tex.needsUpdate = true
+   237→        tex.repeat.set(Math.max(1, Math.round(Math.max(b.w, b.d) / 2.5)), Math.max(1, Math.round(b.h / 2.5)))
+   238→        mesh = new THREE.Mesh(
+   239→          new THREE.BoxGeometry(b.w, b.h, b.d),
+   240→          new THREE.MeshLambertMaterial({ map: tex }),
+   241→        )
+   242→        mesh.castShadow = true
+   243→        mesh.receiveShadow = true
+   244→      }
+   245→      mesh.position.set(b.x, b.y, b.z)
+   246→      this.scene.add(mesh)
+   247→      this.shootables.push(mesh)
+   248→      this.mapMeshes.push(mesh)
+   249→    }
+   250→
+   251→    // marcas de spawn (zonas de compra)
+   252→    for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
+   253→      const ring = new THREE.Mesh(
+   254→        new THREE.RingGeometry(GAME.BUY_RADIUS - 0.15, GAME.BUY_RADIUS, 40),
+   255→        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+   256→      )
+   257→      ring.rotation.x = -Math.PI / 2
+   258→      ring.position.set(sp[0], 0.03, sp[2])
+   259→      this.scene.add(ring)
+   260→    }
+   261→  }
+   262→
+   263→  // ----------------------------------------------------------
+   264→  // Eventos de entrada
+   265→  // ----------------------------------------------------------
+   266→  private bindEvents(): void {
+   267→    addEventListener('resize', this.onResize)
+   268→    addEventListener('keydown', this.onKeyDown)
+   269→    addEventListener('keyup', this.onKeyUp)
+   270→    this.canvas3d.addEventListener('mousedown', this.onMouseDown)
+   271→    addEventListener('mouseup', this.onMouseUp)
+   272→    addEventListener('mousemove', this.onMouseMove)
+   273→    addEventListener('wheel', this.onWheel, { passive: false })
+   274→    document.addEventListener('pointerlockchange', this.onLockChange)
+   275→    addEventListener('contextmenu', this.onCtxMenu)
+   276→  }
+   277→
+   278→  dispose(): void {
+   279→    this.disposed = true
+   280→    cancelAnimationFrame(this.raf)
+   281→    removeEventListener('resize', this.onResize)
+   282→    removeEventListener('keydown', this.onKeyDown)
+   283→    removeEventListener('keyup', this.onKeyUp)
+   284→    this.canvas3d.removeEventListener('mousedown', this.onMouseDown)
+   285→    removeEventListener('mouseup', this.onMouseUp)
+   286→    removeEventListener('mousemove', this.onMouseMove)
+   287→    removeEventListener('wheel', this.onWheel)
+   288→    document.removeEventListener('pointerlockchange', this.onLockChange)
+   289→    removeEventListener('contextmenu', this.onCtxMenu)
+   290→    this.net?.disconnect()
+   291→    this.renderer?.dispose()
+   292→  }
+   293→
+   294→  private onResize = (): void => {
+   295→    this.renderer.setSize(innerWidth, innerHeight)
+   296→    this.camera.aspect = innerWidth / innerHeight
+   297→    this.camera.updateProjectionMatrix()
+   298→    this.overlay.width = innerWidth
+   299→    this.overlay.height = innerHeight
+   300→  }
+   301→
+   302→  private onCtxMenu = (e: Event): void => { e.preventDefault() }
+   303→
+   304→  private get locked(): boolean {
+   305→    return document.pointerLockElement === this.canvas3d
+   306→  }
+   307→
+   308→  private onLockChange = (): void => {
+   309→    const s = useGame.getState()
+   310→    if (!this.locked && s.phase === 'playing' && !s.buyOpen) {
+   311→      s.setPhase('paused')
+   312→    } else if (this.locked && s.phase === 'paused') {
+   313→      s.setPhase('playing')
+   314→    }
+   315→  }
+   316→
+   317→  requestLock(): void {
+   318→    this.canvas3d.requestPointerLock()
+   319→  }
+   320→
+   321→  private onKeyDown = (e: KeyboardEvent): void => {
+   322→    const s = useGame.getState()
+   323→    if (e.code === 'Tab') {
+   324→      e.preventDefault()
+   325→      s.setHud({ scoreboardOpen: true })
+   326→      return
+   327→    }
+   328→    if (s.buyOpen) {
+   329→      if (e.code === 'KeyB' || e.code === 'Escape') {
+   330→        e.preventDefault()
+   331→        this.closeBuyMenu()
+   332→      }
+   333→      return
+   334→    }
+   335→    if (s.phase !== 'playing') return
+   336→    this.keys.add(e.code)
+   337→    switch (e.code) {
+   338→      case 'KeyB': this.openBuyMenu(); break
+   339→      case 'KeyR': this.startReload(); break
+   340→      case 'KeyG': this.throwGrenade(); break
+   341→      case 'KeyQ': this.switchTo(this.lastWeapon); break
+   342→      case 'Digit1': {
+   343→        const p = PRIMARY_PREF.find(w => this.owned.includes(w))
+   344→        if (p) this.switchTo(p)
+   345→        break
+   346→      }
+   347→      case 'Digit2': {
+   348→        const p = SECONDARY_PREF.find(w => this.owned.includes(w))
+   349→        if (p) this.switchTo(p)
+   350→        break
+   351→      }
+   352→      case 'Digit3': this.switchTo('knife'); break
+   353→    }
+   354→  }
+   355→
+   356→  private onKeyUp = (e: KeyboardEvent): void => {
+   357→    if (e.code === 'Tab') {
+   358→      useGame.getState().setHud({ scoreboardOpen: false })
+   359→      return
+   360→    }
+   361→    this.keys.delete(e.code)
+   362→  }
+   363→
+   364→  private shooting = false
+   365→
+   366→  private onMouseDown = (e: MouseEvent): void => {
+   367→    const s = useGame.getState()
+   368→    if (s.phase === 'paused') { this.requestLock(); return }
+   369→    if (s.phase !== 'playing') return
+   370→    if (!this.locked) { this.requestLock(); return }
+   371→    if (e.button === 0) this.shooting = true
+   372→    if (e.button === 2) this.ads = true
+   373→  }
+   374→
+   375→  private onMouseUp = (e: MouseEvent): void => {
+   376→    if (e.button === 0) this.shooting = false
+   377→    if (e.button === 2) this.ads = false
+   378→  }
+   379→
+   380→  private onMouseMove = (e: MouseEvent): void => {
+   381→    if (!this.locked || this.dead) return
+   382→    const s = useGame.getState()
+   383→    const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / BASE_FOV) : 1
+   384→    const sens = 0.0021 * s.settings.sens * (this.ads ? zoomFactor : 1) * (this.sprinting ? 1.12 : 1)
+   385→    this.yaw -= e.movementX * sens
+   386→    this.pitch -= e.movementY * sens
+   387→    this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch))
+   388→    // sway del arma
+   389→    this.swayX = Math.max(-1, Math.min(1, this.swayX - e.movementX * 0.0006))
+   390→    this.swayY = Math.max(-1, Math.min(1, this.swayY - e.movementY * 0.0006))
+   391→  }
+   392→
+   393→  private onWheel = (e: WheelEvent): void => {
+   394→    if (!this.locked) return
+   395→    e.preventDefault()
+   396→    const idx = this.owned.indexOf(this.weapon)
+   397→    const dir = e.deltaY > 0 ? 1 : -1
+   398→    const next = this.owned[(idx + dir + this.owned.length) % this.owned.length]
+   399→    this.switchTo(next)
+   400→  }
+   401→
+   402→  // ----------------------------------------------------------
+   403→  // Menú de compra
+   404→  // ----------------------------------------------------------
+   405→  openBuyMenu(): void {
+   406→    const s = useGame.getState()
+   407→    if (!s.buyZone || this.dead) return
+   408→    s.setHud({ buyOpen: true })
+   409→    document.exitPointerLock()
+   410→  }
+   411→
+   412→  closeBuyMenu(): void {
+   413→    const s = useGame.getState()
+   414→    s.setHud({ buyOpen: false })
+   415→    if (s.phase === 'playing') this.requestLock()
+   416→  }
+   417→
+   418→  buy(itemId: string): void {
+   419→    this.net.buy(itemId)
+   420→  }
+   421→
+   422→  // ----------------------------------------------------------
+   423→  // Bucle principal
+   424→  // ----------------------------------------------------------
+   425→  private loop = (): void => {
+   426→    if (this.disposed) return
+   427→    this.raf = requestAnimationFrame(this.loop)
+   428→    const dt = Math.min(0.05, this.clock.getDelta())
+   429→    const t = performance.now() / 1000
+   430→
+   431→    const phase = useGame.getState().phase
+   432→    const playing = phase === 'playing' || phase === 'dead'
+   433→
+   434→    if (playing) {
+   435→      this.updateMovement(dt)
+   436→      this.updateWeapon(dt, t)
+   437→      this.updateShooting(t)
+   438→    }
+   439→    this.updateCamera(dt, t)
+   440→    this.updateViewmodel(dt, t)
+   441→
+   442→    // remotos (interpolación)
+   443→    const renderT = performance.now() - GAME.INTERP_DELAY
+   444→    const states = this.remotes.update(dt, renderT, this.team, this.camera.position)
+   445→    this.updateRemoteFootsteps(dt, states)
+   446→
+   447→    // granadas visibles
+   448→    this.updateGrenadeViews(dt)
+   449→
+   450→    // efectos
+   451→    this.effects.update(dt, this.camera)
+   452→    this.trauma = Math.max(0, this.trauma - dt * 1.4)
+   453→    this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.6)
+   454→
+   455→    // HUD canvas
+   456→    this.drawOverlay(t)
+   457→    if (performance.now() - this.minimapT > 100) {
+   458→      this.minimapT = performance.now()
+   459→      this.drawMinimap()
+   460→    }
+   461→
+   462→    // scoreboard y HUD numérico
+   463→    if (performance.now() - this.scoreboardT > 400) {
+   464→      this.scoreboardT = performance.now()
+   465→      useGame.getState().setHud({ scoreboard: states })
+   466→    }
+   467→
+   468→    // envío de input al servidor
+   469→    if (playing && performance.now() - this.lastInputSent > GAME.INPUT_RATE) {
+   470→      this.lastInputSent = performance.now()
+   471→      this.net.sendInput()
+   472→    }
+   473→
+   474→    // FPS
+   475→    this.fpsFrames++
+   476→    if (t - this.fpsT > 1) {
+   477→      useGame.getState().setHud({ fps: Math.round(this.fpsFrames / (t - this.fpsT)) })
+   478→      this.fpsFrames = 0
+   479→      this.fpsT = t
+   480→    }
+   481→
+   482→    this.renderer.render(this.scene, this.camera)
+   483→  }
+   484→
+   485→  // ----------------------------------------------------------
+   486→  // Movimiento y colisiones
+   487→  // ----------------------------------------------------------
+   488→  private playerHeight(): number {
+   489→    return this.crouching ? 1.25 : 1.8
+   490→  }
+   491→
+   492→  private collides(x: number, y: number, z: number, h: number): boolean {
+   493→    const minX = x - HALF_W, maxX = x + HALF_W
+   494→    const minY = y, maxY = y + h
+   495→    const minZ = z - HALF_W, maxZ = z + HALF_W
+   496→    for (let i = 0; i < MAP_AABBS.length; i++) {
+   497→      const b = MAP_AABBS[i]
+   498→      if (maxX > b.minX && minX < b.maxX && maxY > b.minY && minY < b.maxY && maxZ > b.minZ && minZ < b.maxZ) {
+   499→        return true
+   500→      }
+   501→    }
+   502→    return false
+   503→  }
+   504→
+   505→  private updateMovement(dt: number): void {
+   506→    const s = useGame.getState()
+   507→    const inputActive = s.phase === 'playing' && this.locked && !this.dead
+   508→
+   509→    const w = WEAPONS[this.weapon]
+   510→    const wantCrouch = inputActive && (this.keys.has('ControlLeft') || this.keys.has('KeyC'))
+   511→    const canStand = !this.collides(this.pos.x, this.pos.y, this.pos.z, 1.8)
+   512→    this.crouching = wantCrouch || (!canStand && this.pos.y < 3)
+   513→
+   514→    const wantSprint = inputActive && this.keys.has('ShiftLeft') && !this.crouching && !this.ads
+   515→    const movingFwd = this.keys.has('KeyW')
+   516→
+   517→    let speed = 4.6 * w.moveMult
+   518→    this.sprinting = false
+   519→    if (wantSprint && movingFwd && this.onGround) {
+   520→      speed *= 1.45
+   521→      this.sprinting = true
+   522→    }
+   523→    if (this.crouching) speed *= 0.5
+   524→    if (this.adsAmt > 0.3) speed *= 0.65
+   525→
+   526→    // dirección de input
+   527→    let ix = 0, iz = 0
+   528→    if (inputActive) {
+   529→      if (this.keys.has('KeyW')) iz += 1
+   530→      if (this.keys.has('KeyS')) iz -= 1
+   531→      if (this.keys.has('KeyA')) ix -= 1
+   532→      if (this.keys.has('KeyD')) ix += 1
+   533→    }
+   534→    const len = Math.hypot(ix, iz)
+   535→    if (len > 0) { ix /= len; iz /= len }
+   536→
+   537→    // base yaw
+   538→    const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw)
+   539→    const dirX = ix * cos + iz * sin
+   540→    const dirZ = -ix * sin + iz * cos
+   541→
+   542→    // aceleración / fricción
+   543→    const accel = this.onGround ? 12 : 2.2
+   544→    const fric = this.onGround ? 10 : 0.3
+   545→    this.vel.x += (dirX * speed - this.vel.x) * Math.min(1, accel * dt)
+   546→    this.vel.z += (dirZ * speed - this.vel.z) * Math.min(1, accel * dt)
+   547→    if (len === 0 && this.onGround) {
+   548→      const damp = Math.max(0, 1 - fric * dt)
+   549→      this.vel.x *= damp
+   550→      this.vel.z *= damp
+   551→    }
+   552→
+   553→    // salto / gravedad
+   554→    if (inputActive && this.keys.has('Space') && this.onGround && !this.crouching) {
+   555→      this.vel.y = 5.6
+   556→      this.onGround = false
+   557→      this.audio.jump()
+   558→    }
+   559→    this.vel.y -= GAME.GRAVITY * dt
+   560→
+   561→    // --- resolución por ejes ---
+   562→    const h = this.playerHeight()
+   563→    // eje X
+   564→    let nx = this.pos.x + this.vel.x * dt
+   565→    if (this.collides(nx, this.pos.y, this.pos.z, h)) {
+   566→      // intentar subir escalón
+   567→      if (this.onGround && !this.collides(nx, this.pos.y + 0.58, this.pos.z, h)) {
+   568→        this.pos.y += 0.58
+   569→        this.pos.x = nx
+   570→      } else {
+   571→        this.vel.x = 0
+   572→        nx = this.pos.x
+   573→      }
+   574→    } else {
+   575→      this.pos.x = nx
+   576→    }
+   577→    // eje Z
+   578→    let nz = this.pos.z + this.vel.z * dt
+   579→    if (this.collides(this.pos.x, this.pos.y, nz, h)) {
+   580→      if (this.onGround && !this.collides(this.pos.x, this.pos.y + 0.58, nz, h)) {
+   581→        this.pos.y += 0.58
+   582→        this.pos.z = nz
+   583→      } else {
+   584→        this.vel.z = 0
+   585→        nz = this.pos.z
+   586→      }
+   587→    } else {
+   588→      this.pos.z = nz
+   589→    }
+   590→    // eje Y
+   591→    let ny = this.pos.y + this.vel.y * dt
+   592→    if (this.vel.y <= 0) {
+   593→      // buscar suelo
+   594→      let groundY = 0
+   595→      for (let i = 0; i < MAP_AABBS.length; i++) {
+   596→        const b = MAP_AABBS[i]
+   597→        if (this.pos.x + HALF_W > b.minX && this.pos.x - HALF_W < b.maxX &&
+   598→            this.pos.z + HALF_W > b.minZ && this.pos.z - HALF_W < b.maxZ) {
+   599→          if (b.maxY <= this.pos.y + 0.01 && b.maxY > groundY) groundY = b.maxY
+   600→        }
+   601→      }
+   602→      if (ny <= groundY + 0.001) {
+   603→        if (!this.onGround && this.vel.y < -6) this.audio.land()
+   604→        ny = groundY
+   605→        this.vel.y = 0
+   606→        this.onGround = true
+   607→      } else {
+   608→        this.onGround = false
+   609→      }
+   610→    } else {
+   611→      if (this.collides(this.pos.x, ny, this.pos.z, h)) {
+   612→        this.vel.y = 0
+   613→        ny = this.pos.y
+   614→      } else {
+   615→        this.onGround = false
+   616→      }
+   617→    }
+   618→    this.pos.y = Math.max(0, ny)
+   619→    this.pos.x = Math.max(-34.2, Math.min(34.2, this.pos.x))
+   620→    this.pos.z = Math.max(-34.2, Math.min(34.2, this.pos.z))
+   621→
+   622→    // bob y pasos
+   623→    const hSpeed = Math.hypot(this.vel.x, this.vel.z)
+   624→    if (this.onGround && hSpeed > 0.5) {
+   625→      this.bobT += dt * hSpeed * 1.6
+   626→      this.stepT += dt
+   627→      const cadence = hSpeed > 5.5 ? 0.31 : hSpeed > 2 ? 0.42 : 0.55
+   628→      if (this.stepT > cadence) {
+   629→        this.stepT = 0
+   630→        this.audio.footstep(0, true)
+   631→      }
+   632→    } else {
+   633→      this.bobT += dt * 0.4
+   634→    }
+   635→    this.sprintAmt += ((this.sprinting && hSpeed > 4 ? 1 : 0) - this.sprintAmt) * Math.min(1, dt * 8)
+   636→
+   637→    // zona de compra
+   638→    const sp = this.team === 'A' ? SPAWN_A : SPAWN_B
+   639→    const inZone = Math.hypot(this.pos.x - sp[0], this.pos.z - sp[2]) < GAME.BUY_RADIUS
+   640→    if (inZone !== useGame.getState().buyZone) {
+   641→      useGame.getState().setHud({ buyZone: inZone })
+   642→    }
+   643→
+   644→    // parámetros calculados (no usados directamente)
+   645→  }
+   646→
+   647→  // ----------------------------------------------------------
+   648→  // Cámara
+   649→  // ----------------------------------------------------------
+   650→  private updateCamera(dt: number, t: number): void {
+   651→    // altura de ojos
+   652→    const targetEye = this.dead ? 0.4 : this.crouching ? EYE_CROUCH : EYE_STAND
+   653→    const curEye = this.camera.position.y - this.pos.y
+   654→    const eye = curEye + (targetEye - curEye) * Math.min(1, dt * 10)
+   655→
+   656→    // bob
+   657→    const hSpeed = Math.hypot(this.vel.x, this.vel.z)
+   658→    const bobAmp = this.onGround ? Math.min(1, hSpeed / 5) * (this.adsAmt > 0.3 ? 0.008 : 0.028) : 0
+   659→    const bobX = Math.cos(this.bobT) * bobAmp * 0.6
+   660→    const bobY = Math.abs(Math.sin(this.bobT)) * bobAmp
+   661→
+   662→    // sacudida (trauma)
+   663→    const sh = this.trauma * this.trauma
+   664→    const shakeP = (Math.random() - 0.5) * 0.05 * sh
+   665→    const shakeR = (Math.random() - 0.5) * 0.04 * sh
+   666→
+   667→    this.camera.position.set(
+   668→      this.pos.x + bobX,
+   669→      this.pos.y + eye + bobY - (this.dead ? this.deathT * 1.2 : 0),
+   670→      this.pos.z,
+   671→    )
+   672→
+   673→    // FOV
+   674→    const w = WEAPONS[this.weapon]
+   675→    const targetFov = this.ads && !this.dead ? w.zoomFov : this.sprintAmt > 0.3 ? BASE_FOV + 7 * this.sprintAmt : BASE_FOV
+   676→    this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 10)
+   677→    this.camera.updateProjectionMatrix()
+   678→    this.adsAmt += ((this.ads && !this.dead && !this.reloading ? 1 : 0) - this.adsAmt) * Math.min(1, dt * 9)
+   679→
+   680→    // recuperación del retroceso
+   681→    const rec = WEAPONS[this.weapon].recoilRecover
+   682→    this.recoilP *= Math.max(0, 1 - rec * dt * 6)
+   683→    this.recoilY *= Math.max(0, 1 - rec * dt * 6)
+   684→    if (t * 1000 - this.lastShotTime > 380) {
+   685→      this.sprayIdx = Math.max(0, this.sprayIdx - dt * 18)
+   686→    }
+   687→
+   688→    // muerte: cámara cae
+   689→    if (this.dead) this.deathT = Math.min(1, this.deathT + dt * 1.8)
+   690→
+   691→    this.camera.rotation.order = 'YXZ'
+   692→    this.camera.rotation.y = this.yaw + this.recoilY + shakeR * 0.4
+   693→    this.camera.rotation.x = Math.max(-1.5, Math.min(1.5, this.pitch + this.recoilP + shakeP - this.deathT * 0.8))
+   694→    this.camera.rotation.z = shakeR + (this.dead ? this.deathT * 0.6 : 0) + Math.cos(this.bobT * 0.5) * bobAmp * 0.2
+   695→  }
+   696→
+   697→  // ----------------------------------------------------------
+   698→  // Viewmodel (arma en mano)
+   699→  // ----------------------------------------------------------
+   700→  setWeapon(id: WeaponId, initial = false): void {
+   701→    if (!initial && (id === this.weapon || !this.owned.includes(id))) return
+   702→    if (!this.owned.includes(id)) return
+   703→    if (!initial && id === this.weapon) return
+   704→    if (!initial) this.lastWeapon = this.weapon
+   705→    this.weapon = id
+   706→    this.reloading = false
+   707→    this.sprayIdx = 0
+   708→    this.drawT = 0
+   709→    // limpiar viewmodel
+   710→    if (this.vmGroup) {
+   711→      this.vmHolder.remove(this.vmGroup)
+   712→      this.vmGroup = null
+   713→      this.vmMuzzle = null
+   714→    }
+   715→    const { group, muzzle } = buildWeaponModel(id)
+   716→    this.vmGroup = group
+   717→    this.vmMuzzle = muzzle
+   718→    this.vmHolder.add(group)
+   719→    if (!this.ammo[id] && WEAPONS[id].mag > 0) {
+   720→      this.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve }
+   721→    }
+   722→    this.updateHudWeapon()
+   723→    this.audio.draw()
+   724→  }
+   725→
+   726→  private switchTo(id: WeaponId): void {
+   727→    if (this.reloading) this.reloading = false
+   728→    this.setWeapon(id)
+   729→  }
+   730→
+   731→  giveWeapon(id: WeaponId): void {
+   732→    if (!this.owned.includes(id)) this.owned.push(id)
+   733→    this.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve }
+   734→    this.setWeapon(id)
+   735→    this.updateHudWeapon()
+   736→  }
+   737→
+   738→  refillAmmo(id: WeaponId): void {
+   739→    this.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve }
+   740→    this.updateHudWeapon()
+   741→  }
+   742→
+   743→  private updateHudWeapon(): void {
+   744→    const a = this.ammo[this.weapon]
+   745→    useGame.getState().setHud({
+   746→      weapon: this.weapon,
+   747→      mag: a?.mag ?? 0,
+   748→      reserve: a?.reserve ?? 0,
+   749→      owned: [...this.owned],
+   750→    })
+   751→  }
+   752→
+   753→  private updateViewmodel(dt: number, t: number): void {
+   754→    if (!this.vmGroup) return
+   755→    const pose = weaponPose(this.weapon)
+   756→    this.drawT = Math.min(1, this.drawT + dt * 4.5)
+   757→    const draw = this.drawT
+   758→
+   759→    // sway
+   760→    this.swayX *= Math.max(0, 1 - dt * 6)
+   761→    this.swayY *= Math.max(0, 1 - dt * 6)
+   762→
+   763→    // posiciones
+   764→    const hip = pose.hip
+   765→    const ads = pose.ads
+   766→    const adsA = this.adsAmt
+   767→    const sprintA = this.sprintAmt * (1 - adsA)
+   768→    const vmKick = this.vmKick
+   769→    this.vmKick *= Math.max(0, 1 - dt * 9)
+   770→
+   771→    // bob del arma
+   772→    const hSpeed = Math.hypot(this.vel.x, this.vel.z)
+   773→    const bob = this.onGround ? Math.min(1, hSpeed / 5) * (1 - adsA * 0.85) : 0
+   774→
+   775→    let px = hip.x + (ads.x - hip.x) * adsA
+   776→    let py = hip.y + (ads.y - hip.y) * adsA
+   777→    let pz = hip.z + (ads.z - hip.z) * adsA + vmKick * 0.09
+   778→
+   779→    // animación de recarga
+   780→    let reloadRot = 0
+   781→    if (this.reloading) {
+   782→      const now = performance.now()
+   783→      const w = WEAPONS[this.weapon]
+   784→      const progress = 1 - (this.reloadEndAt - now) / (w.reloadTime * 1000)
+   785→      const dip = Math.sin(Math.min(1, progress) * Math.PI)
+   786→      reloadRot = dip * 0.9
+   787→      py -= dip * 0.16
+   788→      // sonidos por etapas
+   789→      if (progress > 0.25 && this.reloadStage === 0) { this.reloadStage = 1; this.audio.reload('mag') }
+   790→      if (progress > 0.85 && this.reloadStage === 1) { this.reloadStage = 2; this.audio.reload('end') }
+   791→    }
+   792→
+   793→    px += Math.cos(this.bobT) * 0.012 * bob - this.swayX * 0.028 * (1 - adsA * 0.8)
+   794→    py += Math.abs(Math.sin(this.bobT)) * 0.010 * bob + this.swayY * 0.024 * (1 - adsA * 0.8)
+   795→    py -= (1 - draw) * 0.35   // animación de desenfundado
+   796→    pz -= (1 - draw) * 0.12
+   797→
+   798→    this.vmGroup.position.set(px, py, pz)
+   799→    this.vmGroup.rotation.set(
+   800→      pose.hipRot.x + reloadRot + vmKick * 0.14 + this.swayY * 0.06 * (1 - adsA),
+   801→      pose.hipRot.y * (1 - adsA) + sprintA * 0.5 - this.swayX * 0.05 * (1 - adsA),
+   802→      pose.hipRot.z + sprintA * 0.25 + reloadRot * 0.4,
+   803→    )
+   804→    // sprint: arma apuntando abajo
+   805→    if (sprintA > 0.01) {
+   806→      this.vmGroup.rotation.x += sprintA * 0.5
+   807→      this.vmGroup.position.y -= sprintA * 0.08
+   808→    }
+   809→
+   810→    // francotirador ADS: ocultar modelo
+   811→    const w = WEAPONS[this.weapon]
+   812→    this.vmHolder.visible = !(w.sniper && adsA > 0.7) && !this.dead
+   813→
+   814→    void t
+   815→  }
+   816→
+   817→  private updateWeapon(dt: number, t: number): void {
+   818→    this.throwCooldown = Math.max(0, this.throwCooldown - dt)
+   819→    void t
+   820→  }
+   821→
+   822→  // ----------------------------------------------------------
+   823→  // Disparo
+   824→  // ----------------------------------------------------------
+   825→  private currentSpread(): number {
+   826→    const w = WEAPONS[this.weapon]
+   827→    if (this.weapon === 'knife') return 0
+   828→    let spread = w.spreadBase
+   829→    const hSpeed = Math.hypot(this.vel.x, this.vel.z)
+   830→    spread += w.spreadMove * Math.min(1, hSpeed / 6)
+   831→    if (!this.onGround) spread += w.spreadAir
+   832→    if (this.crouching) spread *= 0.72
+   833→    if (this.adsAmt > 0.6) spread *= 0.45
+   834→    spread += this.sprayIdx * w.sprayInacc
+   835→    return spread
+   836→  }
+   837→
+   838→  private updateShooting(t: number): void {
+   839→    const s = useGame.getState()
+   840→    if (s.phase !== 'playing' || this.dead || s.buyOpen) { this.shooting = false; return }
+   841→    const w = WEAPONS[this.weapon]
+   842→    const now = t * 1000
+   843→
+   844→    // fin de recarga
+   845→    if (this.reloading && now >= this.reloadEndAt) {
+   846→      this.reloading = false
+   847→      const a = this.ammo[this.weapon]
+   848→      if (a) {
+   849→        const need = w.mag - a.mag
+   850→        const take = Math.min(need, a.reserve)
+   851→        a.mag += take
+   852→        a.reserve -= take
+   853→      }
+   854→      this.updateHudWeapon()
+   855→    }
+   856→
+   857→    if (!this.shooting || this.reloading || now < this.nextShotAt) return
+   858→    if (this.drawT < 0.8) return
+   859→
+   860→    const a = this.ammo[this.weapon]
+   861→    if (w.mag > 0 && (a?.mag ?? 0) <= 0) {
+   862→      this.audio.dryFire()
+   863→      this.nextShotAt = now + 250
+   864→      this.shooting = false
+   865→      this.startReload()
+   866→      return
+   867→    }
+   868→
+   869→    this.fireWeapon(t)
+   870→  }
+   871→
+   872→  private fireWeapon(t: number): void {
+   873→    const w = WEAPONS[this.weapon]
+   874→    const now = t * 1000
+   875→    this.nextShotAt = now + 60000 / w.rpm
+   876→    const a = this.ammo[this.weapon]
+   877→    if (a && w.mag > 0) a.mag--
+   878→
+   879→    // dirección con dispersión
+   880→    this.camera.updateMatrixWorld()
+   881→    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+   882→    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion)
+   883→    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion)
+   884→
+   885→    const eye = this.camera.position.clone()
+   886→
+   887→    if (this.weapon === 'knife') {
+   888→      // ataque cuerpo a cuerpo
+   889→      this.audio.knifeSwing()
+   890→      this.vmKick = 1.4
+   891→      const dir = forward.clone()
+   892→      const hit = this.castBullet(eye, dir, 2.4)
+   893→      if (hit) this.processHit(hit, dir)
+   894→      this.updateHudWeapon()
+   895→      return
+   896→    }
+   897→
+   898→    const spread = this.currentSpread()
+   899→    const pellets = w.pellets
+   900→    const hits: { target: string; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3 }[] = []
+   901→
+   902→    for (let i = 0; i < pellets; i++) {
+   903→      const r = (spread * Math.PI / 180) * Math.sqrt(Math.random())
+   904→      const ang = Math.random() * Math.PI * 2
+   905→      const dir = forward.clone()
+   906→        .addScaledVector(right, Math.cos(ang) * r)
+   907→        .addScaledVector(up, Math.sin(ang) * r)
+   908→        .normalize()
+   909→
+   910→      const hit = this.castBullet(eye, dir, 200)
+   911→      if (!hit) {
+   912→        // impacto lejano en el mapa
+   913→        this.raycaster.set(eye, dir)
+   914→        this.raycaster.far = 200
+   915→        const intersect = this.raycaster.intersectObjects(this.shootables, false)[0]
+   916→        if (intersect) {
+   917→          const normal = intersect.face ? intersect.face.normal.clone().transformDirection(intersect.object.matrixWorld) : dir.clone().negate()
+   918→          this.effects.impact(intersect.point, normal)
+   919→          this.effects.tracer(this.muzzleWorld(), intersect.point)
+   920→        }
+   921→        continue
+   922→      }
+   923→      // efecto local
+   924→      this.effects.tracer(this.muzzleWorld(), hit.point)
+   925→      if (hit.player) {
+   926→        this.effects.impact(hit.point, dir.clone().negate(), true)
+   927→        hits.push({ target: hit.player, part: hit.part, dist: hit.dist, point: hit.point })
+   928→      } else {
+   929→        this.effects.impact(hit.point, hit.normal ?? dir.clone().negate())
+   930→      }
+   931→    }
+   932→
+   933→    // enviar aciertos al servidor (de una vez: válido para escopeta)
+   934→    if (hits.length > 0) {
+   935→      this.net.sendHits(this.weapon, hits.map(h => ({ target: h.target, part: h.part, dist: h.dist })))
+   936→      if (this.audio) this.audio.fleshHit(0)
+   937→    }
+   938→
+   939→    // audio + fogonazo
+   940→    this.audio.gunshot(w.sound, 0)
+   941→    const mzl = this.muzzleWorld()
+   942→    this.effects.muzzleFlash(mzl, this.weapon === 'awp338' ? 1.6 : this.weapon === 'breacher' ? 1.3 : 1)
+   943→    // casquillo
+   944→    if (this.vmMuzzle) {
+   945→      const ejectPos = mzl.clone().addScaledVector(forward, -0.25)
+   946→      ejectPos.y += 0.05
+   947→      const rightDir = right.clone()
+   948→      this.effects.casing(ejectPos, rightDir)
+   949→    }
+   950→
+   951→    // retroceso
+   952→    const spray = this.sprayIdx
+   953→    this.recoilP += w.recoilV * (0.85 + Math.random() * 0.3) * (this.crouching ? 0.85 : 1) * (this.adsAmt > 0.6 ? 0.8 : 1)
+   954→    this.recoilY += w.recoilH * Math.sin(spray * 0.9 + 0.6) * (Math.random() * 0.5 + 0.75)
+   955→    this.sprayIdx++
+   956→    this.vmKick = 1
+   957→    this.lastShotTime = now
+   958→    this.trauma = Math.min(1, this.trauma + (w.id === 'awp338' ? 0.35 : w.id === 'breacher' ? 0.3 : 0.12))
+   959→
+   960→    // sonido de bomba para la escopeta
+   961→    if (this.weapon === 'breacher') {
+   962→      setTimeout(() => this.audio.reload('pump'), 260)
+   963→    }
+   964→    // recarga automática al vaciar
+   965→    if (a && a.mag === 0 && a.reserve > 0) {
+   966→      setTimeout(() => this.startReload(), 350)
+   967→    }
+   968→    this.updateHudWeapon()
+   969→  }
+   970→
+   971→  private muzzleWorld(): THREE.Vector3 {
+   972→    if (this.vmMuzzle) {
+   973→      this.vmMuzzle.updateWorldMatrix(true, false)
+   974→      return new THREE.Vector3().setFromMatrixPosition(this.vmMuzzle.matrixWorld)
+   975→    }
+   976→    return this.camera.position.clone()
+   977→  }
+   978→
+   979→  /** Raycast local: mapa + hitboxes de jugadores remotos */
+   980→  private castBullet(eye: THREE.Vector3, dir: THREE.Vector3, maxDist: number): {
+   981→    player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3
+   982→  } | null {
+   983→    // 1) mapa
+   984→    this.raycaster.set(eye, dir)
+   985→    this.raycaster.far = maxDist
+   986→    const mapHits = this.raycaster.intersectObjects(this.shootables, false)
+   987→    const mapHit = mapHits[0]
+   988→    const mapDist = mapHit ? mapHit.distance : Infinity
+   989→
+   990→    // 2) jugadores remotos (enemigos vivos)
+   991→    const ray = new THREE.Ray(eye, dir)
+   992→    let bestPlayer: string | null = null
+   993→    let bestPart: 'head' | 'body' | 'legs' = 'body'
+   994→    let bestDist = Infinity
+   995→    let bestPoint: THREE.Vector3 | null = null
+   996→
+   997→    for (const [id] of this.remotes.map) {
+   998→      const st = this.remotes.map.get(id)!.state
+   999→      if (!st || st.dead || st.team === this.team) continue
+  1000→      const boxes = this.remotes.hitboxes(id)
+  1001→      if (!boxes) continue
+  1002→      const parts: ['head' | 'body' | 'legs', THREE.Box3][] = [
+  1003→        ['head', boxes.head], ['body', boxes.body], ['legs', boxes.legs],
+  1004→      ]
+  1005→      for (const [part, box] of parts) {
+  1006→        const p = new THREE.Vector3()
+  1007→        if (ray.intersectBox(box, p)) {
+  1008→          const d = p.distanceTo(eye)
+  1009→          if (d < bestDist) {
+  1010→            bestDist = d
+  1011→            bestPlayer = id
+  1012→            bestPart = part
+  1013→            bestPoint = p
+  1014→          }
+  1015→        }
+  1016→      }
+  1017→    }
+  1018→
+  1019→    if (bestPlayer && bestDist < mapDist && bestPoint) {
+  1020→      return { player: bestPlayer, part: bestPart, dist: bestDist, point: bestPoint }
+  1021→    }
+  1022→    if (mapHit) {
+  1023→      const normal = mapHit.face ? mapHit.face.normal.clone().transformDirection(mapHit.object.matrixWorld) : dir.clone().negate()
+  1024→      return { player: null, part: 'body', dist: mapHit.distance, point: mapHit.point, normal }
+  1025→    }
+  1026→    return null
+  1027→  }
+  1028→
+  1029→  private processHit(hit: { player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3 }, dir: THREE.Vector3): void {
+  1030→    if (hit.player) {
+  1031→      this.net.sendHits('knife', [{ target: hit.player, part: hit.part, dist: hit.dist }])
+  1032→      this.effects.impact(hit.point, dir.clone().negate(), true)
+  1033→    } else {
+  1034→      this.effects.impact(hit.point, hit.normal ?? dir.clone().negate())
+  1035→    }
+  1036→  }
+  1037→
+  1038→  // ----------------------------------------------------------
+  1039→  // Recarga
+  1040→  // ----------------------------------------------------------
+  1041→  startReload(): void {
+  1042→    const w = WEAPONS[this.weapon]
+  1043→    if (w.mag === 0 || this.reloading || this.dead) return
+  1044→    const a = this.ammo[this.weapon]
+  1045→    if (!a || a.mag >= w.mag || a.reserve <= 0) return
+  1046→    this.reloading = true
+  1047→    this.reloadStage = 0
+  1048→    this.reloadEndAt = performance.now() + w.reloadTime * 1000
+  1049→    this.audio.reload('start')
+  1050→  }
+  1051→
+  1052→  // ----------------------------------------------------------
+  1053→  // Granadas
+  1054→  // ----------------------------------------------------------
+  1055→  throwGrenade(): void {
+  1056→    if (this.dead || this.frags <= 0 || this.throwCooldown > 0) return
+  1057→    this.throwCooldown = 0.8
+  1058→    this.frags--
+  1059→    useGame.getState().setHud({ frags: this.frags })
+  1060→    this.audio.throwSound()
+  1061→    this.camera.updateMatrixWorld()
+  1062→    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+  1063→    const eye = this.camera.position.clone().addScaledVector(dir, 0.4)
+  1064→    const vel = dir.clone().multiplyScalar(16)
+  1065→    vel.y += 3.5
+  1066→    this.net.throwGrenade([eye.x, eye.y, eye.z], [vel.x, vel.y, vel.z])
+  1067→    useGame.getState().setHud({ frags: this.frags })
+  1068→  }
+  1069→
+  1070→  private updateGrenadeViews(dt: number): void {
+  1071→    for (const [id, gv] of this.grenadeViews) {
+  1072→      gv.trailT += dt
+  1073→      if (gv.trailT > 0.09) {
+  1074→        gv.trailT = 0
+  1075→        // pequeño rastro de humo
+  1076→        const a = gv.group.position
+  1077→        void a
+  1078→      }
+  1079→    }
+  1080→  }
+  1081→
+  1082→  // ----------------------------------------------------------
+  1083→  // Pasos de remotos
+  1084→  // ----------------------------------------------------------
+  1085→  private updateRemoteFootsteps(dt: number, states: NetPlayerState[]): void {
+  1086→    void dt
+  1087→    const now = performance.now()
+  1088→    for (const st of states) {
+  1089→      if (st.dead || st.team === this.team || st.speed < 1.5) continue
+  1090→      const rp = this.remotes.map.get(st.id)
+  1091→      if (!rp) continue
+  1092→      const d = this.camera.position.distanceTo(rp.root.position)
+  1093→      if (d > 22) continue
+  1094→      const cadence = st.speed > 5 ? 300 : 430
+  1095→      if (now - rp.lastFootstep > cadence) {
+  1096→        rp.lastFootstep = now
+  1097→        this.audio.footstep(d, false)
+  1098→      }
+  1099→    }
+  1100→  }
+  1101→
+  1102→  // ----------------------------------------------------------
+  1103→  // Handlers de red (llamados por NetClient)
+  1104→  // ----------------------------------------------------------
+  1105→  onWelcome(team: Team, money: number): void {
+  1106→    this.team = team
+  1107→    this.money = money
+  1108→    const s = useGame.getState()
+  1109→    s.setHud({ team, money })
+  1110→  }
+  1111→
+  1112→  onSpawn(pos: [number, number, number], yaw: number, weapons: WeaponId[], weapon: WeaponId, hp: number, armor: number, frags: number, money: number): void {
+  1113→    this.pos.set(pos[0], pos[1], pos[2])
+  1114→    this.vel.set(0, 0, 0)
+  1115→    this.yaw = yaw
+  1116→    this.pitch = 0
+  1117→    this.dead = false
+  1118→    this.deathT = 0
+  1119→    this.hp = hp
+  1120→    this.armor = armor
+  1121→    this.frags = frags
+  1122→    this.money = money
+  1123→    this.owned = weapons.slice()
+  1124→    this.ammo = {}
+  1125→    for (const wid of this.owned) {
+  1126→      if (WEAPONS[wid].mag > 0) this.ammo[wid] = { mag: WEAPONS[wid].mag, reserve: WEAPONS[wid].reserve }
+  1127→    }
+  1128→    this.reloading = false
+  1129→    this.setWeapon(weapon, true)
+  1130→    const s = useGame.getState()
+  1131→    s.setHud({
+  1132→      phase: 'playing',
+  1133→      hp, armor, frags, money,
+  1134→      deathInfo: null,
+  1135→      owned: [...this.owned],
+  1136→    })
+  1137→  }
+  1138→
+  1139→  onDeath(killerName: string, respawnIn: number): void {
+  1140→    this.dead = true
+  1141→    this.deathT = 0
+  1142→    this.audio.deathSound()
+  1143→    this.trauma = 1
+  1144→    useGame.getState().setHud({
+  1145→      phase: 'dead',
+  1146→      deathInfo: { killer: killerName, respawnIn, diedAt: performance.now() },
+  1147→    })
+  1148→  }
+  1149→
+  1150→  onTakeDamage(dmg: number, attackerPos: [number, number, number]): void {
+  1151→    if (this.dead) return
+  1152→    this.hurtFlash = 1
+  1153→    this.trauma = Math.min(1, this.trauma + dmg / 90)
+  1154→    this.audio.playerHurt()
+  1155→    // dirección del atacante relativa a la vista
+  1156→    const dx = attackerPos[0] - this.pos.x
+  1157→    const dz = attackerPos[2] - this.pos.z
+  1158→    const worldAngle = Math.atan2(dx, dz)
+  1159→    const rel = worldAngle - (this.yaw + Math.PI)
+  1160→    this.dmgDirs.push({ angle: -rel, t: performance.now() })
+  1161→    // HUD de vida
+  1162→    const s = useGame.getState()
+  1163→    s.setHud({ hp: this.hp })
+  1164→  }
+  1165→
+  1166→  setHealth(hp: number, armor: number): void {
+  1167→    this.hp = hp
+  1168→    this.armor = armor
+  1169→    useGame.getState().setHud({ hp, armor })
+  1170→  }
+  1171→
+  1172→  setMoney(money: number, frags?: number): void {
+  1173→    this.money = money
+  1174→    if (frags !== undefined) this.frags = frags
+  1175→    useGame.getState().setHud({ money, frags: this.frags })
+  1176→  }
+  1177→
+  1178→  onHitConfirm(dmg: number, headshot: boolean): void {
+  1179→    this.hitMarkers.push({ t: performance.now(), headshot })
+  1180→    this.dmgNumbers.push({
+  1181→      x: innerWidth / 2 + (Math.random() - 0.5) * 70,
+  1182→      y: innerHeight / 2 - 40 + (Math.random() - 0.5) * 40,
+  1183→      amount: dmg, t: performance.now(), headshot,
+  1184→    })
+  1185→    this.audio.hitmarker(headshot)
+  1186→  }
+  1187→
+  1188→  onShotFired(playerId: string, origin: [number, number, number], hit: [number, number, number], weapon: WeaponId): void {
+  1189→    const from = new THREE.Vector3(...origin)
+  1190→    const to = new THREE.Vector3(...hit)
+  1191→    const d = from.distanceTo(this.camera.position)
+  1192→    if (d > 90) return
+  1193→    this.effects.tracer(from, to, true)
+  1194→    this.audio.gunshot(WEAPONS[weapon].sound, d)
+  1195→    // fogonazo del tirador
+  1196→    if (d < 60) this.effects.muzzleFlash(from, 0.8)
+  1197→    // ping en minimapa si es enemigo
+  1198→    const st = this.remotes.map.get(playerId)?.state
+  1199→    if (st && st.team !== this.team) {
+  1200→      this.pings.push({ x: origin[0], z: origin[2], t: performance.now() })
+  1201→    }
+  1202→  }
+  1203→
+  1204→  onSnapshot(snap: NetSnapshot): void {
+  1205→    const t = performance.now()
+  1206→    for (const st of snap.players) {
+  1207→      if (st.id === this.net.id) continue
+  1208→      this.remotes.upsert(st, t)
+  1209→    }
+  1210→    // granadas
+  1211→    const seen = new Set<string>()
+  1212→    for (const g of snap.grenades) {
+  1213→      seen.add(g.id)
+  1214→      let gv = this.grenadeViews.get(g.id)
+  1215→      if (!gv) {
+  1216→        const group = buildGrenadeModel()
+  1217→        this.scene.add(group)
+  1218→        gv = { group, last: new THREE.Vector3(g.x, g.y, g.z), trailT: 0 }
+  1219→        this.grenadeViews.set(g.id, gv)
+  1220→      }
+  1221→      gv.group.position.set(g.x, g.y, g.z)
+  1222→    }
+  1223→    for (const [id, gv] of this.grenadeViews) {
+  1224→      if (!seen.has(id)) {
+  1225→        this.scene.remove(gv.group)
+  1226→        this.grenadeViews.delete(id)
+  1227→      }
+  1228→    }
+  1229→    // ronda
+  1230→    useGame.getState().setHud({ round: snap.round })
+  1231→  }
+  1232→
+  1233→  onGrenadeExplode(pos: [number, number, number]): void {
+  1234→    const p = new THREE.Vector3(...pos)
+  1235→    const d = p.distanceTo(this.camera.position)
+  1236→    this.effects.explosion(p)
+  1237→    this.audio.explosion(d)
+  1238→    this.trauma = Math.min(1, this.trauma + Math.max(0, 1 - d / 15) * 0.8)
+  1239→  }
+  1240→
+  1241→  // ----------------------------------------------------------
+  1242→  // Overlay 2D (crosshair, hitmarkers, daño)
+  1243→  // ----------------------------------------------------------
+  1244→  private drawOverlay(t: number): void {
+  1245→    const ctx = this.octx
+  1246→    const W = this.overlay.width, H = this.overlay.height
+  1247→    if (W !== innerWidth || H !== innerHeight) {
+  1248→      this.overlay.width = innerWidth
+  1249→      this.overlay.height = innerHeight
+  1250→    }
+  1251→    ctx.clearRect(0, 0, W, H)
+  1252→    const now = performance.now()
+  1253→    const s = useGame.getState()
+  1254→    const cx = W / 2, cy = H / 2
+  1255→
+  1256→    // mira telescópica
+  1257→    const w = WEAPONS[this.weapon]
+  1258→    if (w.sniper && this.adsAmt > 0.7 && !this.dead) {
+  1259→      this.drawScope(ctx, W, H)
+  1260→    } else if (!this.dead && s.phase === 'playing') {
+  1261→      // crosshair dinámico
+  1262→      const spread = this.currentSpread()
+  1263→      const gap = 6 + spread * 46
+  1264→      const len = 9
+  1265→      ctx.strokeStyle = 'rgba(80,255,120,0.95)'
+  1266→      ctx.lineWidth = 2
+  1267→      ctx.shadowColor = 'rgba(0,0,0,0.9)'
+  1268→      ctx.shadowBlur = 2
+  1269→      ctx.beginPath()
+  1270→      // 4 líneas
+  1271→      ctx.moveTo(cx - gap - len, cy); ctx.lineTo(cx - gap, cy)
+  1272→      ctx.moveTo(cx + gap, cy); ctx.lineTo(cx + gap + len, cy)
+  1273→      ctx.moveTo(cx, cy - gap - len); ctx.lineTo(cx, cy - gap)
+  1274→      ctx.moveTo(cx, cy + gap); ctx.lineTo(cx, cy + gap + len)
+  1275→      ctx.stroke()
+  1276→      ctx.shadowBlur = 0
+  1277→      // punto central
+  1278→      ctx.fillStyle = 'rgba(80,255,120,0.9)'
+  1279→      ctx.fillRect(cx - 1, cy - 1, 2, 2)
+  1280→    }
+  1281→
+  1282→    // hitmarkers
+  1283→    for (let i = this.hitMarkers.length - 1; i >= 0; i--) {
+  1284→      const hm = this.hitMarkers[i]
+  1285→      const age = (now - hm.t) / 240
+  1286→      if (age >= 1) { this.hitMarkers.splice(i, 1); continue }
+  1287→      const a = 1 - age
+  1288→      const g = 7, l = 8
+  1289→      ctx.strokeStyle = hm.headshot ? `rgba(255,60,60,${a})` : `rgba(255,255,255,${a})`
+  1290→      ctx.lineWidth = 2.5
+  1291→      ctx.beginPath()
+  1292→      ctx.moveTo(cx - g - l, cy - g - l); ctx.lineTo(cx - g, cy - g)
+  1293→      ctx.moveTo(cx + g, cy + g); ctx.lineTo(cx + g + l, cy + g + l)
+  1294→      ctx.moveTo(cx - g - l, cy + g + l); ctx.lineTo(cx - g, cy + g)
+  1295→      ctx.moveTo(cx + g, cy - g); ctx.lineTo(cx + g + l, cy - g - l)
+  1296→      ctx.stroke()
+  1297→    }
+  1298→
+  1299→    // números de daño
+  1300→    ctx.textAlign = 'center'
+  1301→    ctx.font = 'bold 18px "Courier New", monospace'
+  1302→    for (let i = this.dmgNumbers.length - 1; i >= 0; i--) {
+  1303→      const dn = this.dmgNumbers[i]
+  1304→      const age = (now - dn.t) / 800
+  1305→      if (age >= 1) { this.dmgNumbers.splice(i, 1); continue }
+  1306→      const y = dn.y - age * 46
+  1307→      const alpha = age < 0.15 ? age / 0.15 : 1 - (age - 0.15) / 0.85
+  1308→      ctx.fillStyle = dn.headshot ? `rgba(255,70,70,${alpha})` : `rgba(255,220,80,${alpha})`
+  1309→      ctx.fillText(String(dn.amount), dn.x, y)
+  1310→    }
+  1311→
+  1312→    // indicadores de dirección de daño
+  1313→    for (let i = this.dmgDirs.length - 1; i >= 0; i--) {
+  1314→      const dd = this.dmgDirs[i]
+  1315→      const age = (now - dd.t) / 1000
+  1316→      if (age >= 1) { this.dmgDirs.splice(i, 1); continue }
+  1317→      const alpha = 1 - age
+  1318→      const R = 90
+  1319→      ctx.save()
+  1320→      ctx.translate(cx, cy)
+  1321→      ctx.rotate(dd.angle)
+  1322→      // arco rojo apuntando hacia el daño
+  1323→      ctx.strokeStyle = `rgba(255,40,40,${alpha * 0.9})`
+  1324→      ctx.lineWidth = 6
+  1325→      ctx.beginPath()
+  1326→      ctx.arc(0, 0, R, -Math.PI / 2 - 0.45, -Math.PI / 2 + 0.45)
+  1327→      ctx.stroke()
+  1328→      ctx.restore()
+  1329→    }
+  1330→
+  1331→    // destello de daño (vignette)
+  1332→    if (this.hurtFlash > 0.02) {
+  1333→      const g = ctx.createRadialGradient(cx, cy, H * 0.25, cx, cy, H * 0.75)
+  1334→      g.addColorStop(0, 'rgba(255,0,0,0)')
+  1335→      g.addColorStop(1, `rgba(160,0,0,${this.hurtFlash * 0.5})`)
+  1336→      ctx.fillStyle = g
+  1337→      ctx.fillRect(0, 0, W, H)
+  1338→    }
+  1339→
+  1340→    // vignette de poca vida
+  1341→    if (this.hp < 40 && !this.dead) {
+  1342→      const pulse = 0.35 + Math.sin(t * 5) * 0.15
+  1343→      const g = ctx.createRadialGradient(cx, cy, H * 0.3, cx, cy, H * 0.72)
+  1344→      g.addColorStop(0, 'rgba(120,0,0,0)')
+  1345→      g.addColorStop(1, `rgba(140,0,0,${pulse * (1 - this.hp / 40)})`)
+  1346→      ctx.fillStyle = g
+  1347→      ctx.fillRect(0, 0, W, H)
+  1348→    }
+  1349→
+  1350→    // pings del minimapa expiran
+  1351→    this.pings = this.pings.filter(p => now - p.t < 2500)
+  1352→    this.dmgDirs = this.dmgDirs.filter(d => now - d.t < 1000)
+  1353→  }
+  1354→
+  1355→  private drawScope(ctx: CanvasRenderingContext2D, W: number, H: number): void {
+  1356→    const cx = W / 2, cy = H / 2
+  1357→    const R = Math.min(W, H) * 0.42
+  1358→    // máscara negra
+  1359→    ctx.fillStyle = '#000'
+  1360→    ctx.beginPath()
+  1361→    ctx.rect(0, 0, W, H)
+  1362→    ctx.arc(cx, cy, R, 0, Math.PI * 2, true)
+  1363→    ctx.fill()
+  1364→    // cruz
+  1365→    ctx.strokeStyle = 'rgba(0,0,0,0.9)'
+  1366→    ctx.lineWidth = 1.5
+  1367→    ctx.beginPath()
+  1368→    ctx.moveTo(cx - R, cy); ctx.lineTo(cx - 12, cy)
+  1369→    ctx.moveTo(cx + 12, cy); ctx.lineTo(cx + R, cy)
+  1370→    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy - 12)
+  1371→    ctx.moveTo(cx, cy + 12); ctx.lineTo(cx, cy + R)
+  1372→    ctx.stroke()
+  1373→    ctx.lineWidth = 3
+  1374→    ctx.beginPath()
+  1375→    ctx.moveTo(cx - 5, cy); ctx.lineTo(cx + 5, cy)
+  1376→    ctx.moveTo(cx, cy - 5); ctx.lineTo(cx, cy + 5)
+  1377→    ctx.stroke()
+  1378→    // marcas de rango
+  1379→    ctx.lineWidth = 1
+  1380→    ctx.strokeStyle = 'rgba(0,0,0,0.7)'
+  1381→    for (let i = 1; i <= 4; i++) {
+  1382→      const y = cy + i * R * 0.16
+  1383→      ctx.beginPath()
+  1384→      ctx.moveTo(cx - 8 - i, y); ctx.lineTo(cx + 8 + i, y)
+  1385→      ctx.stroke()
+  1386→    }
+  1387→    // borde del visor
+  1388→    ctx.strokeStyle = 'rgba(20,20,20,0.95)'
+  1389→    ctx.lineWidth = 14
+  1390→    ctx.beginPath()
+  1391→    ctx.arc(cx, cy, R, 0, Math.PI * 2)
+  1392→    ctx.stroke()
+  1393→  }
+  1394→
+  1395→  // ----------------------------------------------------------
+  1396→  // Minimapa
+  1397→  // ----------------------------------------------------------
+  1398→  private buildMinimapStatic(): void {
+  1399→    const c = document.createElement('canvas')
+  1400→    c.width = c.height = 190
+  1401→    const ctx = c.getContext('2d')!
+  1402→    ctx.fillStyle = 'rgba(12,14,10,0.88)'
+  1403→    ctx.fillRect(0, 0, 190, 190)
+  1404→    const S = 190 / 76 // escala: 76 m de mapa
+  1405→    const O = 95
+  1406→    // cajas (solo muros altos visibles)
+  1407→    for (const b of MAP_BOXES) {
+  1408→      if (b.h < 1.0) continue
+  1409→      const x = O + b.x * S, y = O + b.z * S
+  1410→      ctx.fillStyle = b.h > 2.5 ? 'rgba(150,140,120,0.65)' : 'rgba(120,112,96,0.45)'
+  1411→      ctx.fillRect(x - (b.w * S) / 2, y - (b.d * S) / 2, b.w * S, b.d * S)
+  1412→    }
+  1413→    // zonas de spawn
+  1414→    ctx.strokeStyle = 'rgba(245,158,11,0.5)'
+  1415→    ctx.beginPath(); ctx.arc(O + SPAWN_A[0] * S, O + SPAWN_A[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+  1416→    ctx.strokeStyle = 'rgba(34,197,94,0.5)'
+  1417→    ctx.beginPath(); ctx.arc(O + SPAWN_B[0] * S, O + SPAWN_B[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+  1418→    this.mapStatic = c
+  1419→  }
+  1420→
+  1421→  private drawMinimap(): void {
+  1422→    const ctx = this.mctx
+  1423→    const W = this.minimap.width
+  1424→    ctx.clearRect(0, 0, W, W)
+  1425→    ctx.drawImage(this.mapStatic, 0, 0)
+  1426→    const S = 190 / 76
+  1427→    const O = 95
+  1428→    const now = performance.now()
+  1429→
+  1430→    // pings de enemigos
+  1431→    for (const p of this.pings) {
+  1432→      const age = (now - p.t) / 2500
+  1433→      ctx.fillStyle = `rgba(255,60,60,${1 - age})`
+  1434→      ctx.beginPath()
+  1435→      ctx.arc(O + p.x * S, O + p.z * S, 4, 0, Math.PI * 2)
+  1436→      ctx.fill()
+  1437→    }
+  1438→
+  1439→    // granadas
+  1440→    ctx.fillStyle = 'rgba(250,204,21,0.9)'
+  1441→    for (const gv of this.grenadeViews.values()) {
+  1442→      ctx.beginPath()
+  1443→      ctx.arc(O + gv.group.position.x * S, O + gv.group.position.z * S, 3, 0, Math.PI * 2)
+  1444→      ctx.fill()
+  1445→    }
+  1446→
+  1447→    // remotos
+  1448→    for (const rp of this.remotes.map.values()) {
+  1449→      const st = rp.state
+  1450→      if (!st || st.dead) continue
+  1451→      const x = O + rp.root.position.x * S
+  1452→      const y = O + rp.root.position.z * S
+  1453→      if (st.team === this.team) {
+  1454→        ctx.fillStyle = '#4ade80'
+  1455→        ctx.beginPath()
+  1456→        ctx.arc(x, y, 3.5, 0, Math.PI * 2)
+  1457→        ctx.fill()
+  1458→      }
+  1459→    }
+  1460→
+  1461→    // jugador local (flecha)
+  1462→    const px = O + this.pos.x * S, py = O + this.pos.z * S
+  1463→    ctx.save()
+  1464→    ctx.translate(px, py)
+  1465→    ctx.rotate(-this.yaw)
+  1466→    ctx.fillStyle = '#ffffff'
+  1467→    ctx.beginPath()
+  1468→    ctx.moveTo(0, -7)
+  1469→    ctx.lineTo(5, 5)
+  1470→    ctx.lineTo(0, 2.5)
+  1471→    ctx.lineTo(-5, 5)
+  1472→    ctx.closePath()
+  1473→    ctx.fill()
+  1474→    ctx.restore()
+  1475→  }
+  1476→
+  1477→  // utilidades
+  1478→  get currentAmmo(): { mag: number; reserve: number } {
+  1479→    return this.ammo[this.weapon] ?? { mag: 0, reserve: 0 }
+  1480→  }
+  1481→
+  1482→  /** Estado de input para el servidor */
+  1483→  inputState(): { pos: [number, number, number]; yaw: number; pitch: number; crouch: boolean; speed: number; weapon: string } {
+  1484→    return {
+  1485→      pos: [Math.round(this.pos.x * 100) / 100, Math.round(this.pos.y * 100) / 100, Math.round(this.pos.z * 100) / 100],
+  1486→      yaw: Math.round(this.yaw * 1000) / 1000,
+  1487→      pitch: Math.round(this.pitch * 1000) / 1000,
+  1488→      crouch: this.crouching,
+  1489→      speed: Math.round(Math.hypot(this.vel.x, this.vel.z) * 10) / 10,
+  1490→      weapon: this.weapon,
+  1491→    }
+  1492→  }
+  1493→}
+  1494→

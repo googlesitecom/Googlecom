@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { WEAPONS, TEAM_INFO, type Team } from '@/game/shared'
-import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin } from 'lucide-react'
+import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi } from 'lucide-react'
 
 export function Hud() {
   const hp = useGame(s => s.hp)
@@ -20,6 +20,9 @@ export function Hud() {
   const buyZone = useGame(s => s.buyZone)
   const phase = useGame(s => s.phase)
   const fps = useGame(s => s.fps)
+  const mode = useGame(s => s.mode)
+  const ping = useGame(s => s.ping)
+  const gamepadConnected = useGame(s => s.gamepadConnected)
   const w = WEAPONS[weapon]
 
   if (phase !== 'playing' && phase !== 'dead') return null
@@ -42,6 +45,9 @@ export function Hud() {
         </div>
         <TeamScore team="B" kills={round?.scoresB ?? 0} wins={round?.roundWinsB ?? 0} active={team === 'B'} />
       </div>
+
+      {/* ===== Chip de sala (multijugador P2P) ===== */}
+      <RoomChip />
 
       {/* ===== Anuncios centrales ===== */}
       <div className="absolute top-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
@@ -134,8 +140,12 @@ export function Hud() {
         </div>
       )}
 
-      {/* ===== FPS ===== */}
-      <div className="absolute bottom-1 right-2 text-stone-600 text-[10px] font-mono">{fps} FPS</div>
+      {/* ===== FPS / ping / mando ===== */}
+      <div className="absolute bottom-1 right-2 text-stone-600 text-[10px] font-mono flex items-center gap-3">
+        {gamepadConnected && <Gamepad2 className="w-3.5 h-3.5 text-green-500" />}
+        {mode !== 'solo' && ping > 0 && <span className="text-stone-500">{ping} MS</span>}
+        <span>{fps} FPS</span>
+      </div>
 
       {/* ===== Indicador de equipo ===== */}
       <div className="absolute top-4 left-[220px] flex items-center gap-2 bg-stone-950/60 rounded px-3 py-1.5 border border-stone-700/50">
@@ -173,6 +183,57 @@ function formatTime(s: number): string {
   const m = Math.floor(s / 60)
   const sec = s % 60
   return `${m}:${String(sec).padStart(2, '0')}`
+}
+
+// ============================================================
+// Chip de sala P2P — código + estado del rival
+// ============================================================
+function RoomChip() {
+  const mode = useGame(s => s.mode)
+  const roomCode = useGame(s => s.roomCode)
+  const netStatus = useGame(s => s.netStatus)
+  const [copied, setCopied] = useState(false)
+
+  if (mode !== 'host' && mode !== 'guest') return null
+
+  const connected = netStatus === 'connected'
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(roomCode)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch { /* sin permiso de portapapeles */ }
+  }
+
+  return (
+    <div className="absolute top-[76px] left-1/2 -translate-x-1/2 pointer-events-auto">
+      <div className={`flex items-center gap-3 rounded-lg px-4 py-1.5 border shadow-2xl ${
+        connected
+          ? 'bg-green-950/70 border-green-700/50'
+          : 'bg-stone-950/75 border-amber-700/50 animate-pulse'
+      }`}>
+        <Users className="w-4 h-4 text-stone-300 shrink-0" />
+        <span className="text-stone-400 text-[10px] font-bold tracking-widest">SALA</span>
+        <span className="text-amber-300 text-lg font-black tracking-[0.2em] tabular-nums">{roomCode}</span>
+        {mode === 'host' && !connected && (
+          <>
+            <span className="text-amber-200/80 text-[10px] font-bold tracking-widest hidden sm:inline">ESPERANDO RIVAL…</span>
+            <button
+              onClick={copy}
+              className="bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded px-2 py-1 flex items-center gap-1 text-[10px] font-bold text-stone-200 tracking-widest transition-colors"
+            >
+              <Copy className="w-3 h-3" /> {copied ? '¡COPIADO!' : 'COPIAR'}
+            </button>
+          </>
+        )}
+        {connected && (
+          <span className="text-green-300 text-[10px] font-bold tracking-widest flex items-center gap-1">
+            <Wifi className="w-3 h-3" /> {mode === 'host' ? 'RIVAL CONECTADO' : 'P2P ACTIVO'}
+          </span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export function DeathOverlay() {

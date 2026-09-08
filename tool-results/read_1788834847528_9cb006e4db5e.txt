@@ -1,0 +1,839 @@
+     1→// ============================================================
+     2→// FRONTERA CERO — Servidor de juego (Socket.io)
+     3→// Multijugador, bots con IA, rondas, economía, granadas
+     4→// ============================================================
+     5→import { createServer } from 'http'
+     6→import { Server, Socket } from 'socket.io'
+     7→import {
+     8→  GAME, WEAPONS, BUY_ITEMS, computeDamage, spawnPoint, segmentBlocked,
+     9→  WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS,
+    10→  weaponIndex, weaponByIndex,
+    11→  type Team, type WeaponId, type BodyPart,
+    12→  type NetPlayerState, type NetGrenade, type NetRoundState, type NetKillEvent, type NetSnapshot,
+    13→} from './shared'
+    14→
+    15→interface BotAI {
+    16→  state: 'patrol' | 'combat'
+    17→  wp: number          // waypoint actual al que se dirige
+    18→  target: string | null
+    19→  reactAt: number     // ms timestamp en que puede empezar a disparar
+    20→  strafe: number      // -1/1
+    21→  strafePhase: number
+    22→  nextShotAt: number
+    23→  burst: number
+    24→  lastMoveCheck: number
+    25→  lastX: number; lastZ: number
+    26→  lastPosChange: number
+    27→}
+    28→
+    29→interface Player {
+    30→  id: string
+    31→  name: string
+    32→  team: Team
+    33→  bot: boolean
+    34→  x: number; y: number; z: number
+    35→  yaw: number; pitch: number
+    36→  crouch: boolean
+    37→  speed: number
+    38→  hp: number
+    39→  armor: number
+    40→  dead: boolean
+    41→  respawnAt: number
+    42→  weapon: WeaponId
+    43→  owned: WeaponId[]
+    44→  frags: number
+    45→  kills: number
+    46→  deaths: number
+    47→  money: number
+    48→  streak: number
+    49→  lastKillAt: number
+    50→  multi: number
+    51→  lastShotAt: number
+    52→  protectUntil: number
+    53→  lastSeenEnemy: number
+    54→  socket?: Socket
+    55→  ai?: BotAI
+    56→}
+    57→
+    58→interface Grenade {
+    59→  id: string
+    60→  owner: string
+    61→  team: Team
+    62→  x: number; y: number; z: number
+    63→  vx: number; vy: number; vz: number
+    64→  fuse: number
+    65→  bornAt: number
+    66→}
+    67→
+    68→const httpServer = createServer()
+    69→const io = new Server(httpServer, {
+    70→  path: '/',
+    71→  cors: { origin: '*', methods: ['GET', 'POST'] },
+    72→  pingTimeout: 60000,
+    73→  pingInterval: 25000,
+    74→})
+    75→
+    76→const players = new Map<string, Player>()
+    77→const grenades = new Map<string, Grenade>()
+    78→let grenadeSeq = 0
+    79→
+    80→// Estado de ronda
+    81→const round = {
+    82→  phase: 'live' as 'live' | 'ended' | 'matchend',
+    83→  endsAt: Date.now() + GAME.ROUND_TIME * 1000,
+    84→  intermissionEndsAt: 0,
+    85→  roundNumber: 1,
+    86→  scoresA: 0,
+    87→  scoresB: 0,
+    88→  roundWinsA: 0,
+    89→  roundWinsB: 0,
+    90→}
+    91→
+    92→function now(): number { return Date.now() }
+    93→function dist3(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number {
+    94→  return Math.hypot(ax - bx, ay - by, az - bz)
+    95→}
+    96→function clamp(v: number, a: number, b: number): number { return Math.max(a, Math.min(b, v)) }
+    97→function rand(a: number, b: number): number { return a + Math.random() * (b - a) }
+    98→
+    99→// ------------------------------------------------------------
+   100→// Creación de jugadores
+   101→// ------------------------------------------------------------
+   102→function teamCounts(): { A: number; B: number } {
+   103→  const c = { A: 0, B: 0 }
+   104→  for (const p of players.values()) c[p.team]++
+   105→  return c
+   106→}
+   107→
+   108→function pickTeam(): Team {
+   109→  const c = teamCounts()
+   110→  return c.A <= c.B ? 'A' : 'B'
+   111→}
+   112→
+   113→function createPlayer(id: string, name: string, team: Team, bot: boolean, socket?: Socket): Player {
+   114→  const p: Player = {
+   115→    id, name, team, bot,
+   116→    x: 0, y: 0, z: 0,
+   117→    yaw: team === 'A' ? Math.PI * 0.25 : -Math.PI * 0.75,
+   118→    pitch: 0,
+   119→    crouch: false, speed: 0,
+   120→    hp: 100, armor: 0, dead: false, respawnAt: 0,
+   121→    weapon: 'p9',
+   122→    owned: ['knife', 'p9'],
+   123→    frags: 0,
+   124→    kills: 0, deaths: 0, money: GAME.START_MONEY,
+   125→    streak: 0, lastKillAt: 0, multi: 0,
+   126→    lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0,
+   127→    socket,
+   128→  }
+   129→  if (bot) {
+   130→    p.ai = {
+   131→      state: 'patrol', wp: nearestWaypoint(team === 'A' ? SPAWN_X_A : SPAWN_X_B, team === 'A' ? SPAWN_Z_A : SPAWN_Z_B),
+   132→      target: null, reactAt: 0, strafe: Math.random() < 0.5 ? -1 : 1, strafePhase: Math.random() * 10,
+   133→      nextShotAt: 0, burst: 0, lastMoveCheck: 0, lastX: 0, lastZ: 0, lastPosChange: now(),
+   134→    }
+   135→  }
+   136→  respawnPlayer(p, true)
+   137→  return p
+   138→}
+   139→
+   140→const SPAWN_X_A = -28, SPAWN_Z_A = -28, SPAWN_X_B = 28, SPAWN_Z_B = 28
+   141→
+   142→function nearestWaypoint(x: number, z: number): number {
+   143→  let best = 0, bestD = Infinity
+   144→  for (let i = 0; i < WAYPOINTS.length; i++) {
+   145→    const d = Math.hypot(WAYPOINTS[i][0] - x, WAYPOINTS[i][1] - z)
+   146→    if (d < bestD) { bestD = d; best = i }
+   147→  }
+   148→  return best
+   149→}
+   150→
+   151→function respawnPlayer(p: Player, initial = false): void {
+   152→  const idx = Array.from(players.values()).filter(q => q.team === p.team).indexOf(p)
+   153→  const [x, , z] = spawnPoint(p.team, Math.max(0, idx))
+   154→  p.x = x; p.y = 0.02; p.z = z
+   155→  p.hp = 100
+   156→  p.dead = false
+   157→  p.crouch = false
+   158→  p.protectUntil = now() + GAME.SPAWN_PROTECT * 1000
+   159→  // Al morir se pierden las armas compradas (estilo CS)
+   160→  if (!initial) {
+   161→    p.owned = ['knife', 'p9']
+   162→    p.weapon = 'p9'
+   163→    p.frags = Math.min(p.frags, 0)
+   164→  } else {
+   165→    p.owned = ['knife', 'p9']
+   166→    p.weapon = 'p9'
+   167→  }
+   168→  if (p.bot) botBuy(p)
+   169→  // notificar al propio jugador
+   170→  p.socket?.emit('spawnEvent', {
+   171→    pos: [p.x, p.y, p.z],
+   172→    yaw: p.yaw,
+   173→    hp: p.hp, armor: p.armor,
+   174→    weapons: p.owned,
+   175→    weapon: p.weapon,
+   176→    frags: p.frags,
+   177→    money: p.money,
+   178→    protect: GAME.SPAWN_PROTECT,
+   179→  })
+   180→}
+   181→
+   182→// ------------------------------------------------------------
+   183→// Economía / compra
+   184→// ------------------------------------------------------------
+   185→function inBuyZone(p: Player): boolean {
+   186→  const bx = p.team === 'A' ? SPAWN_X_A : SPAWN_X_B
+   187→  const bz = p.team === 'A' ? SPAWN_Z_A : SPAWN_Z_B
+   188→  return Math.hypot(p.x - bx, p.z - bz) < GAME.BUY_RADIUS + 2
+   189→}
+   190→
+   191→function botBuy(p: Player): void {
+   192→  // los bots compran según su presupuesto
+   193→  if (p.money >= 4750 && Math.random() < 0.22) {
+   194→    p.owned = ['knife', 'p9', 'awp338']; p.weapon = 'awp338'; p.money -= 4750
+   195→  } else if (p.money >= 2900) {
+   196→    const w: WeaponId = Math.random() < 0.5 ? 'cr4' : 'ar47'
+   197→    p.owned = ['knife', 'p9', w]; p.weapon = w; p.money -= WEAPONS[w].price
+   198→  } else if (p.money >= 1800 && Math.random() < 0.6) {
+   199→    p.owned = ['knife', 'p9', 'mp9']; p.weapon = 'mp9'; p.money -= 1250
+   200→  } else if (p.money >= 1250) {
+   201→    p.owned = ['knife', 'p9', 'mp9']; p.weapon = 'mp9'; p.money -= 1250
+   202→  } else if (p.money >= 700 && Math.random() < 0.5) {
+   203→    p.owned = ['knife', 'p9', 'aguila']; p.weapon = 'aguila'; p.money -= 700
+   204→  }
+   205→  if (p.money >= 1000 && p.armor < 50) { p.armor = 100; p.money -= 1000 }
+   206→  if (p.money >= 600 && p.frags < 1 && Math.random() < 0.4) { p.frags = 1; p.money -= 300 }
+   207→}
+   208→
+   209→function handleBuy(p: Player, itemId: string): void {
+   210→  const item = BUY_ITEMS.find(i => i.id === itemId)
+   211→  if (!item) return void p.socket?.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Artículo desconocido' })
+   212→  if (p.dead) return void p.socket?.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Estás eliminado' })
+   213→  if (!inBuyZone(p)) return void p.socket?.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Sal de combate: compra solo en tu base' })
+   214→  if (p.money < item.price) return void p.socket?.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Fondos insuficientes' })
+   215→
+   216→  if (item.weapon) {
+   217→    const w = WEAPONS[item.weapon]
+   218→    p.money -= item.price
+   219→    if (p.owned.includes(w.id)) {
+   220→      // recomprar = munición completa
+   221→      p.socket?.emit('refillAmmo', { weapon: w.id })
+   222→    } else {
+   223→      p.owned.push(w.id)
+   224→      p.weapon = w.id
+   225→      p.socket?.emit('giveWeapon', { weapon: w.id })
+   226→    }
+   227→  } else if (item.equip === 'armor') {
+   228→    p.money -= item.price
+   229→    p.armor = 100
+   230→  } else if (item.equip === 'frag') {
+   231→    if (p.frags >= 2) {
+   232→      return void p.socket?.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Máximo 2 granadas' })
+   233→    }
+   234→    p.money -= item.price
+   235→    p.frags++
+   236→  }
+   237→  p.socket?.emit('buyResult', { ok: true, itemId, money: p.money })
+   238→  p.socket?.emit('econ', { money: p.money, frags: p.frags })
+   239→}
+   240→
+   241→// ------------------------------------------------------------
+   242→// Daño y muerte
+   243→// ------------------------------------------------------------
+   244→function announce(text: string, kind: 'kill' | 'round' | 'info' = 'info', team?: Team): void {
+   245→  io.emit('announce', { text, kind, team })
+   246→}
+   247→
+   248→function applyDamage(attacker: Player, victim: Player, dmg: number, part: BodyPart, weapon: WeaponId, dirHint: [number, number]): void {
+   249→  if (victim.dead) return
+   250→  if (now() < victim.protectUntil) return
+   251→  if (attacker.team === victim.team && attacker.id !== victim.id) return
+   252→
+   253→  // armadura absorbe
+   254→  if (victim.armor > 0 && part !== 'legs') {
+   255→    const absorbed = Math.min(victim.armor, Math.round(dmg * 0.5))
+   256→    victim.armor -= absorbed
+   257→    dmg -= absorbed
+   258→  }
+   259→  victim.hp -= dmg
+   260→
+   261→  const w = WEAPONS[weapon]
+   262→  io.to(victim.id).emit('takeDamage', {
+   263→    attacker: attacker.id, dmg, part, weapon,
+   264→    dir: dirHint,
+   265→    attackerPos: [attacker.x, attacker.y, attacker.z],
+   266→  })
+   267→  if (attacker.id !== victim.id && !attacker.bot) {
+   268→    io.to(attacker.id).emit('hitConfirm', { victim: victim.id, dmg, part, weapon, headshot: part === 'head', victimHp: Math.max(0, victim.hp) })
+   269→  }
+   270→  // sonido de impacto para todos los cercanos
+   271→  io.emit('damageFX', { x: victim.x, y: victim.y + 1.2, z: victim.z, part })
+   272→
+   273→  // los bots reaccionan al recibir daño
+   274→  if (victim.bot && victim.ai) {
+   275→    victim.ai.target = attacker.id
+   276→    victim.ai.reactAt = now() + rand(150, 450)
+   277→    victim.ai.state = 'combat'
+   278→  }
+   279→
+   280→  if (victim.hp <= 0) killPlayer(attacker, victim, weapon, part === 'head')
+   281→}
+   282→
+   283→function killPlayer(killer: Player, victim: Player, weapon: WeaponId, headshot: boolean): void {
+   284→  victim.dead = true
+   285→  victim.hp = 0
+   286→  victim.deaths++
+   287→  victim.streak = 0
+   288→  victim.respawnAt = now() + GAME.RESPAWN_TIME * 1000
+   289→  victim.frags = 0
+   290→
+   291→  if (killer.id !== victim.id) {
+   292→    killer.kills++
+   293→    killer.streak++
+   294→    const t = now()
+   295→    killer.multi = (t - killer.lastKillAt < 4000) ? killer.multi + 1 : 1
+   296→    killer.lastKillAt = t
+   297→    killer.money = Math.min(GAME.MAX_MONEY, killer.money + GAME.KILL_REWARD + (headshot ? GAME.HS_REWARD : 0))
+   298→    if (killer.team === 'A') round.scoresA++; else round.scoresB++
+   299→  }
+   300→
+   301→  const ev: NetKillEvent = {
+   302→    killer: killer.id, killerName: killer.name, killerTeam: killer.team,
+   303→    victim: victim.id, victimName: victim.name, victimTeam: victim.team,
+   304→    weapon, headshot,
+   305→    killerStreak: killer.streak,
+   306→    multi: killer.multi,
+   307→  }
+   308→  io.emit('kill', ev)
+   309→
+   310→  // anuncios de racha / multimuerte
+   311→  const msgs: string[] = []
+   312→  if (killer.multi === 2) msgs.push('¡DOBLE MUERTE!')
+   313→  else if (killer.multi === 3) msgs.push('¡TRIPLE MUERTE!')
+   314→  else if (killer.multi === 4) msgs.push('¡FURIA LETAL!')
+   315→  else if (killer.multi >= 5) msgs.push('¡MASACRE!')
+   316→  if (killer.streak === 5) msgs.push(`${killer.name}: RACHA DE 5`)
+   317→  else if (killer.streak === 8) msgs.push(`${killer.name}: RACHA DE 8`)
+   318→  else if (killer.streak === 10) msgs.push(`${killer.name}: ¡IMPARABLE!`)
+   319→  if (killer.streak === 12) msgs.push(`${killer.name}: ¡DIOS DE LA GUERRA!`)
+   320→  for (const m of msgs) announce(m, 'kill', killer.team)
+   321→
+   322→  io.to(victim.id).emit('deathEvent', { killer: killer.id, killerName: killer.name, weapon, respawnIn: GAME.RESPAWN_TIME })
+   323→
+   324→  checkRoundEnd()
+   325→}
+   326→
+   327→function checkRoundEnd(): void {
+   328→  if (round.phase !== 'live') return
+   329→  if (round.scoresA >= GAME.ROUND_KILLS || round.scoresB >= GAME.ROUND_KILLS) {
+   330→    endRound(round.scoresA > round.scoresB ? 'A' : 'B')
+   331→  }
+   332→}
+   333→
+   334→function endRound(winner: Team): void {
+   335→  round.phase = 'ended'
+   336→  round.intermissionEndsAt = now() + 6000
+   337→  if (winner === 'A') round.roundWinsA++; else round.roundWinsB++
+   338→  announce(`RONDA ${round.roundNumber} PARA ${winner === 'A' ? 'ÁMBAR' : 'VERDE'}`, 'round')
+   339→  io.emit('roundEnd', { winner, scoresA: round.scoresA, scoresB: round.scoresB, roundWinsA: round.roundWinsA, roundWinsB: round.roundWinsB })
+   340→
+   341→  // recompensas económicas
+   342→  for (const p of players.values()) {
+   343→    p.money = Math.min(GAME.MAX_MONEY, p.money + (p.team === winner ? GAME.WIN_REWARD : GAME.LOSE_REWARD))
+   344→    p.socket?.emit('econ', { money: p.money })
+   345→  }
+   346→}
+   347→
+   348→function startRound(): void {
+   349→  round.roundNumber++
+   350→  round.phase = 'live'
+   351→  round.endsAt = now() + GAME.ROUND_TIME * 1000
+   352→  round.scoresA = 0
+   353→  round.scoresB = 0
+   354→  announce(`RONDA ${round.roundNumber} — ¡EN COMBATE!`, 'round')
+   355→  for (const p of players.values()) {
+   356→    p.respawnAt = now() + rand(200, 900)
+   357→    p.multi = 0
+   358→  }
+   359→  io.emit('roundStart', { roundNumber: round.roundNumber })
+   360→}
+   361→
+   362→function endMatch(winner: Team): void {
+   363→  round.phase = 'matchend'
+   364→  round.intermissionEndsAt = now() + 12000
+   365→  announce(`¡VICTORIA FINAL PARA ${winner === 'A' ? 'ESCUADRÓN ÁMBAR' : 'ESCUADRÓN VERDE'}!`, 'round')
+   366→  io.emit('matchEnd', { winner, roundWinsA: round.roundWinsA, roundWinsB: round.roundWinsB })
+   367→}
+   368→
+   369→function resetMatch(): void {
+   370→  round.roundNumber = 1
+   371→  round.roundWinsA = 0
+   372→  round.roundWinsB = 0
+   373→  round.scoresA = 0
+   374→  round.scoresB = 0
+   375→  round.phase = 'live'
+   376→  round.endsAt = now() + GAME.ROUND_TIME * 1000
+   377→  for (const p of players.values()) {
+   378→    p.kills = 0; p.deaths = 0; p.streak = 0; p.money = GAME.START_MONEY
+   379→    p.respawnAt = now() + rand(200, 900)
+   380→    p.socket?.emit('econ', { money: p.money })
+   381→  }
+   382→  announce('NUEVA PARTIDA — RONDA 1', 'round')
+   383→  io.emit('roundStart', { roundNumber: 1 })
+   384→}
+   385→
+   386→// ------------------------------------------------------------
+   387→// BOTS — IA
+   388→// ------------------------------------------------------------
+   389→function eye(p: Player): [number, number, number] { return [p.x, p.y + 1.55, p.z] }
+   390→
+   391→function canSee(a: Player, b: Player): boolean {
+   392→  const [ax, ay, az] = eye(a)
+   393→  const bx = b.x, by = b.y + (b.crouch ? 0.9 : 1.2), bz = b.z
+   394→  const d = dist3(ax, ay, az, bx, by, bz)
+   395→  if (d > 46) return false
+   396→  return !segmentBlocked(ax, ay, az, bx, by, bz, MAP_AABBS)
+   397→}
+   398→
+   399→function botFindTarget(p: Player): Player | null {
+   400→  let best: Player | null = null
+   401→  let bestD = Infinity
+   402→  const [ex, ey, ez] = eye(p)
+   403→  for (const q of players.values()) {
+   404→    if (q.dead || q.team === p.team) continue
+   405→    if (now() < q.protectUntil) continue
+   406→    const d = dist3(ex, ey, ez, q.x, q.y + 1.2, q.z)
+   407→    if (d < bestD && canSee(p, q)) { bestD = d; best = q }
+   408→  }
+   409→  return best
+   410→}
+   411→
+   412→function botUpdate(p: Player, dt: number, t: number): void {
+   413→  const ai = p.ai!
+   414→  if (p.dead) return
+   415→
+   416→  // --- objetivo ---
+   417→  if (t - (p.lastSeenEnemy || 0) > 400) {
+   418→    p.lastSeenEnemy = t
+   419→    const target = botFindTarget(p)
+   420→    if (target) {
+   421→      if (ai.target !== target.id) {
+   422→        ai.target = target.id
+   423→        ai.reactAt = t + rand(350, 700)   // tiempo de reacción humano
+   424→        ai.burst = 0
+   425→      }
+   426→      ai.state = 'combat'
+   427→    } else if (ai.state === 'combat' && (!ai.target || !players.get(ai.target))) {
+   428→      ai.state = 'patrol'
+   429→      ai.target = null
+   430→    }
+   431→  }
+   432→
+   433→  const target = ai.target ? players.get(ai.target) : undefined
+   434→  const MOVE = 4.4
+   435→
+   436→  if (ai.state === 'combat' && target && !target.dead) {
+   437→    const d = dist3(p.x, p.y, p.z, target.x, target.y, target.z)
+   438→    // mirar al objetivo con error angular decreciente
+   439→    const aimT = clamp((t - ai.reactAt) / 900, 0, 1)
+   440→    const err = (1 - aimT) * 0.20 + clamp(d / 46, 0, 1) * 0.10 + (target.speed > 3 ? 0.05 : 0.02)
+   441→    const wantYaw = Math.atan2(target.x - p.x, target.z - p.z)
+   442→    const dy = target.y + 1.1 - (p.y + 1.55)
+   443→    const flat = Math.hypot(target.x - p.x, target.z - p.z)
+   444→    const wantPitch = Math.atan2(dy, flat)
+   445→    p.yaw += (wantYaw - p.yaw + err * Math.sin(t * 0.013 + p.id.length)) * Math.min(1, dt * 8)
+   446→    p.pitch += (wantPitch - p.pitch) * Math.min(1, dt * 8)
+   447→
+   448→    // strafe circular
+   449→    ai.strafePhase += dt
+   450→    if (ai.strafePhase > 1.1) { ai.strafePhase = 0; ai.strafe *= -1 }
+   451→    const perpX = Math.cos(p.yaw) * ai.strafe
+   452→    const perpZ = -Math.sin(p.yaw) * ai.strafe
+   453→    let vx = perpX * MOVE * 0.75
+   454→    let vz = perpZ * MOVE * 0.75
+   455→    // mantener distancia preferida según arma
+   456→    const w = WEAPONS[p.weapon]
+   457→    const pref = w.id === 'awp338' ? 26 : w.id === 'breacher' ? 6 : 13
+   458→    const toX = (target.x - p.x) / (d || 1)
+   459→    const toZ = (target.z - p.z) / (d || 1)
+   460→    if (d > pref + 3) { vx += toX * MOVE * 0.7; vz += toZ * MOVE * 0.7 }
+   461→    else if (d < pref - 3) { vx -= toX * MOVE * 0.7; vz -= toZ * MOVE * 0.7 }
+   462→
+   463→    const nx = p.x + vx * dt, nz = p.z + vz * dt
+   464→    if (!posBlocked(nx, p.y, nz)) { p.x = nx; p.z = nz }
+   465→    else if (!posBlocked(p.x + vx * dt, p.y, p.z)) { p.x += vx * dt }
+   466→    else if (!posBlocked(p.x, p.y, p.z + vz * dt)) { p.z += vz * dt }
+   467→    p.speed = Math.hypot(vx, vz)
+   468→
+   469→    // --- disparo ---
+   470→    if (t > ai.reactAt && t > ai.nextShotAt && canSee(p, target)) {
+   471→      botShoot(p, target, d)
+   472→    }
+   473→  } else {
+   474→    // --- patrulla ---
+   475→    const [wx, wz] = WAYPOINTS[ai.wp]
+   476→    const dx = wx - p.x, dz = wz - p.z
+   477→    const d = Math.hypot(dx, dz)
+   478→    if (d < 1.2) {
+   479→      const edges = WAYPOINT_EDGES[ai.wp]
+   480→      ai.wp = edges.length ? edges[Math.floor(Math.random() * edges.length)] : nearestWaypoint(p.x, p.z)
+   481→    } else {
+   482→      const wantYaw = Math.atan2(dx, dz)
+   483→      p.yaw += Math.abs(wantYaw - p.yaw) > Math.PI
+   484→        ? ((wantYaw > p.yaw ? wantYaw - Math.PI * 2 : wantYaw + Math.PI * 2) - p.yaw) * Math.min(1, dt * 5)
+   485→        : (wantYaw - p.yaw) * Math.min(1, dt * 5)
+   486→      p.pitch += (0 - p.pitch) * Math.min(1, dt * 4)
+   487→      const nx = p.x + (dx / d) * MOVE * dt
+   488→      const nz = p.z + (dz / d) * MOVE * dt
+   489→      if (!posBlocked(nx, p.y, nz)) { p.x = nx; p.z = nz; p.speed = MOVE }
+   490→      else { ai.wp = nearestWaypoint(p.x, p.z); p.speed = 0 }
+   491→    }
+   492→    // si se queda atascado, teletransporte de emergencia
+   493→    if (t - ai.lastMoveCheck > 2500) {
+   494→      if (Math.hypot(p.x - ai.lastX, p.z - ai.lastZ) < 1) {
+   495→        ai.wp = nearestWaypoint(p.x, p.z)
+   496→        const [tx, tz] = WAYPOINTS[ai.wp]
+   497→        p.x = tx; p.z = tz
+   498→      }
+   499→      ai.lastX = p.x; ai.lastZ = p.z; ai.lastMoveCheck = t
+   500→    }
+   501→  }
+   502→  p.y = 0.02
+   503→}
+   504→
+   505→function posBlocked(x: number, y: number, z: number): boolean {
+   506→  for (const b of MAP_AABBS) {
+   507→    if (x > b.minX - 0.35 && x < b.maxX + 0.35 && z > b.minZ - 0.35 && z < b.maxZ + 0.35 && b.minY < 1.6) return true
+   508→  }
+   509→  return false
+   510→}
+   511→
+   512→function botShoot(p: Player, target: Player, d: number): void {
+   513→  const ai = p.ai!
+   514→  const w = WEAPONS[p.weapon]
+   515→  const t = now()
+   516→  const interval = 60000 / w.rpm
+   517→
+   518→  // ráfagas
+   519→  if (w.auto) {
+   520→    if (ai.burst <= 0) {
+   521→      if (t < ai.nextShotAt) return
+   522→      ai.burst = Math.floor(rand(3, 9))
+   523→    }
+   524→    ai.burst--
+   525→    ai.nextShotAt = t + interval + (ai.burst <= 0 ? rand(280, 600) : 0)
+   526→  } else {
+   527→    if (t < ai.nextShotAt) return
+   528→    ai.nextShotAt = t + Math.max(interval, w.id === 'awp338' ? rand(1500, 2100) : interval + rand(80, 300))
+   529→  }
+   530→
+   531→  p.lastShotAt = t
+   532→
+   533→  // precisión según distancia/arma
+   534→  let hitChance = 0.82 - clamp((d - 10) / 60, 0, 0.55)
+   535→  if (target.speed > 3.5) hitChance -= 0.12
+   536→  if (target.crouch) hitChance += 0.04
+   537→  if (w.id === 'awp338') hitChance = d < 40 ? 0.75 : 0.55
+   538→  if (w.id === 'breacher') hitChance = d < 8 ? 0.9 : 0.45
+   539→
+   540→  const hit = Math.random() < hitChance
+   541→  // punto de impacto para efectos visuales
+   542→  const aimY = target.y + 1.2
+   543→  const spread = hit ? 0 : rand(0.4, 1.4)
+   544→  const hitPos: [number, number, number] = hit
+   545→    ? [target.x, aimY, target.z]
+   546→    : [target.x + rand(-1, 1) * spread, aimY + rand(-0.5, 0.8), target.z + rand(-1, 1) * spread]
+   547→
+   548→  io.emit('shotFired', {
+   549→    playerId: p.id,
+   550→    origin: [p.x, p.y + 1.5, p.z],
+   551→    hit: hitPos,
+   552→    weapon: p.weapon,
+   553→  })
+   554→
+   555→  if (hit) {
+   556→    // parte del cuerpo probable
+   557→    const r = Math.random()
+   558→    const part: BodyPart = r < (d < 18 ? 0.16 : 0.07) ? 'head' : r < 0.85 ? 'body' : 'legs'
+   559→    const dmg = computeDamage(w, part, d, target.armor)
+   560→    const dx = p.x - target.x, dz = p.z - target.z
+   561→    applyDamage(p, target, dmg, part, p.weapon, [dx, dz])
+   562→  } else {
+   563→    // balas perdidas asustan a los humanos cerca
+   564→  }
+   565→}
+   566→
+   567→// ------------------------------------------------------------
+   568→// Granadas
+   569→// ------------------------------------------------------------
+   570→function throwGrenade(p: Player, pos: [number, number, number], vel: [number, number, number]): void {
+   571→  if (p.dead || p.frags <= 0) return
+   572→  p.frags--
+   573→  const id = `g${grenadeSeq++}`
+   574→  const g: Grenade = {
+   575→    id, owner: p.id, team: p.team,
+   576→    x: pos[0], y: pos[1], z: pos[2],
+   577→    vx: vel[0], vy: vel[1], vz: vel[2],
+   578→    fuse: 2.4, bornAt: now(),
+   579→  }
+   580→  grenades.set(id, g)
+   581→  io.emit('grenadeSpawn', { id, owner: p.id, pos, vel })
+   582→  p.socket?.emit('econ', { money: p.money, frags: p.frags })
+   583→}
+   584→
+   585→function updateGrenades(dt: number): void {
+   586→  for (const g of grenades.values()) {
+   587→    g.fuse -= dt
+   588→    if (g.fuse <= 0) { explodeGrenade(g); continue }
+   589→    g.vy -= GAME.GRAVITY * dt
+   590→    let nx = g.x + g.vx * dt
+   591→    let ny = g.y + g.vy * dt
+   592→    let nz = g.z + g.vz * dt
+   593→    // rebote en el suelo
+   594→    if (ny < 0.12) {
+   595→      ny = 0.12
+   596→      g.vy = -g.vy * 0.42
+   597→      g.vx *= 0.72
+   598→      g.vz *= 0.72
+   599→    }
+   600→    // rebote simple en muros
+   601→    for (const b of MAP_AABBS) {
+   602→      if (nx > b.minX - 0.1 && nx < b.maxX + 0.1 && ny > b.minY - 0.1 && ny < b.maxY + 0.1 && nz > b.minZ - 0.1 && nz < b.maxZ + 0.1) {
+   603→        // eje de menor penetración
+   604→        const px = Math.min(nx - (b.minX - 0.1), (b.maxX + 0.1) - nx)
+   605→        const py = Math.min(ny - (b.minY - 0.1), (b.maxY + 0.1) - ny)
+   606→        const pz = Math.min(nz - (b.minZ - 0.1), (b.maxZ + 0.1) - nz)
+   607→        if (px <= py && px <= pz) { g.vx = -g.vx * 0.45; nx = g.x }
+   608→        else if (pz <= py) { g.vz = -g.vz * 0.45; nz = g.z }
+   609→        else { g.vy = -g.vy * 0.4; ny = g.y }
+   610→        g.vx *= 0.75; g.vz *= 0.75
+   611→        break
+   612→      }
+   613→    }
+   614→    g.x = clamp(nx, -34.5, 34.5)
+   615→    g.y = Math.max(0.12, ny)
+   616→    g.z = clamp(nz, -34.5, 34.5)
+   617→  }
+   618→}
+   619→
+   620→function explodeGrenade(g: Grenade): void {
+   621→  grenades.delete(g.id)
+   622→  io.emit('grenadeExplode', { id: g.id, pos: [g.x, g.y, g.z] })
+   623→  const owner = players.get(g.owner)
+   624→  const RADIUS = 6.5
+   625→  for (const p of players.values()) {
+   626→    if (p.dead) continue
+   627→    const d = dist3(g.x, g.y, g.z, p.x, p.y + 1, p.z)
+   628→    if (d > RADIUS) continue
+   629→    const blocked = segmentBlocked(g.x, g.y + 0.2, g.z, p.x, p.y + 1, p.z, MAP_AABBS)
+   630→    let dmg = 112 * (1 - d / RADIUS) * (blocked ? 0.35 : 1)
+   631→    dmg = Math.round(dmg)
+   632→    if (dmg < 8) continue
+   633→    if (owner) {
+   634→      const dx = g.x - p.x, dz = g.z - p.z
+   635→      applyDamage(owner, p, dmg, 'body', 'knife', [dx, dz]) // granada: parte cuerpo
+   636→    }
+   637→  }
+   638→}
+   639→
+   640→// ------------------------------------------------------------
+   641→// Loop principal
+   642→// ------------------------------------------------------------
+   643→let lastTick = now()
+   644→let tickCount = 0
+   645→
+   646→function tick(): void {
+   647→  const t = now()
+   648→  let dt = (t - lastTick) / 1000
+   649→  lastTick = t
+   650→  dt = Math.min(dt, 0.1)
+   651→  tickCount++
+   652→
+   653→  // --- respawn de jugadores ---
+   654→  for (const p of players.values()) {
+   655→    if (p.dead && t >= p.respawnAt && round.phase === 'live') respawnPlayer(p)
+   656→  }
+   657→
+   658→  // --- bots ---
+   659→  for (const p of players.values()) {
+   660→    if (p.bot) botUpdate(p, dt, t)
+   661→  }
+   662→
+   663→  // --- granadas ---
+   664→  updateGrenades(dt)
+   665→
+   666→  // --- fin de ronda por tiempo ---
+   667→  if (round.phase === 'live' && t > round.endsAt) {
+   668→    const winner = round.scoresA === round.scoresB ? (teamCounts().A <= teamCounts().B ? 'A' : 'B') : (round.scoresA > round.scoresB ? 'A' : 'B')
+   669→    endRound(winner)
+   670→  } else if (round.phase === 'ended' && t > round.intermissionEndsAt) {
+   671→    if (round.roundWinsA >= GAME.ROUNDS_TO_WIN || round.roundWinsB >= GAME.ROUNDS_TO_WIN) {
+   672→      endMatch(round.roundWinsA > round.roundWinsB ? 'A' : 'B')
+   673→    } else startRound()
+   674→  } else if (round.phase === 'matchend' && t > round.intermissionEndsAt) {
+   675→    resetMatch()
+   676→  }
+   677→
+   678→  // --- snapshot ---
+   679→  if (tickCount % GAME.SNAPSHOT_EVERY === 0) broadcastSnapshot()
+   680→}
+   681→
+   682→function netPlayer(p: Player): NetPlayerState {
+   683→  return {
+   684→    id: p.id, name: p.name, team: p.team, bot: p.bot,
+   685→    x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100, z: Math.round(p.z * 100) / 100,
+   686→    yaw: Math.round(p.yaw * 1000) / 1000,
+   687→    pitch: Math.round(p.pitch * 1000) / 1000,
+   688→    hp: Math.max(0, Math.round(p.hp)), armor: Math.round(p.armor),
+   689→    weapon: p.weapon, dead: p.dead, crouch: p.crouch,
+   690→    speed: Math.round(p.speed * 10) / 10,
+   691→    kills: p.kills, deaths: p.deaths, money: p.money, streak: p.streak,
+   692→  }
+   693→}
+   694→
+   695→function netGrenade(g: Grenade): NetGrenade {
+   696→  return { id: g.id, x: Math.round(g.x * 100) / 100, y: Math.round(g.y * 100) / 100, z: Math.round(g.z * 100) / 100, team: g.team }
+   697→}
+   698→
+   699→function netRound(): NetRoundState {
+   700→  return {
+   701→    phase: round.phase,
+   702→    timeLeft: Math.max(0, Math.round((round.endsAt - now()) / 1000)),
+   703→    roundNumber: round.roundNumber,
+   704→    scoresA: round.scoresA, scoresB: round.scoresB,
+   705→    roundWinsA: round.roundWinsA, roundWinsB: round.roundWinsB,
+   706→  }
+   707→}
+   708→
+   709→function broadcastSnapshot(): void {
+   710→  const snap: NetSnapshot = {
+   711→    t: now(),
+   712→    players: Array.from(players.values()).map(netPlayer),
+   713→    grenades: Array.from(grenades.values()).map(netGrenade),
+   714→    round: netRound(),
+   715→  }
+   716→  io.emit('snapshot', snap)
+   717→}
+   718→
+   719→setInterval(tick, GAME.TICK)
+   720→
+   721→// ------------------------------------------------------------
+   722→// Bots iniciales
+   723→// ------------------------------------------------------------
+   724→const usedNames = new Set<string>()
+   725→function botName(): string {
+   726→  for (const n of BOT_NAMES) {
+   727→    if (!usedNames.has(n)) { usedNames.add(n); return n }
+   728→  }
+   729→  const i = 1
+   730→  const nm = `BOT-${i}${Math.floor(Math.random() * 90 + 10)}`
+   731→  usedNames.add(nm)
+   732→  return nm
+   733→}
+   734→
+   735→for (let i = 0; i < GAME.BOT_COUNT; i++) {
+   736→  const id = `bot-${i}`
+   737→  const team: Team = i % 2 === 0 ? 'A' : 'B'
+   738→  players.set(id, createPlayer(id, botName(), team, true))
+   739→}
+   740→console.log(`[FRONTERA CERO] ${GAME.BOT_COUNT} bots desplegados`)
+   741→
+   742→// ------------------------------------------------------------
+   743→// Conexiones de jugadores humanos
+   744→// ------------------------------------------------------------
+   745→io.on('connection', (socket: Socket) => {
+   746→  console.log(`Jugador conectado: ${socket.id}`)
+   747→
+   748→  let player: Player | null = null
+   749→
+   750→  socket.on('join', (data: { name: string }) => {
+   751→    if (player) return
+   752→    const name = String(data?.name || 'Operador').slice(0, 16).trim() || 'Operador'
+   753→    const team = pickTeam()
+   754→    player = createPlayer(socket.id, name, team, false, socket)
+   755→    players.set(socket.id, player)
+   756→
+   757→    socket.emit('welcome', {
+   758→      id: socket.id,
+   759→      name, team,
+   760→      players: Array.from(players.values()).map(netPlayer),
+   761→      round: netRound(),
+   762→      econ: { money: player.money, frags: player.frags },
+   763→    })
+   764→    io.emit('playerJoined', { id: socket.id, name, team })
+   765→    console.log(`${name} se unió al ${team === 'A' ? 'ÁMBAR' : 'VERDE'} (${players.size} jugadores)`)
+   766→  })
+   767→
+   768→  socket.on('input', (data: {
+   769→    pos: [number, number, number], yaw: number, pitch: number,
+   770→    crouch: boolean, speed: number, weapon: string
+   771→  }) => {
+   772→    if (!player || player.dead) return
+   773→    const p = player
+   774→    const [x, y, z] = data.pos
+   775→    // validación básica dentro del mapa
+   776→    p.x = clamp(Number(x) || 0, -34.5, 34.5)
+   777→    p.y = clamp(Number(y) || 0, -1, 30)
+   778→    p.z = clamp(Number(z) || 0, -34.5, 34.5)
+   779→    p.yaw = Number(data.yaw) || 0
+   780→    p.pitch = clamp(Number(data.pitch) || 0, -1.4, 1.4)
+   781→    p.crouch = !!data.crouch
+   782→    p.speed = clamp(Number(data.speed) || 0, 0, 12)
+   783→    const wid = data.weapon as WeaponId
+   784→    if (wid && WEAPONS[wid]) p.weapon = wid
+   785→  })
+   786→
+   787→  socket.on("hits", (data: {
+   788→    weapon: WeaponId, pellets: number,
+   789→    hits: { target: string, part: BodyPart, dist: number }[]
+   790→  }) => {
+   791→    if (!player || player.dead) return
+   792→    const w = WEAPONS[data.weapon]
+   793→    if (!w) return
+   794→    // rate limit aproximado por RPM (una validación por disparo)
+   795→    const t = now()
+   796→    const minInterval = (60000 / w.rpm) * 0.55
+   797→    if (t - player.lastShotAt < minInterval) return
+   798→    player.lastShotAt = t
+   799→    const maxHits = Math.max(1, w.pellets)
+   800→    let count = 0
+   801→    for (const h of (data.hits || []).slice(0, maxHits)) {
+   802→      const victim = players.get(String(h.target))
+   803→      if (!victim || victim.dead || victim.team === player.team) continue
+   804→      const dist = clamp(Number(h.dist) || 10, 0, 200)
+   805→      const dmg = computeDamage(w, h.part, dist, victim.armor)
+   806→      const dx = player.x - victim.x, dz = player.z - victim.z
+   807→      applyDamage(player, victim, dmg, h.part, data.weapon, [dx, dz])
+   808→      count++
+   809→      // rate limit no se vuelve a comprobar dentro del mismo disparo
+   810→      player.lastShotAt = t
+   811→    }
+   812→    void count
+   813→  })
+   814→
+   815→  socket.on('buy', (data: { itemId: string }) => {
+   816→    if (player) handleBuy(player, String(data?.itemId))
+   817→  })
+   818→
+   819→  socket.on('grenadeThrow', (data: { pos: [number, number, number], vel: [number, number, number] }) => {
+   820→    if (!player) return
+   821→    const pos = [clamp(Number(data.pos?.[0]) || 0, -34, 34), clamp(Number(data.pos?.[1]) || 1, 0.2, 30), clamp(Number(data.pos?.[2]) || 0, -34, 34)] as [number, number, number]
+   822→    const vel = data.vel as [number, number, number]
+   823→    throwGrenade(player, pos, [Number(vel?.[0]) || 0, Number(vel?.[1]) || 5, Number(vel?.[2]) || 0])
+   824→  })
+   825→
+   826→  socket.on('disconnect', () => {
+   827→    if (player) {
+   828→      players.delete(player.id)
+   829→      io.emit('playerLeft', { id: player.id, name: player.name })
+   830→      console.log(`${player.name} abandonó la partida (${players.size} jugadores)`)
+   831→    }
+   832→  })
+   833→})
+   834→
+   835→const PORT = 3003
+   836→httpServer.listen(PORT, () => {
+   837→  console.log(`[FRONTERA CERO] Servidor de juego en puerto ${PORT}`)
+   838→})
+   839→

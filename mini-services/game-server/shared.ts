@@ -22,8 +22,28 @@ export const GAME = {
   LOSE_REWARD: 1900,
   BOT_COUNT: 8,
   GRAVITY: 14.0,
-  MAP_HALF: 35,
+  MAP_HALF: 55,
 } as const
+
+// Dificultad de los bots (escala reacción, puntería y agilidad)
+export type BotDifficulty = 'facil' | 'normal' | 'dificil' | 'experto'
+export const BOT_SKILL: Record<BotDifficulty, {
+  react: [number, number]
+  aimSpeed: number
+  hitBase: number
+  aimErr: number
+  burstPause: [number, number]
+  seeDist: number
+}> = {
+  facil:   { react: [650, 1050], aimSpeed: 5.0, hitBase: 0.55, aimErr: 0.22, burstPause: [450, 850], seeDist: 44 },
+  normal:  { react: [420, 720],  aimSpeed: 7.5, hitBase: 0.68, aimErr: 0.14, burstPause: [300, 600], seeDist: 50 },
+  dificil: { react: [280, 480],  aimSpeed: 9.5, hitBase: 0.78, aimErr: 0.09, burstPause: [220, 420], seeDist: 56 },
+  experto: { react: [180, 320],  aimSpeed: 12.0, hitBase: 0.86, aimErr: 0.055, burstPause: [150, 300], seeDist: 60 },
+}
+
+export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
+  facil: 'FÁCIL', normal: 'NORMAL', dificil: 'DIFÍCIL', experto: 'EXPERTO',
+}
 
 export type Team = 'A' | 'B'
 export type WeaponId =
@@ -200,35 +220,35 @@ function box(x: number, y: number, z: number, w: number, h: number, d: number, m
 const MAP: MapBox[] = []
 function B(...a: Parameters<typeof box>) { MAP.push(box(...a)) }
 
-// --- Perímetro (muros de 5 m) ---
-B(0, 2.5, -35.5, 72, 5, 1.5, 'sand')
-B(0, 2.5, 35.5, 72, 5, 1.5, 'sand')
-B(-35.5, 2.5, 0, 1.5, 5, 72, 'sand')
-B(35.5, 2.5, 0, 1.5, 5, 72, 'sand')
-// Pilares decorativos en muros
-for (const sx of [-24, -8, 8, 24]) {
-  B(sx, 2.8, -35.5, 2.2, 5.6, 2.2, 'concrete')
-  B(sx, 2.8, 35.5, 2.2, 5.6, 2.2, 'concrete')
-  B(-35.5, 2.8, sx, 2.2, 5.6, 2.2, 'concrete')
-  B(35.5, 2.8, sx, 2.2, 5.6, 2.2, 'concrete')
+// --- Perímetro 110×110 (muros de 6 m) ---
+B(0, 3, -55.5, 112, 6, 1.5, 'sand')
+B(0, 3, 55.5, 112, 6, 1.5, 'sand')
+B(-55.5, 3, 0, 1.5, 6, 112, 'sand')
+B(55.5, 3, 0, 1.5, 6, 112, 'sand')
+for (const v of [-48, -32, -16, 0, 16, 32, 48]) {
+  B(v, 3.4, -55.5, 2.4, 6.8, 2.4, 'concrete')
+  B(v, 3.4, 55.5, 2.4, 6.8, 2.4, 'concrete')
+  B(-55.5, 3.4, v, 2.4, 6.8, 2.4, 'concrete')
+  B(55.5, 3.4, v, 2.4, 6.8, 2.4, 'concrete')
 }
 
 // --- Mercado Central (0,0) 14x14, muros h4, puertas de 3 m en cada lado ---
 const MW = 7, MH = 4, T = 0.5, GAP = 1.5 // semiancho, altura, grosor, semiancho puerta
 for (const side of [-1, 1]) {
-  // Norte (z = -MW) y Sur (z = +MW): segmentos X
-  B(-MW + (GAP + (MW - GAP) / 2) / 1, MH / 2, -MW, MW - GAP, MH, T, 'sand')
-  B(MW - (GAP + (MW - GAP) / 2) / 1, MH / 2, -MW, MW - GAP, MH, T, 'sand')
-  B(-MW + (GAP + (MW - GAP) / 2) / 1, MH / 2, MW, MW - GAP, MH, T, 'sand')
-  B(MW - (GAP + (MW - GAP) / 2) / 1, MH / 2, MW, MW - GAP, MH, T, 'sand')
+  // Norte (z = -MW) y Sur (z = +MW): segmentos X con puerta central de 2×GAP
+  const segW = MW - GAP
+  B(-(GAP + segW / 2), MH / 2, -MW, segW, MH, T, 'sand')
+  B(GAP + segW / 2, MH / 2, -MW, segW, MH, T, 'sand')
+  B(-(GAP + segW / 2), MH / 2, MW, segW, MH, T, 'sand')
+  B(GAP + segW / 2, MH / 2, MW, segW, MH, T, 'sand')
   // Dinteles sobre puertas N/S
   B(0, MH - 0.5, -MW, GAP * 2, 1, T, 'sand')
   B(0, MH - 0.5, MW, GAP * 2, 1, T, 'sand')
-  // Este (x = MW) y Oeste (x = -MW): segmentos Z
-  B(MW, MH / 2, -MW + (GAP + (MW - GAP) / 2), T, MH, MW - GAP, 'sand')
-  B(MW, MH / 2, MW - (GAP + (MW - GAP) / 2), T, MH, MW - GAP, 'sand')
-  B(-MW, MH / 2, -MW + (GAP + (MW - GAP) / 2), T, MH, MW - GAP, 'sand')
-  B(-MW, MH / 2, MW - (GAP + (MW - GAP) / 2), T, MH, MW - GAP, 'sand')
+  // Este (x = MW) y Oeste (x = -MW): segmentos Z con puerta central
+  B(MW, MH / 2, -(GAP + segW / 2), T, MH, segW, 'sand')
+  B(MW, MH / 2, GAP + segW / 2, T, MH, segW, 'sand')
+  B(-MW, MH / 2, -(GAP + segW / 2), T, MH, segW, 'sand')
+  B(-MW, MH / 2, GAP + segW / 2, T, MH, segW, 'sand')
   // Dinteles E/O
   B(MW, MH - 0.5, 0, T, 1, GAP * 2, 'sand')
   B(-MW, MH - 0.5, 0, T, 1, GAP * 2, 'sand')
@@ -248,7 +268,7 @@ B(2.2, 1.8, 2.2, 1.2, 1.2, 1.2, 'crate')
 B(-2.4, 0.6, 2.4, 1.2, 1.2, 1.2, 'crate')
 B(3.4, 0.45, -2.4, 0.7, 0.9, 0.7, 'barrel')
 
-// --- Cabañas (8x8, h3) NE (18,-18) y SO (-18,18), puerta hacia el centro ---
+// --- Cabañas (8x8, h3) en las cuatro diagonales medias ---
 function hut(cx: number, cz: number, doorSide: 'n' | 's' | 'e' | 'w', door2?: 'n' | 's' | 'e' | 'w') {
   const S = 4, H = 3, T2 = 0.4, G = 1.5
   const sides: ('n' | 's' | 'e' | 'w')[] = ['n', 's', 'e', 'w']
@@ -288,96 +308,164 @@ function hut(cx: number, cz: number, doorSide: 'n' | 's' | 'e' | 'w', door2?: 'n
   B(cx + 1.2, 0.6, cz - 1.2, 1.2, 1.2, 1.2, 'crate')
   B(cx - 1.5, 0.45, cz + 1.5, 0.7, 0.9, 0.7, 'barrel')
 }
-hut(18, -18, 'w', 's')
-hut(-18, 18, 'e', 'n')
+hut(26, 26, 'w')
+hut(-26, -26, 'e')
+hut(26, -26, 'w')
+hut(-26, 26, 'e')
 
-// --- Torre central-norte (0,-20) con escalera desde el sur ---
-B(0, 1.6, -20, 2.0, 3.2, 2.0, 'concrete')            // base/columna
-B(0, 3.5, -20, 4.4, 0.3, 4.4, 'concrete')            // plataforma
-B(0, 3.9, -22.1, 4.4, 0.55, 0.3, 'metalOrange')      // baranda norte
-B(-2.1, 3.9, -20, 0.3, 0.55, 4.4, 'metalOrange')     // baranda oeste
-B(2.1, 3.9, -20, 0.3, 0.55, 4.4, 'metalOrange')      // baranda este
-for (let i = 0; i < 7; i++) {
-  // escalones desde el suelo (z=-17.8) subiendo hacia la plataforma
-  const stepH = 0.5 * (i + 1)
-  B(0, stepH / 2 - 0.05, -17.6 + i * 0.62, 1.6, stepH, 0.62, 'concrete')
+// --- Torres de vigilancia (0,±20), escaleras hacia el centro ---
+function tower(cz: number, stairsFrom: number): void {
+  B(0, 1.6, cz, 2.0, 3.2, 2.0, 'concrete')            // base/columna
+  B(0, 3.5, cz, 4.4, 0.3, 4.4, 'concrete')            // plataforma
+  B(0, 3.9, cz - 2.1, 4.4, 0.55, 0.3, 'metalOrange')  // baranda norte
+  B(0, 3.9, cz + 2.1, 4.4, 0.55, 0.3, 'metalOrange')  // baranda sur
+  B(-2.1, 3.9, cz, 0.3, 0.55, 4.4, 'metalOrange')     // baranda oeste
+  B(2.1, 3.9, cz, 0.3, 0.55, 4.4, 'metalOrange')      // baranda este
+  // escalera: sube hacia la plataforma (escalones de 0.5 m)
+  for (let i = 0; i < 7; i++) {
+    const h = 0.5 * (i + 1)
+    const z = cz + stairsFrom * (6.0 - i * 0.62)
+    B(0, h / 2 - 0.02, z, 1.6, h, 0.62, 'concrete')
+  }
+}
+tower(-20, 1)   // torre norte, escaleras al sur
+
+tower(20, -1)   // torre sur, escaleras al norte
+
+// --- Almacenes (0,±36) 22×15 con puertas frontal y laterales ---
+function warehouse(cz: number, faceTo: number): void {
+  const XW = 11, ZW = 7.5, H = 5, TW = 0.55, G = 2.2
+  // pared trasera
+  B(0, H / 2, cz - faceTo * ZW, XW * 2, H, TW, 'metalBlue')
+  // pared frontal con puerta central
+  const fz = cz + faceTo * ZW
+  const seg = XW - G
+  B(-(G + seg / 2), H / 2, fz, seg, H, TW, 'metalBlue')
+  B(G + seg / 2, H / 2, fz, seg, H, TW, 'metalBlue')
+  B(0, H - 0.5, fz, G * 2, 1, TW, 'metalBlue')
+  // laterales con puertas
+  for (const sx of [-1, 1]) {
+    const segZ = ZW - G
+    B(sx * XW, H / 2, cz - (G + segZ / 2), TW, H, segZ, 'metalBlue')
+    B(sx * XW, H / 2, cz + (G + segZ / 2), TW, H, segZ, 'metalBlue')
+    B(sx * XW, H - 0.5, cz, TW, 1, G * 2, 'metalBlue')
+  }
+  // techo
+  B(0, H + 0.15, cz, XW * 2 + 0.8, 0.3, ZW * 2 + 0.8, 'roof')
+  // columnas y carga interior
+  B(-6, 0.75, cz - faceTo * 3, 0.7, 1.5, 0.7, 'concrete')
+  B(6, 0.75, cz + faceTo * 3, 0.7, 1.5, 0.7, 'concrete')
+  B(4 * faceTo, 0.6, cz, 1.4, 1.2, 1.4, 'crate')
+  B(-4 * faceTo, 0.6, cz + faceTo * 2, 1.4, 1.2, 1.4, 'crate')
+  B(-4 * faceTo, 1.8, cz + faceTo * 2, 1.4, 1.2, 1.4, 'crate')
+  B(0, 0.45, cz - faceTo * 3, 0.7, 0.9, 0.7, 'barrel')
+}
+warehouse(-36, 1)   // almacén norte, puerta al sur
+warehouse(36, -1)   // almacén sur, puerta al norte
+
+// --- Gasolinera Oeste (-33,-2): quiosco + marquesina con bombas ---
+hut(-41, 6, 'e')
+B(-33, 4.35, -2, 10, 0.5, 12, 'roof')
+B(-37.5, 2.1, -7, 0.5, 4.2, 0.5, 'concrete')
+B(-37.5, 2.1, 3, 0.5, 4.2, 0.5, 'concrete')
+B(-28.5, 2.1, -7, 0.5, 4.2, 0.5, 'concrete')
+B(-28.5, 2.1, 3, 0.5, 4.2, 0.5, 'concrete')
+B(-33, 0.6, -4.5, 1.2, 1.2, 1.2, 'metalRed')
+B(-33, 0.6, 2.6, 1.2, 1.2, 1.2, 'metalRed')
+B(-33, 1.8, 2.6, 1.2, 1.2, 1.2, 'metalRed')
+
+// --- Estación de Radar Este (36,0): compuesto amurallado ---
+B(36, 1.25, -7, 18, 2.5, 0.5, 'concrete')                       // muro norte
+B(30.5, 1.25, 7, 7, 2.5, 0.5, 'concrete')                       // muro sur (segmento)
+B(41.5, 1.25, 7, 7, 2.5, 0.5, 'concrete')
+B(36, 2.2, 7, 4, 0.6, 0.5, 'concrete')                          // dintel puerta sur
+B(45, 1.25, 0, 0.5, 2.5, 14, 'concrete')                        // muro este
+B(27, 1.25, -5.5, 0.5, 2.5, 5, 'concrete')                      // muro oeste (segmentos)
+B(27, 1.25, 5.5, 0.5, 2.5, 5, 'concrete')
+B(27, 2.2, 0, 0.5, 0.6, 4, 'concrete')                          // dintel puerta oeste
+B(38, 1.5, -2, 3, 3, 3, 'concrete')                             // base del radar
+B(38, 3.2, -2, 4, 0.4, 4, 'metalOrange')                        // plataforma radar
+B(32, 0.7, 3, 1.4, 1.4, 1.4, 'crate')                           // generadores
+B(41, 0.7, 4, 1.4, 1.4, 1.4, 'crate')
+
+// --- Contenedores (carriles y esquinas) ---
+B(-16, 1.2, 3, 2.5, 2.4, 6, 'metalRed')
+B(16, 1.2, -3, 2.5, 2.4, 6, 'metalBlue')
+B(3, 1.2, -16, 6, 2.4, 2.5, 'metalGreen')
+B(-3, 1.2, 16, 6, 2.4, 2.5, 'metalOrange')
+B(3, 3.6, -16, 6, 2.4, 2.5, 'metalGreen')
+B(20, 1.2, 20, 6, 2.4, 2.5, 'metalRed')
+B(20, 3.6, 20, 6, 2.4, 2.5, 'metalRed')
+B(-20, 1.2, -20, 6, 2.4, 2.5, 'metalBlue')
+B(-20, 1.2, 20, 2.5, 2.4, 6, 'metalGreen')
+B(20, 1.2, -20, 2.5, 2.4, 6, 'metalOrange')
+B(-40, 1.2, 24, 6, 2.4, 2.5, 'metalRed')
+B(40, 1.2, -24, 6, 2.4, 2.5, 'metalBlue')
+B(24, 1.2, 40, 6, 2.4, 2.5, 'metalGreen')
+B(-24, 1.2, -40, 6, 2.4, 2.5, 'metalOrange')
+B(44, 1.2, 30, 2.5, 2.4, 6, 'metalRed')
+B(-44, 1.2, -30, 2.5, 2.4, 6, 'metalBlue')
+
+// --- Barreras de hormigón (simetría diagonal) ---
+for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+  B(sx * 30, 0.55, sz * 20, 3, 1.1, 0.5, 'concrete')
+  B(sx * 20, 0.55, sz * 30, 3, 1.1, 0.5, 'concrete')
+  B(sx * 44, 0.55, sz * 12, 3, 1.1, 0.5, 'concrete')
+  B(sx * 12, 0.55, sz * 44, 3, 1.1, 0.5, 'concrete')
+  B(sx * 6, 0.55, sz * 18, 3, 1.1, 0.5, 'concrete')
+  B(sx * 20, 0.55, sz * 6, 3, 1.1, 0.5, 'concrete')
 }
 
-// --- Contenedores ---
-B(-14, 1.2, 2, 2.5, 2.4, 6, 'metalRed')
-B(14, 1.2, -2, 2.5, 2.4, 6, 'metalBlue')
-B(0, 1.2, 14, 6, 2.4, 2.5, 'metalGreen')
-B(0, 3.6, 14, 6, 2.4, 2.5, 'metalGreen')  // apilado
-B(-2, 1.2, -14, 6, 2.4, 2.5, 'metalOrange')
-B(24, 1.2, 24, 6, 2.4, 2.5, 'metalRed')
-B(-24, 1.2, -24, 6, 2.4, 2.5, 'metalBlue')
-
-// --- Barreras de hormigón ---
-B(-6, 0.55, 10, 3, 1.1, 0.5, 'concrete')
-B(6, 0.55, -10, 3, 1.1, 0.5, 'concrete')
-B(10, 0.55, 6, 3, 1.1, 0.5, 'concrete')
-B(-10, 0.55, -6, 3, 1.1, 0.5, 'concrete')
-B(0, 0.55, 20, 3, 1.1, 0.5, 'concrete')
-B(0, 0.55, -28, 3, 1.1, 0.5, 'concrete')
-B(-20, 0.55, 0, 3, 1.1, 0.5, 'concrete')
-B(20, 0.55, 0, 3, 1.1, 0.5, 'concrete')
-
 // --- Sacos de arena ---
-B(-8.5, 0.4, -8.5, 3, 0.8, 0.6, 'sandbag')
-B(8.5, 0.4, 8.5, 3, 0.8, 0.6, 'sandbag')
-B(-24, 0.4, 12, 3, 0.8, 0.6, 'sandbag')
-B(24, 0.4, -12, 3, 0.8, 0.6, 'sandbag')
-B(12, 0.4, 24, 3, 0.8, 0.6, 'sandbag')
-B(-12, 0.4, -24, 3, 0.8, 0.6, 'sandbag')
-B(-6, 0.4, 22, 3, 0.8, 0.6, 'sandbag')
-B(6, 0.4, -22, 3, 0.8, 0.6, 'sandbag')
+for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+  B(sx * 11, 0.4, sz * 11, 3, 0.8, 0.6, 'sandbag')
+  B(sx * 22, 0.4, sz * 4, 3, 0.8, 0.6, 'sandbag')
+  B(sx * 4, 0.4, sz * 22, 3, 0.8, 0.6, 'sandbag')
+  B(sx * 38, 0.4, sz * 38, 3, 0.8, 0.6, 'sandbag')
+  B(sx * 52, 0.4, sz * 20, 3, 0.8, 0.6, 'sandbag')
+  B(sx * 20, 0.4, sz * 52, 3, 0.8, 0.6, 'sandbag')
+}
 
-// --- Cajas de madera ---
-B(-10, 0.6, 10, 1.2, 1.2, 1.2, 'crate')
-B(-11.4, 0.6, 10.4, 1.2, 1.2, 1.2, 'crate')
-B(-10.7, 1.8, 10.2, 1.2, 1.2, 1.2, 'crate')
-B(10, 0.6, -10, 1.2, 1.2, 1.2, 'crate')
-B(11.4, 0.6, -10.4, 1.2, 1.2, 1.2, 'crate')
-B(10.7, 1.8, -10.2, 1.2, 1.2, 1.2, 'crate')
-B(16, 0.6, 8, 1.2, 1.2, 1.2, 'crate')
-B(-16, 0.6, -8, 1.2, 1.2, 1.2, 'crate')
-B(22, 0.6, 6, 1.2, 1.2, 1.2, 'crate')
-B(-22, 0.6, -6, 1.2, 1.2, 1.2, 'crate')
-B(6, 0.6, 22, 1.2, 1.2, 1.2, 'crate')
-B(-6, 0.6, -22, 1.2, 1.2, 1.2, 'crate')
-B(28, 0.6, -14, 1.2, 1.2, 1.2, 'crate')
-B(-28, 0.6, 14, 1.2, 1.2, 1.2, 'crate')
+// --- Cajas de madera (posiciones simétricas) ---
+for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+  B(sx * 13, 0.6, sz * 13, 1.2, 1.2, 1.2, 'crate')
+  B(sx * 14.4, 0.6, sz * 13.4, 1.2, 1.2, 1.2, 'crate')
+  B(sx * 13.7, 1.8, sz * 13.2, 1.2, 1.2, 1.2, 'crate')
+  B(sx * 21, 0.6, sz * 9, 1.2, 1.2, 1.2, 'crate')
+  B(sx * 9, 0.6, sz * 21, 1.2, 1.2, 1.2, 'crate')
+  B(sx * 31, 0.6, sz * 31, 1.2, 1.2, 1.2, 'crate')
+}
 
 // --- Barriles ---
-B(-4, 0.45, -16, 0.7, 0.9, 0.7, 'barrel')
-B(-5, 0.45, -16.4, 0.7, 0.9, 0.7, 'barrel')
-B(8, 0.45, 8.6, 0.7, 0.9, 0.7, 'barrel')
-B(26, 0.45, -6, 0.7, 0.9, 0.7, 'barrel')
-B(-26, 0.45, 6, 0.7, 0.9, 0.7, 'barrel')
-B(14, 0.45, 16, 0.7, 0.9, 0.7, 'barrel')
-B(-14, 0.45, -16, 0.7, 0.9, 0.7, 'barrel')
-B(-16, 0.45, 20, 0.7, 0.9, 0.7, 'barrel')
-B(16, 0.45, -20, 0.7, 0.9, 0.7, 'barrel')
+for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+  B(sx * 6.5, 0.45, sz * 13, 0.7, 0.9, 0.7, 'barrel')
+  B(sx * 25, 0.45, sz * 12, 0.7, 0.9, 0.7, 'barrel')
+  B(sx * 12, 0.45, sz * 25, 0.7, 0.9, 0.7, 'barrel')
+  B(sx * 38, 0.45, sz * 10, 0.7, 0.9, 0.7, 'barrel')
+  B(sx * 46, 0.45, sz * 44, 0.7, 0.9, 0.7, 'barrel')
+  B(sx * 8, 0.45, sz * 3, 0.7, 0.9, 0.7, 'barrel')
+}
 
 // --- Muros en ruinas ---
-B(20, 1.25, 20, 4.5, 2.5, 0.45, 'sand')
-B(-20, 1.25, -20, 4.5, 2.5, 0.45, 'sand')
-B(28, 1.0, 6, 0.45, 2.0, 3.5, 'sand')
-B(-28, 1.0, -6, 0.45, 2.0, 3.5, 'sand')
-B(6, 1.0, 28, 3.5, 2.0, 0.45, 'sand')
-B(-6, 1.0, -28, 3.5, 2.0, 0.45, 'sand')
+for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+  B(sx * 42, 1.25, sz * 22, 4.5, 2.5, 0.45, 'sand')
+  B(sx * 22, 1.25, sz * 42, 0.45, 2.5, 4.5, 'sand')
+  B(sx * 50, 1.0, sz * 10, 0.45, 2.0, 3.5, 'sand')
+  B(sx * 10, 1.0, sz * 50, 3.5, 2.0, 0.45, 'sand')
+  B(sx * 34, 1.0, sz * 34, 3.5, 2.0, 0.45, 'sand')
+}
 
 // --- Cajas cerca de spawns (cobertura inicial) ---
-B(-24, 0.6, -30, 1.2, 1.2, 1.2, 'crate')
-B(-30, 0.6, -24, 1.2, 1.2, 1.2, 'crate')
-B(24, 0.6, 30, 1.2, 1.2, 1.2, 'crate')
-B(30, 0.6, 24, 1.2, 1.2, 1.2, 'crate')
+B(-52.5, 0.6, -45.5, 1.2, 1.2, 1.2, 'crate')
+B(-45.5, 0.6, -52.5, 1.2, 1.2, 1.2, 'crate')
+B(52.5, 0.6, 45.5, 1.2, 1.2, 1.2, 'crate')
+B(45.5, 0.6, 52.5, 1.2, 1.2, 1.2, 'crate')
 
 export const MAP_BOXES: MapBox[] = MAP
 
 // --- Spawns ---
-export const SPAWN_A: [number, number, number] = [-28, 0, -28]
-export const SPAWN_B: [number, number, number] = [28, 0, 28]
+export const SPAWN_A: [number, number, number] = [-48, 0, -48]
+export const SPAWN_B: [number, number, number] = [48, 0, 48]
 export function spawnPoint(team: Team, i: number): [number, number, number] {
   const base = team === 'A' ? SPAWN_A : SPAWN_B
   const a = (i * 2.399) % (Math.PI * 2)
@@ -439,39 +527,29 @@ export function segmentBlocked(px: number, py: number, pz: number, qx: number, q
 }
 
 // ------------------------------------------------------------
-// WAYPOINTS para bots
+// WAYPOINTS para bots (62 nodos, grafo con LOS a 0.5 m)
 // ------------------------------------------------------------
 export const WAYPOINTS: [number, number][] = [
-  [-27, -27],  // 0 spawn A
-  [-14, -25],  // 1
-  [0, -25],    // 2
-  [15, -25],   // 3
-  [27, -27],   // 4 NE
-  [25, -14],   // 5
-  [25, 0],     // 6
-  [25, 14],    // 7
-  [27, 27],    // 8 spawn B
-  [14, 25],    // 9
-  [0, 25],     // 10
-  [-14, 25],   // 11
-  [-27, 27],   // 12 SW
-  [-25, 14],   // 13
-  [-25, 0],    // 14
-  [-25, -14],  // 15
-  [10, 10],    // 16
-  [10, -10],   // 17
-  [-10, -10],  // 18
-  [-10, 10],   // 19
-  [4, -12],    // 20
-  [-4, 12],    // 21
-  [12, 12],    // 22
-  [-12, -12],  // 23
+  // perímetro
+  [-48, -48], [-34, -48], [-17, -48], [0, -48], [17, -48], [34, -48], [48, -48],
+  [48, -34], [48, -17], [48, 0], [48, 17], [48, 34], [48, 48],
+  [34, 48], [17, 48], [0, 48], [-17, 48], [-34, 48], [-48, 48],
+  [-48, 34], [-48, 17], [-48, 0], [-48, -17], [-48, -34],
+  // centro (mercado)
+  [0, 0], [0, -12], [8.5, -8.5], [12, 0], [8.5, 8.5], [0, 12], [-8.5, 8.5], [-12, 0], [-8.5, -8.5],
+  // anillo medio
+  [0, -24], [10, -24], [-10, -24], [17, -17], [24, 0], [17, 17], [0, 24], [10, 24], [-10, 24], [-17, 17], [-24, 0], [-17, -17],
+  // interiores y laterales de edificios
+  [0, -36], [14, -36], [-14, -36], [0, 36], [14, 36], [-14, 36],
+  [33, -33], [33, 33], [-33, 33], [-33, -33],
+  [46, 46], [46, -46], [-46, -46], [-46, 46],
+  [-30, 0], [30, -10], [30, 10], [-30, -10], [-30, 10],
 ]
 
 /** Aristas del grafo de waypoints (calculadas con LOS a altura de rodilla 0.5 m) */
 export const WAYPOINT_EDGES: number[][] = WAYPOINTS.map(() => [])
 {
-  const MAXD = 15
+  const MAXD = 20
   for (let i = 0; i < WAYPOINTS.length; i++) {
     for (let j = i + 1; j < WAYPOINTS.length; j++) {
       const dx = WAYPOINTS[i][0] - WAYPOINTS[j][0]
@@ -536,4 +614,18 @@ export interface NetKillEvent {
   multi?: number
 }
 
-export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Puma', 'Oso', 'Jaguar', 'Serpiente', 'Tigre']
+export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Puma', 'Oso', 'Jaguar', 'Serpiente', 'Tigre', 'Águila', 'Coyote', 'León', 'Pantera', 'Búho', 'Araña']
+
+// ------------------------------------------------------------
+// SALAS P2P (PeerJS)
+// ------------------------------------------------------------
+export const PEER_APP_PREFIX = 'fzcero2'
+export function peerIdForRoom(code: string): string {
+  return `${PEER_APP_PREFIX}-${code.toLowerCase()}`
+}
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+export function generateRoomCode(): string {
+  let s = ''
+  for (let i = 0; i < 5; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]
+  return s
+}

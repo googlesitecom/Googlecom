@@ -1,205 +1,489 @@
 // ============================================================
-// FRONTERA CERO — Cliente de red (Socket.io)
+// FRONTERA CERO — Cliente de red
+// - solo:  simulación local con bots (sin servidor)
+// - host:  simulación local + sala 1v1 por PeerJS (P2P)
+// - guest: se conecta a la sala del anfitrión por PeerJS
 // ============================================================
-import { io, type Socket } from 'socket.io-client'
+import { Peer, type DataConnection } from 'peerjs'
 import type { Game } from './engine'
 import { useGame } from './store'
-import { WEAPONS, type WeaponId, type NetSnapshot, type NetRoundState } from './shared'
+import {
+  GAME, generateRoomCode, peerIdForRoom,
+  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty,
+} from './shared'
+
+export type NetMode = 'solo' | 'host' | 'guest'
+
+export interface ConnectOpts {
+  mode: NetMode
+  roomCode?: string
+  fillBots?: number
+  difficulty?: BotDifficulty
+}
+
+interface InputMsg {
+  pos: [number, number, number]; yaw: number; pitch: number
+  crouch: boolean; speed: number; weapon: string
+}
+
+interface PeerMsg { e: string; d: unknown }
+
+const HOST_ID = 'p1'
+const GUEST_ID = 'p2'
 
 export class NetClient {
-  socket: Socket | null = null
   id = ''
   game: Game
-  private lastInput: {
-    pos: [number, number, number]; yaw: number; pitch: number
-    crouch: boolean; speed: number; weapon: string
-  } | null = null
+  mode: NetMode = 'solo'
+  private worker: Worker | null = null
+  private peer: Peer | null = null
+  private guestConn: DataConnection | null = null  // host → invitado
+  private hostConn: DataConnection | null = null   // invitado → anfitrión
+  private lastInput: InputMsg | null = null
+  private pingTimer: ReturnType<typeof setInterval> | null = null
+  private welcomeTimeout: ReturnType<typeof setTimeout> | null = null
+  private disposed = false
 
   constructor(game: Game) {
     this.game = game
   }
 
-  connect(name: string): void {
+  connect(name: string, opts: ConnectOpts): void {
+    this.mode = opts.mode
     const s = useGame.getState()
     s.setPhase('connecting')
-    const socket = io('/?XTransformPort=3003', {
-      transports: ['websocket', 'polling'],
-      forceNew: true,
-      reconnection: true,
-      reconnectionAttempts: 8,
-      reconnectionDelay: 1000,
-      timeout: 12000,
-    })
-    this.socket = socket
+    s.setHud({ netStatus: 'connecting', netError: '', ping: 0 })
+    if (opts.mode === 'solo') {
+      this.connectSolo(name, opts.difficulty ?? 'normal')
+    } else if (opts.mode === 'host') {
+      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0)
+    } else {
+      this.connectGuest(name, opts.roomCode ?? '')
+    }
+  }
 
-    socket.on('connect', () => {
-      this.id = socket.id ?? ''
-      socket.emit('join', { name })
+  // ------------------------------------------------------------
+  // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
+  // ------------------------------------------------------------
+  private startSimWorker(difficulty: BotDifficulty, bots: number): void {
+    const worker = new Worker(new URL('./sim-worker.ts', import.meta.url))
+    this.worker = worker
+    worker.onmessage = (ev: MessageEvent) => {
+      if (this.disposed) return
+      const msg = ev.data as { e: string; d: unknown; to?: string }
+      if (!msg || typeof msg.e !== 'string') return
+      // entregar localmente (broadcast o dirigido al anfitrión)
+      if (!msg.to || msg.to === HOST_ID) this.dispatchLocal(msg.e, msg.d)
+      // reenviar al invitado P2P (broadcast o dirigido a él)
+      if (!msg.to || msg.to === GUEST_ID) this.forwardToGuest({ e: msg.e, d: msg.d })
+    }
+    this.sendToSim({ e: 'init', d: { difficulty, bots } })
+  }
+
+  private sendToSim(msg: unknown): void {
+    this.worker?.postMessage(msg)
+  }
+
+  /** Reenvía un mensaje al invitado, encolando si el canal aún no abre */
+  private forwardToGuest(msg: PeerMsg): void {
+    const c = this.guestConn
+    if (!c) return
+    if (c.open) {
+      this.sendToPeer(c, msg)
+    } else {
+      this.guestOutbox.push(msg)
+      if (this.guestOutbox.length > 200) this.guestOutbox.splice(0, 100)
+    }
+  }
+
+  // ------------------------------------------------------------
+  // MODO SOLO — simulación local con bots (en worker)
+  // ------------------------------------------------------------
+  private connectSolo(name: string, difficulty: BotDifficulty): void {
+    this.id = HOST_ID
+    this.startSimWorker(difficulty, Math.floor(GAME.BOT_COUNT / 2))
+    this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
+    useGame.getState().setHud({ netStatus: 'connected' })
+  }
+
+  // ------------------------------------------------------------
+  // MODO ANFITRIÓN — sala 1v1 por PeerJS + worker
+  // ------------------------------------------------------------
+  private connectHost(name: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number): void {
+    this.id = HOST_ID
+    // sincronizar el código de sala con el store (puede haberse regenerado)
+    if (useGame.getState().roomCode !== code) useGame.getState().setHud({ roomCode: code })
+    this.startSimWorker(difficulty, fill)
+    this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
+    useGame.getState().setHud({ netStatus: 'waiting' })
+
+    const peer = new Peer(peerIdForRoom(code), { debug: 0 })
+    this.peer = peer
+
+    peer.on('open', () => {
+      if (this.disposed) return
+      useGame.getState().addAnnouncement(`SALA ${code} CREADA — comparte el código`, 'info')
     })
 
-    socket.on('disconnect', () => {
-      useGame.getState().setConnected(false)
-    })
+    peer.on('connection', (conn: DataConnection) => {
+      if (this.disposed) { conn.close(); return }
+      if (this.guestConn) { conn.close(); return } // 1v1: un solo invitado
 
-    socket.on('welcome', (data: {
-      id: string; team: 'A' | 'B'; players: unknown[]; round: NetRoundState; econ: { money: number; frags: number }
-    }) => {
-      this.id = data.id
-      useGame.getState().setConnected(true)
-      useGame.getState().setHud({ round: data.round, playerId: data.id })
-      this.game.onWelcome(data.team, data.econ.money)
-    })
+      // asignar inmediatamente (el open puede llegar después de datos)
+      this.guestConn = conn
 
-    socket.on('spawnEvent', (data: {
-      pos: [number, number, number]; yaw: number; hp: number; armor: number
-      weapons: WeaponId[]; weapon: WeaponId; frags: number; money: number; protect: number
-    }) => {
-      this.game.onSpawn(data.pos, data.yaw, data.weapons, data.weapon, data.hp, data.armor, data.frags, data.money)
-    })
-
-    socket.on('snapshot', (snap: NetSnapshot) => {
-      this.game.onSnapshot(snap)
-      // actualizar hp local desde el servidor
-      const me = snap.players.find(p => p.id === this.id)
-      if (me) {
-        this.game.setHealth(me.hp, me.armor)
-      }
-    })
-
-    socket.on('hitConfirm', (data: { victim: string; dmg: number; part: string; weapon: WeaponId; headshot: boolean }) => {
-      this.game.onHitConfirm(data.dmg, data.headshot)
-    })
-
-    socket.on('takeDamage', (data: { attacker: string; dmg: number; part: string; weapon: WeaponId; dir: [number, number]; attackerPos: [number, number, number] }) => {
-      this.game.onTakeDamage(data.dmg, data.attackerPos)
-    })
-
-    socket.on('deathEvent', (data: { killer: string; killerName: string; weapon: WeaponId; respawnIn: number }) => {
-      this.game.onDeath(data.killerName, data.respawnIn)
-    })
-
-    socket.on('kill', (data: {
-      killer: string; killerName: string; killerTeam: 'A' | 'B'
-      victim: string; victimName: string; victimTeam: 'A' | 'B'
-      weapon: WeaponId; headshot: boolean
-    }) => {
-      useGame.getState().addKill({
-        killer: data.killerName, killerTeam: data.killerTeam,
-        victim: data.victimName, victimTeam: data.victimTeam,
-        weapon: data.weapon, headshot: data.headshot,
+      conn.on('open', () => {
+        // vaciar mensajes encolados mientras se abría el canal
+        for (const m of this.guestOutbox) this.sendToPeer(conn, m)
+        this.guestOutbox.length = 0
       })
-      if (data.killer === this.id) {
-        this.game.audio.killConfirm()
-      }
+
+      conn.on('data', (raw: unknown) => {
+        if (this.disposed) return
+        const msg = raw as PeerMsg
+        if (!msg || typeof msg.e !== 'string') return
+
+        if (msg.e === 'join') {
+          if (!this.guestJoined) {
+            this.guestJoined = true
+            const gname = String((msg.d as { name?: string })?.name ?? 'Rival').slice(0, 16) || 'Rival'
+            this.sendToSim({ e: 'join', d: { id: GUEST_ID, name: gname, team: 'B', announce: true } })
+            // el welcome para el invitado llega por la ruta del worker (to='p2')
+            useGame.getState().setHud({ netStatus: 'connected' })
+          }
+          return
+        }
+        if (msg.e === 'ping') {
+          this.sendToPeer(conn, { e: 'pong', d: msg.d })
+          return
+        }
+        // entradas de juego del invitado → worker
+        this.sendToSim({ e: msg.e, d: { id: GUEST_ID, data: msg.d } })
+      })
+
+      conn.on('close', () => {
+        if (this.guestConn === conn) {
+          this.guestConn = null
+          this.guestJoined = false
+          this.guestOutbox.length = 0
+          this.sendToSim({ e: 'leave', d: { id: GUEST_ID } })
+          useGame.getState().setHud({ netStatus: 'waiting' })
+          useGame.getState().addAnnouncement('El rival abandonó la sala', 'info')
+        }
+      })
+      conn.on('error', () => { /* silencioso */ })
     })
 
-    socket.on('shotFired', (data: { playerId: string; origin: [number, number, number]; hit: [number, number, number]; weapon: WeaponId }) => {
-      if (data.playerId === this.id) return
-      this.game.onShotFired(data.playerId, data.origin, data.hit, data.weapon)
-    })
-
-    socket.on('grenadeExplode', (data: { id: string; pos: [number, number, number] }) => {
-      this.game.onGrenadeExplode(data.pos)
-    })
-
-    socket.on('damageFX', (data: { x: number; y: number; z: number; part: string }) => {
-      // sonido de impacto en carne cercano
-      const d = Math.hypot(data.x - this.game.pos.x, data.z - this.game.pos.z)
-      if (d < 30 && d > 2) this.game.audio.fleshHit(d)
-    })
-
-    socket.on('announce', (data: { text: string; kind: string; team?: 'A' | 'B' }) => {
-      useGame.getState().addAnnouncement(data.text, data.kind as 'kill' | 'round' | 'info')
-      if (data.kind === 'kill' || data.kind === 'round') this.game.audio.announceDing()
-      if (data.kind === 'round') {
-        if (data.text.includes('RONDA') && data.text.includes('COMBATE')) this.game.audio.roundStart()
-        else this.game.audio.roundEnd()
-      }
-    })
-
-    socket.on('roundStart', (data: { roundNumber: number }) => {
-      void data
-    })
-
-    socket.on('roundEnd', (data: { winner: 'A' | 'B'; scoresA: number; scoresB: number }) => {
-      useGame.getState().addAnnouncement(
-        `RONDA GANADA POR ${data.winner === 'A' ? 'ÁMBAR' : 'VERDE'} (${data.scoresA}–${data.scoresB})`,
-        'round', data.winner,
-      )
-    })
-
-    socket.on('matchEnd', (data: { winner: 'A' | 'B'; roundWinsA: number; roundWinsB: number }) => {
-      useGame.getState().addAnnouncement(
-        `VICTORIA FINAL: ${data.winner === 'A' ? 'ÁMBAR' : 'VERDE'} ${data.roundWinsA}–${data.roundWinsB}`,
-        'round', data.winner,
-      )
-    })
-
-    socket.on('econ', (data: { money: number; frags?: number }) => {
-      this.game.setMoney(data.money, data.frags)
-    })
-
-    socket.on('buyResult', (data: { ok: boolean; itemId: string; money: number; error?: string }) => {
-      const s = useGame.getState()
-      if (data.ok) {
-        this.game.audio.buy()
-        this.game.setMoney(data.money)
-      } else if (data.error) {
-        s.addAnnouncement(data.error, 'info')
-      }
-    })
-
-    socket.on('giveWeapon', (data: { weapon: WeaponId }) => {
-      this.game.giveWeapon(data.weapon)
-    })
-
-    socket.on('refillAmmo', (data: { weapon: WeaponId }) => {
-      this.game.refillAmmo(data.weapon)
-    })
-
-    socket.on('playerJoined', (data: { id: string; name: string; team: 'A' | 'B' }) => {
-      useGame.getState().addAnnouncement(`${data.name} se unió al ${data.team === 'A' ? 'ÁMBAR' : 'VERDE'}`, 'info')
-    })
-
-    socket.on('playerLeft', (data: { id: string; name: string }) => {
-      useGame.getState().addAnnouncement(`${data.name} abandonó`, 'info')
-    })
-
-    socket.on('connect_error', () => {
-      const s = useGame.getState()
-      if (s.phase === 'connecting') {
-        s.setPhase('menu')
-        s.addAnnouncement('No se pudo conectar al servidor', 'info')
+    peer.on('error', (err: unknown) => {
+      if (this.disposed) return
+      const type = (err as { type?: string })?.type
+      if (type === 'unavailable-id' && attempt < 3) {
+        // código ocupado → regenerar sala con otro código
+        peer.destroy()
+        this.peer = null
+        const newCode = generateRoomCode()
+        useGame.getState().setHud({ roomCode: newCode })
+        this.connectHost(name, newCode, fill, difficulty, attempt + 1)
+      } else if (type === 'unavailable-id') {
+        useGame.getState().addAnnouncement('No se pudo crear la sala, inténtalo de nuevo', 'info')
+      } else {
+        useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS)', 'info')
+        useGame.getState().setHud({ netStatus: 'connected' }) // el juego local sigue funcionando
       }
     })
   }
 
+  private guestJoined = false
+  private guestOutbox: PeerMsg[] = []
+
+  // ------------------------------------------------------------
+  // MODO INVITADO — se une a la sala del anfitrión
+  // ------------------------------------------------------------
+  private connectGuest(name: string, code: string): void {
+    this.id = GUEST_ID
+    this.mode = 'guest'
+    const clean = code.trim().toUpperCase()
+    if (clean.length < 4 || clean.length > 8) {
+      this.fail('Código de sala inválido')
+      return
+    }
+    useGame.getState().setHud({ roomCode: clean })
+
+    this.welcomeTimeout = setTimeout(() => {
+      if (useGame.getState().netStatus !== 'connected') {
+        this.fail('Tiempo de conexión agotado. Revisa el código o tu conexión.')
+      }
+    }, 30000)
+
+    const peer = new Peer({ debug: 0 }) // id aleatorio
+    this.peer = peer
+
+    peer.on('open', () => {
+      if (this.disposed) return
+      const conn = peer.connect(peerIdForRoom(clean), { reliable: true, serialization: 'json' })
+      this.hostConn = conn
+
+      conn.on('open', () => {
+        if (this.disposed) return
+        this.sendToPeer(conn, { e: 'join', d: { name } })
+      })
+
+      conn.on('data', (raw: unknown) => {
+        if (this.disposed) return
+        const msg = raw as PeerMsg
+        if (!msg || typeof msg.e !== 'string') return
+        if (msg.e === 'welcome') {
+          if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
+          useGame.getState().setHud({ netStatus: 'connected' })
+          useGame.getState().setConnected(true)
+          this.dispatchLocal('welcome', msg.d)
+          this.startPing()
+          return
+        }
+        if (msg.e === 'pong') {
+          const t = (msg.d as { t?: number })?.t
+          if (t) useGame.getState().setHud({ ping: Math.max(0, Math.round(performance.now() - t)) })
+          return
+        }
+        this.dispatchLocal(msg.e, msg.d)
+      })
+
+      conn.on('close', () => {
+        if (this.disposed) return
+        useGame.getState().setConnected(false)
+        useGame.getState().setHud({ netStatus: 'error', netError: 'Se perdió la conexión con el anfitrión' })
+      })
+      conn.on('error', () => { /* manejado por peer error */ })
+    })
+
+    peer.on('error', (err: unknown) => {
+      if (this.disposed) return
+      const type = (err as { type?: string })?.type
+      if (type === 'peer-unavailable') this.fail('Sala no encontrada. Revisa el código.')
+      else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
+        this.fail('No se puede alcanzar el servidor de salas (PeerJS)')
+      } else {
+        this.fail(`Error de conexión (${type ?? 'desconocido'})`)
+      }
+    })
+  }
+
+  private fail(msg: string): void {
+    if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
+    useGame.getState().setHud({ netStatus: 'error', netError: msg })
+  }
+
+  private startPing(): void {
+    this.stopPing()
+    this.pingTimer = setInterval(() => {
+      if (this.hostConn?.open) {
+        this.sendToPeer(this.hostConn, { e: 'ping', d: { t: Math.round(performance.now()) } })
+      }
+    }, 2000)
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
+  }
+
+  private sendToPeer(conn: DataConnection, msg: PeerMsg): void {
+    try { conn.send(msg) } catch { /* conexión cerrada */ }
+  }
+
+  // ------------------------------------------------------------
+  // Entradas hacia la simulación (worker local o anfitrión remoto)
+  // ------------------------------------------------------------
   sendInput(): void {
-    if (!this.socket || !this.socket.connected) return
     this.lastInput = this.game.inputState()
-    this.socket.emit('input', this.lastInput)
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'input', d: this.lastInput })
+      return
+    }
+    this.sendToSim({ e: 'input', d: { id: this.id, data: this.lastInput } })
   }
 
   sendHits(weapon: WeaponId, hits: { target: string; part: 'head' | 'body' | 'legs'; dist: number }[]): void {
-    if (!this.socket || !this.socket.connected) return
-    const w = WEAPONS[weapon]
-    this.socket.emit('hits', {
+    const payload = {
       weapon,
       hits: hits.map(h => ({ target: h.target, part: h.part, dist: Math.round(h.dist) })),
-      pellets: w.pellets,
-    })
+    }
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'hits', d: payload })
+      return
+    }
+    this.sendToSim({ e: 'hits', d: { id: this.id, data: payload } })
   }
 
   buy(itemId: string): void {
-    this.socket?.emit('buy', { itemId })
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'buy', d: { itemId } })
+      return
+    }
+    this.sendToSim({ e: 'buy', d: { id: this.id, itemId } })
   }
 
   throwGrenade(pos: [number, number, number], vel: [number, number, number]): void {
-    this.socket?.emit('grenadeThrow', { pos, vel })
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'grenadeThrow', d: { pos, vel } })
+      return
+    }
+    this.sendToSim({ e: 'grenadeThrow', d: { id: this.id, data: { pos, vel } } })
   }
 
   disconnect(): void {
-    this.socket?.disconnect()
-    this.socket = null
+    this.disposed = true
+    if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
+    this.stopPing()
+    if (this.worker) { this.worker.terminate(); this.worker = null }
+    try { this.guestConn?.close() } catch { /* ok */ }
+    try { this.hostConn?.close() } catch { /* ok */ }
+    this.guestConn = null
+    this.hostConn = null
+    try { this.peer?.destroy() } catch { /* ok */ }
+    this.peer = null
+  }
+
+  // ------------------------------------------------------------
+  // Distribución local de eventos del servidor/simulación
+  // (mismos nombres de evento que el protocolo original)
+  // ------------------------------------------------------------
+  private dispatchLocal(ev: string, data: unknown): void {
+    const game = this.game
+    const store = useGame.getState()
+    switch (ev) {
+      case 'welcome': {
+        const d = data as { id: string; team: 'A' | 'B'; round: NetRoundState; econ: { money: number; frags: number } }
+        this.id = d.id
+        store.setConnected(true)
+        store.setHud({ round: d.round, playerId: d.id, team: d.team })
+        game.onWelcome(d.team, d.econ.money)
+        break
+      }
+      case 'spawnEvent': {
+        const d = data as {
+          pos: [number, number, number]; yaw: number; hp: number; armor: number
+          weapons: WeaponId[]; weapon: WeaponId; frags: number; money: number; protect: number
+        }
+        game.onSpawn(d.pos, d.yaw, d.weapons, d.weapon, d.hp, d.armor, d.frags, d.money)
+        break
+      }
+      case 'snapshot': {
+        const snap = data as NetSnapshot
+        game.onSnapshot(snap)
+        const me = snap.players.find(p => p.id === this.id)
+        if (me) game.setHealth(me.hp, me.armor)
+        break
+      }
+      case 'hitConfirm': {
+        const d = data as { dmg: number; headshot: boolean }
+        game.onHitConfirm(d.dmg, d.headshot)
+        break
+      }
+      case 'takeDamage': {
+        const d = data as { dmg: number; attackerPos: [number, number, number] }
+        game.onTakeDamage(d.dmg, d.attackerPos)
+        break
+      }
+      case 'deathEvent': {
+        const d = data as { killerName: string; respawnIn: number }
+        game.onDeath(d.killerName, d.respawnIn)
+        break
+      }
+      case 'kill': {
+        const d = data as {
+          killer: string; killerName: string; killerTeam: 'A' | 'B'
+          victim: string; victimName: string; victimTeam: 'A' | 'B'
+          weapon: WeaponId; headshot: boolean
+        }
+        store.addKill({
+          killer: d.killerName, killerTeam: d.killerTeam,
+          victim: d.victimName, victimTeam: d.victimTeam,
+          weapon: d.weapon, headshot: d.headshot,
+        })
+        if (d.killer === this.id) game.audio.killConfirm()
+        break
+      }
+      case 'shotFired': {
+        const d = data as { playerId: string; origin: [number, number, number]; hit: [number, number, number]; weapon: WeaponId }
+        if (d.playerId === this.id) return
+        game.onShotFired(d.playerId, d.origin, d.hit, d.weapon)
+        break
+      }
+      case 'grenadeExplode': {
+        const d = data as { pos: [number, number, number] }
+        game.onGrenadeExplode(d.pos)
+        break
+      }
+      case 'damageFX': {
+        const d = data as { x: number; z: number }
+        const dist = Math.hypot(d.x - game.pos.x, d.z - game.pos.z)
+        if (dist < 30 && dist > 2) game.audio.fleshHit(dist)
+        break
+      }
+      case 'announce': {
+        const d = data as { text: string; kind: string; team?: 'A' | 'B' }
+        store.addAnnouncement(d.text, d.kind as 'kill' | 'round' | 'info')
+        if (d.kind === 'kill' || d.kind === 'round') game.audio.announceDing()
+        if (d.kind === 'round') {
+          if (d.text.includes('RONDA') && d.text.includes('COMBATE')) game.audio.roundStart()
+          else game.audio.roundEnd()
+        }
+        break
+      }
+      case 'roundEnd': {
+        const d = data as { winner: 'A' | 'B'; scoresA: number; scoresB: number }
+        store.addAnnouncement(
+          `RONDA GANADA POR ${d.winner === 'A' ? 'ÁMBAR' : 'VERDE'} (${d.scoresA}–${d.scoresB})`,
+          'round', d.winner,
+        )
+        break
+      }
+      case 'matchEnd': {
+        const d = data as { winner: 'A' | 'B'; roundWinsA: number; roundWinsB: number }
+        store.addAnnouncement(
+          `VICTORIA FINAL: ${d.winner === 'A' ? 'ÁMBAR' : 'VERDE'} ${d.roundWinsA}–${d.roundWinsB}`,
+          'round', d.winner,
+        )
+        break
+      }
+      case 'econ': {
+        const d = data as { money: number; frags?: number }
+        game.setMoney(d.money, d.frags)
+        break
+      }
+      case 'buyResult': {
+        const d = data as { ok: boolean; money: number; error?: string }
+        if (d.ok) {
+          game.audio.buy()
+          game.setMoney(d.money)
+        } else if (d.error) {
+          store.addAnnouncement(d.error, 'info')
+        }
+        break
+      }
+      case 'giveWeapon': {
+        const d = data as { weapon: WeaponId }
+        game.giveWeapon(d.weapon)
+        break
+      }
+      case 'refillAmmo': {
+        const d = data as { weapon: WeaponId }
+        game.refillAmmo(d.weapon)
+        break
+      }
+      case 'playerJoined': {
+        const d = data as { name: string; team: 'A' | 'B' }
+        store.addAnnouncement(`${d.name} se unió al ${d.team === 'A' ? 'ÁMBAR' : 'VERDE'}`, 'info')
+        break
+      }
+      case 'playerLeft': {
+        const d = data as { name: string }
+        store.addAnnouncement(`${d.name} abandonó`, 'info')
+        break
+      }
+      default:
+        break
+    }
   }
 }
+

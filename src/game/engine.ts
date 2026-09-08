@@ -105,6 +105,18 @@ export class Game {
   private deathT = 0
   private hurtFlash = 0
 
+  // mando (gamepad)
+  private padConnected = false
+  private padIx = 0
+  private padIz = 0
+  private padSprint = false
+  private padCrouch = false
+  private padJump = false
+  private padShootPrev = false
+  private padAdsPrev = false
+  private padSelectPrev = false
+  private prevPadButtons: boolean[] = []
+
   // granadas visibles
   private grenadeViews = new Map<string, { group: THREE.Group; last: THREE.Vector3; trailT: number }>()
 
@@ -146,9 +158,9 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
     this.scene = new THREE.Scene()
-    this.scene.fog = new THREE.FogExp2(0xd8bd97, 0.0075)
+    this.scene.fog = new THREE.FogExp2(0xd8bd97, 0.0058)
 
-    this.camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 300)
+    this.camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 420)
     this.scene.add(this.camera)
 
     this.buildSky()
@@ -176,7 +188,7 @@ export class Game {
   private buildSky(): void {
     const skyTex = makeSkyTexture()
     const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(180, 24, 16),
+      new THREE.SphereGeometry(260, 24, 16),
       new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
     )
     this.scene.add(sky)
@@ -185,22 +197,22 @@ export class Game {
     const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
       map: makeSkyTexture(), color: 0xfff5d0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, fog: false,
     }))
-    sunSprite.position.copy(sunDir.clone().multiplyScalar(160))
-    sunSprite.scale.setScalar(24)
+    sunSprite.position.copy(sunDir.clone().multiplyScalar(230))
+    sunSprite.scale.setScalar(30)
     this.scene.add(sunSprite)
   }
 
   private buildLights(shadows: boolean): void {
     const sun = new THREE.DirectionalLight(0xffe6bf, 2.1)
-    sun.position.set(38, 42, -30)
+    sun.position.set(55, 62, -42)
     if (shadows) {
       sun.castShadow = true
       sun.shadow.mapSize.set(2048, 2048)
-      sun.shadow.camera.left = -48
-      sun.shadow.camera.right = 48
-      sun.shadow.camera.top = 48
-      sun.shadow.camera.bottom = -48
-      sun.shadow.camera.far = 160
+      sun.shadow.camera.left = -64
+      sun.shadow.camera.right = 64
+      sun.shadow.camera.top = 64
+      sun.shadow.camera.bottom = -64
+      sun.shadow.camera.far = 240
       sun.shadow.bias = -0.0006
       sun.shadow.normalBias = 0.02
     }
@@ -216,8 +228,8 @@ export class Game {
 
     // suelo
     const groundMat = new THREE.MeshLambertMaterial({ map: texs.sand })
-    groundMat.map!.repeat.set(22, 22)
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(110, 110), groundMat)
+    groundMat.map!.repeat.set(34, 34)
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(170, 170), groundMat)
     ground.rotation.x = -Math.PI / 2
     ground.receiveShadow = true
     this.scene.add(ground)
@@ -303,6 +315,11 @@ export class Game {
 
   private get locked(): boolean {
     return document.pointerLockElement === this.canvas3d
+  }
+
+  private get inputsLive(): boolean {
+    // el input funciona con puntero bloqueado o con mando conectado
+    return this.locked || this.padConnected
   }
 
   private onLockChange = (): void => {
@@ -400,6 +417,108 @@ export class Game {
   }
 
   // ----------------------------------------------------------
+  // Mando (gamepad) — sondeo por frame
+  // ----------------------------------------------------------
+  private updateGamepad(dt: number): void {
+    const pads = navigator.getGamepads?.() ?? []
+    let pad: Gamepad | null = null
+    for (const p of pads) {
+      if (p && p.connected) { pad = p; break }
+    }
+    const wasConnected = this.padConnected
+    this.padConnected = !!pad
+    if (this.padConnected !== wasConnected) {
+      useGame.getState().setHud({ gamepadConnected: this.padConnected })
+      if (this.padConnected) useGame.getState().addAnnouncement('MANDO CONECTADO', 'info')
+    }
+    if (!pad) {
+      this.padIx = 0
+      this.padIz = 0
+      this.padSprint = false
+      return
+    }
+
+    const s = useGame.getState()
+    const dz = (v: number) => (Math.abs(v) < 0.16 ? 0 : (v - Math.sign(v) * 0.16) / 0.84)
+
+    // --- mirar (stick derecho) ---
+    const rsx = dz(pad.axes[2] ?? 0)
+    const rsy = dz(pad.axes[3] ?? 0)
+    if (s.phase === 'playing' && !this.dead && (rsx !== 0 || rsy !== 0)) {
+      const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / BASE_FOV) : 1
+      const look = 3.4 * (s.settings.padSens ?? 1) * (this.ads ? zoomFactor : 1)
+      this.yaw -= rsx * look * dt
+      this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - rsy * look * dt))
+      this.swayX = Math.max(-1, Math.min(1, this.swayX - rsx * dt * 2.5))
+      this.swayY = Math.max(-1, Math.min(1, this.swayY - rsy * dt * 2.5))
+    }
+
+    // --- mover (stick izquierdo) ---
+    this.padIz = -dz(pad.axes[1] ?? 0) // empujar arriba = adelante
+    this.padIx = dz(pad.axes[0] ?? 0)
+    this.padSprint = !!pad.buttons[10]?.pressed || (pad.axes[1] ?? 0) < -0.92
+
+    // --- botones ---
+    const b = pad.buttons.map(btn => !!btn.pressed)
+    const pressed = (i: number) => !!b[i] && !this.prevPadButtons[i]
+
+    // disparar (RT) y apuntar (LT)
+    const shoot = !!b[7]
+    if (shoot) this.shooting = true
+    else if (this.padShootPrev) this.shooting = false
+    this.padShootPrev = shoot
+
+    const ads = !!b[6]
+    if (ads) this.ads = true
+    else if (this.padAdsPrev) this.ads = false
+    this.padAdsPrev = ads
+
+    if (s.phase === 'playing' && !this.dead && !s.buyOpen) {
+      if (pressed(0)) this.padJump = true                       // A/Cruz: saltar
+      if (pressed(1)) this.padCrouch = !this.padCrouch          // B/Círculo: agacharse (conmutar)
+      if (pressed(2)) this.startReload()                        // X/Cuadrado: recargar
+      if (pressed(3)) this.cycleWeapon(1)                       // Y/Triángulo: cambiar arma
+      if (pressed(4)) this.throwGrenade()                       // LB: granada
+      if (pressed(5)) this.openBuyMenu()                        // RB: comprar
+      if (pressed(13)) this.throwGrenade()                      // cruceta abajo: granada
+      if (pressed(12)) this.openBuyMenu()                       // cruceta arriba: comprar
+      if (pressed(14)) this.cycleWeapon(-1)                     // cruceta izq.
+      if (pressed(15)) this.cycleWeapon(1)                      // cruceta der.
+    }
+
+    // pausa (Start)
+    if (pressed(9)) {
+      if (s.phase === 'playing') {
+        document.exitPointerLock?.()
+        useGame.getState().setPhase('paused')
+      } else if (s.phase === 'paused') {
+        useGame.getState().setPhase('playing')
+      }
+    }
+
+    // marcador (Back/Select, mantener)
+    if (s.phase === 'playing' || s.phase === 'dead') {
+      if (b[8] && !this.padSelectPrev) useGame.getState().setHud({ scoreboardOpen: true })
+      if (!b[8] && this.padSelectPrev) useGame.getState().setHud({ scoreboardOpen: false })
+    }
+    this.padSelectPrev = !!b[8]
+
+    this.prevPadButtons = b
+  }
+
+  private cycleWeapon(dir: number): void {
+    const idx = this.owned.indexOf(this.weapon)
+    if (idx < 0) return
+    const next = this.owned[(idx + dir + this.owned.length) % this.owned.length]
+    this.switchTo(next)
+  }
+
+  private consumePadJump(): boolean {
+    if (this.padJump) { this.padJump = false; return true }
+    return false
+  }
+
+  // ----------------------------------------------------------
   // Menú de compra
   // ----------------------------------------------------------
   openBuyMenu(): void {
@@ -432,6 +551,7 @@ export class Game {
     const playing = phase === 'playing' || phase === 'dead'
 
     if (playing) {
+      this.updateGamepad(dt)
       this.updateMovement(dt)
       this.updateWeapon(dt, t)
       this.updateShooting(t)
@@ -504,15 +624,15 @@ export class Game {
 
   private updateMovement(dt: number): void {
     const s = useGame.getState()
-    const inputActive = s.phase === 'playing' && this.locked && !this.dead
+    const inputActive = s.phase === 'playing' && !this.dead && this.inputsLive
 
     const w = WEAPONS[this.weapon]
-    const wantCrouch = inputActive && (this.keys.has('ControlLeft') || this.keys.has('KeyC'))
+    const wantCrouch = inputActive && (this.keys.has('ControlLeft') || this.keys.has('KeyC') || this.padCrouch)
     const canStand = !this.collides(this.pos.x, this.pos.y, this.pos.z, 1.8)
     this.crouching = wantCrouch || (!canStand && this.pos.y < 3)
 
-    const wantSprint = inputActive && this.keys.has('ShiftLeft') && !this.crouching && !this.ads
-    const movingFwd = this.keys.has('KeyW')
+    const wantSprint = inputActive && (this.keys.has('ShiftLeft') || this.padSprint) && !this.crouching && !this.ads
+    const movingFwd = this.keys.has('KeyW') || this.padIz > 0.5
 
     let speed = 4.6 * w.moveMult
     this.sprinting = false
@@ -523,21 +643,23 @@ export class Game {
     if (this.crouching) speed *= 0.5
     if (this.adsAmt > 0.3) speed *= 0.65
 
-    // dirección de input
+    // dirección de input (teclado + mando)
     let ix = 0, iz = 0
     if (inputActive) {
       if (this.keys.has('KeyW')) iz += 1
       if (this.keys.has('KeyS')) iz -= 1
       if (this.keys.has('KeyA')) ix -= 1
       if (this.keys.has('KeyD')) ix += 1
+      ix += this.padIx
+      iz += this.padIz
     }
     const len = Math.hypot(ix, iz)
-    if (len > 0) { ix /= len; iz /= len }
+    if (len > 1) { ix /= len; iz /= len } // clampear diagonales sin perder inclinación analógica
 
-    // base yaw
+    // base yaw (forward = (-sin(yaw), -cos(yaw)), right = (cos(yaw), -sin(yaw)))
     const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw)
-    const dirX = ix * cos + iz * sin
-    const dirZ = -ix * sin + iz * cos
+    const dirX = ix * cos - iz * sin
+    const dirZ = -ix * sin - iz * cos
 
     // aceleración / fricción
     const accel = this.onGround ? 12 : 2.2
@@ -551,7 +673,7 @@ export class Game {
     }
 
     // salto / gravedad
-    if (inputActive && this.keys.has('Space') && this.onGround && !this.crouching) {
+    if (inputActive && (this.keys.has('Space') || this.consumePadJump()) && this.onGround && !this.crouching) {
       this.vel.y = 5.6
       this.onGround = false
       this.audio.jump()
@@ -616,8 +738,9 @@ export class Game {
       }
     }
     this.pos.y = Math.max(0, ny)
-    this.pos.x = Math.max(-34.2, Math.min(34.2, this.pos.x))
-    this.pos.z = Math.max(-34.2, Math.min(34.2, this.pos.z))
+    const lim = GAME.MAP_HALF - 0.8
+    this.pos.x = Math.max(-lim, Math.min(lim, this.pos.x))
+    this.pos.z = Math.max(-lim, Math.min(lim, this.pos.z))
 
     // bob y pasos
     const hSpeed = Math.hypot(this.vel.x, this.vel.z)
@@ -948,10 +1071,10 @@ export class Game {
       this.effects.casing(ejectPos, rightDir)
     }
 
-    // retroceso
+    // retroceso (recoilV/H están en GRADOS → convertir a radianes)
     const spray = this.sprayIdx
-    this.recoilP += w.recoilV * (0.85 + Math.random() * 0.3) * (this.crouching ? 0.85 : 1) * (this.adsAmt > 0.6 ? 0.8 : 1)
-    this.recoilY += w.recoilH * Math.sin(spray * 0.9 + 0.6) * (Math.random() * 0.5 + 0.75)
+    this.recoilP += (w.recoilV * Math.PI / 180) * (0.85 + Math.random() * 0.3) * (this.crouching ? 0.85 : 1) * (this.adsAmt > 0.6 ? 0.8 : 1)
+    this.recoilY += (w.recoilH * Math.PI / 180) * Math.sin(spray * 0.9 + 0.6) * (Math.random() * 0.5 + 0.75)
     this.sprayIdx++
     this.vmKick = 1
     this.lastShotTime = now
@@ -1189,7 +1312,7 @@ export class Game {
     const from = new THREE.Vector3(...origin)
     const to = new THREE.Vector3(...hit)
     const d = from.distanceTo(this.camera.position)
-    if (d > 90) return
+    if (d > 130) return
     this.effects.tracer(from, to, true)
     this.audio.gunshot(WEAPONS[weapon].sound, d)
     // fogonazo del tirador
@@ -1401,7 +1524,7 @@ export class Game {
     const ctx = c.getContext('2d')!
     ctx.fillStyle = 'rgba(12,14,10,0.88)'
     ctx.fillRect(0, 0, 190, 190)
-    const S = 190 / 76 // escala: 76 m de mapa
+    const S = 190 / (GAME.MAP_HALF * 2 + 2) // escala px/m
     const O = 95
     // cajas (solo muros altos visibles)
     for (const b of MAP_BOXES) {
@@ -1423,7 +1546,7 @@ export class Game {
     const W = this.minimap.width
     ctx.clearRect(0, 0, W, W)
     ctx.drawImage(this.mapStatic, 0, 0)
-    const S = 190 / 76
+    const S = 190 / (GAME.MAP_HALF * 2 + 2)
     const O = 95
     const now = performance.now()
 

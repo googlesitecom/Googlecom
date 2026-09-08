@@ -3,7 +3,8 @@
 // Puente entre el motor 3D y la interfaz React
 // ============================================================
 import { create } from 'zustand'
-import type { Team, WeaponId, NetRoundState, NetPlayerState } from './shared'
+import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty } from './shared'
+import type { NetMode } from './net'
 
 export interface KillFeedEntry {
   id: number
@@ -24,6 +25,7 @@ export interface Announcement {
 }
 
 export type Phase = 'menu' | 'connecting' | 'playing' | 'paused' | 'dead'
+export type NetStatus = 'idle' | 'connecting' | 'waiting' | 'connected' | 'error'
 
 interface GameState {
   phase: Phase
@@ -31,6 +33,14 @@ interface GameState {
   playerId: string
   team: Team
   connected: boolean
+
+  // modo de juego / sala
+  mode: NetMode
+  roomCode: string
+  fillBots: number
+  botDifficulty: BotDifficulty
+  netStatus: NetStatus
+  netError: string
 
   hp: number
   armor: number
@@ -56,12 +66,14 @@ interface GameState {
 
   settings: {
     sens: number
+    padSens: number
     volume: number
     quality: 'baja' | 'media' | 'alta'
   }
 
   fps: number
   ping: number
+  gamepadConnected: boolean
 
   // acciones
   setPhase: (p: Phase) => void
@@ -82,6 +94,13 @@ export const useGame = create<GameState>((set) => ({
   playerId: '',
   team: 'A',
   connected: false,
+
+  mode: 'solo',
+  roomCode: '',
+  fillBots: 0,
+  botDifficulty: 'normal',
+  netStatus: 'idle',
+  netError: '',
 
   hp: 100,
   armor: 0,
@@ -107,12 +126,14 @@ export const useGame = create<GameState>((set) => ({
 
   settings: {
     sens: 1.0,
+    padSens: 1.0,
     volume: 0.7,
     quality: 'alta',
   },
 
   fps: 0,
   ping: 0,
+  gamepadConnected: false,
 
   setPhase: (p) => set({ phase: p }),
   setPlayerName: (n) => set({ playerName: n }),
