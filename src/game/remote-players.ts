@@ -1,10 +1,13 @@
 // ============================================================
 // FRONTERA CERO — Jugadores remotos
-// Modelos humanoides + interpolación de red + hitboxes
+// Modelo de soldado realista (soldier.glb) + interpolación de red
+// + hitboxes. Fallback: humanoide low-poly si el GLB no carga.
 // ============================================================
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { makeNameTag } from './textures'
-import { GAME, WEAPONS, type Team, type WeaponId, type NetPlayerState } from './shared'
+import { type Team, type WeaponId, type NetPlayerState } from './shared'
 import { buildWeaponModel } from './viewmodel'
 
 interface BufferEntry {
@@ -22,10 +25,10 @@ export interface RemotePlayer {
   bot: boolean
   root: THREE.Group
   bodyGroup: THREE.Group
-  legs: [THREE.Mesh, THREE.Mesh]
-  arms: [THREE.Mesh, THREE.Mesh]
-  head: THREE.Mesh
-  torso: THREE.Mesh
+  legs: [THREE.Object3D, THREE.Object3D]
+  arms: [THREE.Object3D, THREE.Object3D]
+  head: THREE.Object3D
+  torso: THREE.Object3D
   weaponHolder: THREE.Group
   weaponId: WeaponId | null
   tag: THREE.Sprite
@@ -37,16 +40,30 @@ export interface RemotePlayer {
   hp: number
   state: NetPlayerState | null
   lastFootstep: number
+  usingSoldier: boolean
 }
 
 const TEAM_COLORS: Record<Team, number> = { A: 0xd99a2b, B: 0x35b04a }
 const SKIN = 0xb08a60
 const UNIFORM: Record<Team, number> = { A: 0x6b5a3a, B: 0x3a4a5a }
 
+// ---- tinte de equipo para el uniforme del soldado (sutil) ----
+const SOLDIER_TINT: Record<Team, number> = { A: 0xc79a4a, B: 0x5a9a6a }
+const TINTABLE_MATS = new Set(['Topmat', 'Hatmat', 'Bottommat'])
+
+// ---- pose de reposo del soldado (bajar brazos de la T-pose) ----
+// Ejes verificados empíricamente en el rig mixamo: rotation.x baja ambos
+// brazos con el MISMO signo (los ejes locales no están alineados al mundo)
+const ARM_REST_X = 1.28    // brazos a los costados (manos a ~0.95 m)
+const FORE_BEND_X = -0.45  // codo ligeramente flexionado
+
+// ----------------------------------------------------------
+// Humanoide low-poly (fallback si no hay GLB)
+// ----------------------------------------------------------
 function buildHumanoid(team: Team): {
   root: THREE.Group, bodyGroup: THREE.Group,
-  legs: [THREE.Mesh, THREE.Mesh], arms: [THREE.Mesh, THREE.Mesh],
-  head: THREE.Mesh, torso: THREE.Mesh, weaponHolder: THREE.Group, tag: THREE.Sprite, tagBg: THREE.Mesh
+  legs: [THREE.Object3D, THREE.Object3D], arms: [THREE.Object3D, THREE.Object3D],
+  head: THREE.Object3D, torso: THREE.Object3D, weaponHolder: THREE.Group, tag: THREE.Sprite, tagBg: THREE.Mesh
 } {
   const root = new THREE.Group()
   const bodyGroup = new THREE.Group()
@@ -126,12 +143,142 @@ function buildHumanoid(team: Team): {
   return { root, bodyGroup, legs: [legL, legR], arms: [armL, armR], head, torso, weaponHolder, tag, tagBg }
 }
 
+// ----------------------------------------------------------
+// Soldado realista (GLB del usuario, esqueleto mixamo)
+// ----------------------------------------------------------
+interface SoldierAssets {
+  template: THREE.Group
+  tintCache: Record<Team, Map<THREE.Material, THREE.Material>>
+}
+
+let soldierAssets: SoldierAssets | null = null
+
+/** Busca un hueso por nombre dentro del rig (prefijo mixamorig…) */
+function findBone(root: THREE.Object3D, pattern: RegExp): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null
+  root.traverse(o => {
+    if (!found && pattern.test(o.name)) found = o
+  })
+  return found
+}
+
+/** Prepara la plantilla del soldado: escala, sombras, tinte por equipo */
+function prepareSoldier(scene: THREE.Group): SoldierAssets {
+  const template = scene
+  // el GLB mide ~184 unidades (cm) → escalar a 1.84 m
+  const box = new THREE.Box3().setFromObject(template)
+  const scale = 1.84 / Math.max(0.01, box.max.y - box.min.y)
+  template.scale.setScalar(scale)
+  template.position.y = -box.min.y * scale
+  template.traverse(o => {
+    if (o instanceof THREE.Mesh) {
+      o.castShadow = true
+      o.receiveShadow = false
+      o.frustumCulled = false   // la piel se anima: no dejar que el frustum la descarte
+    }
+  })
+  return { template, tintCache: { A: new Map(), B: new Map() } }
+}
+
+/** Clona el soldado con el uniforme tintado del equipo */
+function buildSoldier(team: Team): THREE.Object3D | null {
+  if (!soldierAssets) return null
+  const rig = skeletonClone(soldierAssets.template)
+  const tintCache = soldierAssets.tintCache[team]
+  rig.traverse(o => {
+    if (o instanceof THREE.Mesh) {
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      const out = mats.map(orig => {
+        if (!TINTABLE_MATS.has(orig.name)) return orig
+        const cached: THREE.Material | undefined = tintCache.get(orig)
+        if (cached) return cached
+        const v: THREE.Material = orig.clone()
+        const std = v as THREE.MeshStandardMaterial
+        if (std.color) std.color = new THREE.Color(SOLDIER_TINT[team])
+        tintCache.set(orig, v)
+        return v
+      })
+      o.material = Array.isArray(o.material) ? out : out[0]
+      o.castShadow = true
+      o.frustumCulled = false
+    }
+  })
+  // pose de reposo: brazos abajo (eje x) + codos flexionados
+  const armL = findBone(rig, /^mixamorigLeftArm_/)
+  const armR = findBone(rig, /^mixamorigRightArm_/)
+  if (armL) armL.rotation.set(ARM_REST_X, 0, 0)
+  if (armR) armR.rotation.set(ARM_REST_X, 0, 0)
+  const foreL = findBone(rig, /^mixamorigLeftForeArm_/)
+  const foreR = findBone(rig, /^mixamorigRightForeArm_/)
+  if (foreL) foreL.rotation.set(FORE_BEND_X, 0, 0)
+  if (foreR) foreR.rotation.set(FORE_BEND_X, 0, 0)
+  return rig
+}
+
 export class RemotePlayers {
   scene: THREE.Scene
   map = new Map<string, RemotePlayer>()
+  private soldierLoading = false
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
+    this.loadSoldier()
+  }
+
+  /** Carga asíncrona del modelo del soldado; al terminar sustituye a los humanoides */
+  private loadSoldier(): void {
+    if (this.soldierLoading) return
+    this.soldierLoading = true
+    const loader = new GLTFLoader()
+    loader.load(
+      '/soldier.glb',
+      gltf => {
+        try {
+          soldierAssets = prepareSoldier(gltf.scene)
+          // sustituir en cascada (un jugador por tick) para repartir el costo
+          const pending = [...this.map.values()]
+          const step = (): void => {
+            const rp = pending.shift()
+            if (!rp) return
+            this.swapToSoldier(rp)
+            setTimeout(step, 30)
+          }
+          step()
+        } catch (e) {
+          console.error('FRONTERA CERO: error preparando soldier.glb', e)
+        }
+      },
+      undefined,
+      err => {
+        // sin GLB → seguimos con los humanoides low-poly
+        console.warn('FRONTERA CERO: soldier.glb no disponible, usando modelo simple', err)
+      },
+    )
+  }
+
+  /** Intercambia el cuerpo de un jugador por el soldado (mantiene arma/etiqueta) */
+  private swapToSoldier(rp: RemotePlayer): void {
+    if (rp.usingSoldier) return
+    const rig = buildSoldier(rp.team)
+    if (!rig) return
+    // quitar el cuerpo viejo (la etiqueta y el arma se conservan)
+    for (const child of [...rp.bodyGroup.children]) {
+      if (child !== rp.weaponHolder) rp.bodyGroup.remove(child)
+    }
+    rp.bodyGroup.add(rig)
+    // huesos para la animación procedural
+    const legL = findBone(rig, /^mixamorigLeftUpLeg_/)
+    const legR = findBone(rig, /^mixamorigRightUpLeg_/)
+    const armL = findBone(rig, /^mixamorigLeftArm_/)
+    const armR = findBone(rig, /^mixamorigRightArm_/)
+    const rest = new THREE.Object3D()
+    rp.legs = [legL ?? rest, legR ?? rest]
+    rp.arms = [armL ?? rest, armR ?? rest]
+    rp.head = findBone(rig, /^mixamorigHead_/) ?? rest
+    rp.torso = findBone(rig, /^mixamorigSpine1_/) ?? rest
+    // el arma queda a la altura de las manos
+    rp.weaponHolder.position.set(0.14, 1.26, 0.34)
+    rp.usingSoldier = true
   }
 
   upsert(state: NetPlayerState, t: number): RemotePlayer {
@@ -144,7 +291,7 @@ export class RemotePlayers {
         head: h.head, torso: h.torso, weaponHolder: h.weaponHolder, tag: h.tag, tagBg: h.tagBg,
         weaponId: null,
         buffer: [], lastDead: state.dead, deathTime: 0, walkPhase: Math.random() * 10,
-        hp: state.hp, state, lastFootstep: 0,
+        hp: state.hp, state, lastFootstep: 0, usingSoldier: false,
       }
       const { tex } = makeNameTag(state.name, state.team, state.team === 'A' ? '#f59e0b' : '#22c55e')
       ;(rp.tag.material as THREE.SpriteMaterial).map = tex
@@ -152,6 +299,8 @@ export class RemotePlayers {
       // las etiquetas de enemigos solo se ven de cerca
       this.scene.add(rp.root)
       this.map.set(state.id, rp)
+      // si el soldado ya está cargado, usarlo directamente
+      if (soldierAssets) this.swapToSoldier(rp)
     }
     // buffer de interpolación
     rp.buffer.push({
@@ -237,20 +386,33 @@ export class RemotePlayers {
       const targetH = crouch ? 0.72 : 1
       rp.bodyGroup.scale.y += (targetH - rp.bodyGroup.scale.y) * Math.min(1, dt * 10)
 
-      // animación de caminar
+      // animación de caminar (piernas y brazos: huesos o pivotes)
       const speed = state.speed
       if (speed > 0.5) {
         rp.walkPhase += dt * speed * 2.4
         const swing = Math.min(0.65, speed * 0.13)
         rp.legs[0].rotation.x = Math.sin(rp.walkPhase) * swing
         rp.legs[1].rotation.x = -Math.sin(rp.walkPhase) * swing
-        rp.arms[0].rotation.x = -Math.sin(rp.walkPhase) * swing * 0.5
-        rp.arms[1].rotation.x = Math.sin(rp.walkPhase) * swing * 0.3
+        if (rp.usingSoldier) {
+          // los brazos del soldado descansan abajo (ARM_REST_X) y se balancean
+          rp.arms[0].rotation.x = ARM_REST_X - Math.sin(rp.walkPhase) * swing * 0.45
+          rp.arms[1].rotation.x = ARM_REST_X + Math.sin(rp.walkPhase) * swing * 0.45
+        } else {
+          rp.arms[0].rotation.x = -Math.sin(rp.walkPhase) * swing * 0.5
+          rp.arms[1].rotation.x = Math.sin(rp.walkPhase) * swing * 0.3
+        }
       } else {
-        rp.legs[0].rotation.x *= 1 - Math.min(1, dt * 8)
-        rp.legs[1].rotation.x *= 1 - Math.min(1, dt * 8)
-        rp.arms[0].rotation.x *= 1 - Math.min(1, dt * 8)
-        rp.arms[1].rotation.x *= 1 - Math.min(1, dt * 8)
+        if (rp.usingSoldier) {
+          rp.legs[0].rotation.x *= 1 - Math.min(1, dt * 8)
+          rp.legs[1].rotation.x *= 1 - Math.min(1, dt * 8)
+          rp.arms[0].rotation.x += (ARM_REST_X - rp.arms[0].rotation.x) * Math.min(1, dt * 8)
+          rp.arms[1].rotation.x += (ARM_REST_X - rp.arms[1].rotation.x) * Math.min(1, dt * 8)
+        } else {
+          rp.legs[0].rotation.x *= 1 - Math.min(1, dt * 8)
+          rp.legs[1].rotation.x *= 1 - Math.min(1, dt * 8)
+          rp.arms[0].rotation.x *= 1 - Math.min(1, dt * 8)
+          rp.arms[1].rotation.x *= 1 - Math.min(1, dt * 8)
+        }
       }
       // apuntar con pitch
       rp.weaponHolder.rotation.x = -state.pitch

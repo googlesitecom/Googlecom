@@ -220,6 +220,9 @@ export class Game {
 
     this.net = new NetClient(this)
 
+    // gancho de depuración (tests automatizados)
+    ;(window as unknown as Record<string, unknown>).__game = this
+
     this.clock.start()
     this.loop()
   }
@@ -527,6 +530,9 @@ export class Game {
   dispose(): void {
     this.disposed = true
     cancelAnimationFrame(this.raf)
+    if ((window as unknown as Record<string, unknown>).__game === this) {
+      delete (window as unknown as Record<string, unknown>).__game
+    }
     removeEventListener('resize', this.onResize)
     removeEventListener('keydown', this.onKeyDown)
     removeEventListener('keyup', this.onKeyUp)
@@ -1964,9 +1970,14 @@ export class Game {
 
   /** Estado de input para el servidor */
   inputState(): { pos: [number, number, number]; yaw: number; pitch: number; crouch: boolean; speed: number; weapon: string } {
+    // el yaw del motor es de cámara (frente −Z); el de los remotos es de modelo
+    // (frente +Z) → enviar girado π para que el rival nos vea de frente
+    let ryaw = (this.yaw + Math.PI) % (Math.PI * 2)
+    if (ryaw > Math.PI) ryaw -= Math.PI * 2
+    if (ryaw < -Math.PI) ryaw += Math.PI * 2
     return {
       pos: [Math.round(this.pos.x * 100) / 100, Math.round(this.pos.y * 100) / 100, Math.round(this.pos.z * 100) / 100],
-      yaw: Math.round(this.yaw * 1000) / 1000,
+      yaw: Math.round(ryaw * 1000) / 1000,
       pitch: Math.round(this.pitch * 1000) / 1000,
       crouch: this.crouching,
       speed: Math.round(Math.hypot(this.vel.x, this.vel.z) * 10) / 10,
