@@ -294,6 +294,15 @@ export class AudioEngine {
     this.tone(this.sfxBus, 1100, 1600, 0.08, 0.14, 'triangle', 0.06)
   }
 
+  /** Recogida de poción/botiquín (burbujeo ascendente) */
+  pickup(shield = false): void {
+    if (!this.ctx) return
+    const base = shield ? 500 : 620
+    this.tone(this.sfxBus, base, base * 1.6, 0.09, 0.18, 'sine')
+    this.tone(this.sfxBus, base * 1.3, base * 2.1, 0.1, 0.14, 'sine', 0.07)
+    this.tone(this.sfxBus, base * 1.8, base * 2.6, 0.12, 0.1, 'sine', 0.14)
+  }
+
   roundStart(): void {
     if (!this.ctx) return
     this.tone(this.sfxBus, 400, 400, 0.12, 0.25, 'triangle')

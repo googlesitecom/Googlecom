@@ -1,0 +1,923 @@
+     1→// ============================================================
+     2→// FRONTERA CERO — Simulación autoritativa (navegador)
+     3→// Se ejecuta en local (solo/anfitrión). Los eventos se
+     4→// enrutan al jugador local y, si lo hay, al invitado P2P.
+     5→// ============================================================
+     6→import {
+     7→  GAME, WEAPONS, BUY_ITEMS, computeDamage, spawnPoint, segmentBlocked,
+     8→  WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL,
+     9→  type Team, type WeaponId, type BodyPart, type BotDifficulty,
+    10→  type NetPlayerState, type NetGrenade, type NetRoundState, type NetKillEvent, type NetSnapshot,
+    11→} from './shared'
+    12→
+    13→export type RouteFn = (ev: string, data: unknown, to?: string) => void
+    14→
+    15→interface BotAI {
+    16→  state: 'patrol' | 'combat' | 'hunt' | 'retreat'
+    17→  wp: number
+    18→  target: string | null
+    19→  reactAt: number
+    20→  strafe: number
+    21→  strafePhase: number
+    22→  nextShotAt: number
+    23→  burst: number
+    24→  lastScan: number
+    25→  lastSeen: number              // última vez que vio al objetivo
+    26→  lastKnown: [number, number] | null
+    27→  huntUntil: number
+    28→  retreatUntil: number
+    29→  crouchUntil: number
+    30→  aimErr: number                // error angular actual (rad)
+    31→  aimErrNext: number            // próximo re-sorteo del error
+    32→  stuckCheck: number
+    33→  lastX: number
+    34→  lastZ: number
+    35→  speedMult: number             // variación individual de velocidad
+    36→}
+    37→
+    38→interface SimPlayer {
+    39→  id: string
+    40→  name: string
+    41→  team: Team
+    42→  bot: boolean
+    43→  x: number; y: number; z: number
+    44→  yaw: number; pitch: number
+    45→  crouch: boolean
+    46→  speed: number
+    47→  hp: number
+    48→  armor: number
+    49→  dead: boolean
+    50→  respawnAt: number
+    51→  weapon: WeaponId
+    52→  owned: WeaponId[]
+    53→  frags: number
+    54→  kills: number
+    55→  deaths: number
+    56→  money: number
+    57→  streak: number
+    58→  lastKillAt: number
+    59→  multi: number
+    60→  lastShotAt: number
+    61→  protectUntil: number
+    62→  lastSeenEnemy: number
+    63→  ai?: BotAI
+    64→}
+    65→
+    66→interface SimGrenade {
+    67→  id: string
+    68→  owner: string
+    69→  team: Team
+    70→  x: number; y: number; z: number
+    71→  vx: number; vy: number; vz: number
+    72→  fuse: number
+    73→}
+    74→
+    75→function now(): number { return Date.now() }
+    76→function dist3(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number {
+    77→  return Math.hypot(ax - bx, ay - by, az - bz)
+    78→}
+    79→function clamp(v: number, a: number, b: number): number { return Math.max(a, Math.min(b, v)) }
+    80→function rand(a: number, b: number): number { return a + Math.random() * (b - a) }
+    81→
+    82→function eye(p: SimPlayer): [number, number, number] { return [p.x, p.y + 1.55, p.z] }
+    83→
+    84→function nearestWaypoint(x: number, z: number): number {
+    85→  let best = 0, bestD = Infinity
+    86→  for (let i = 0; i < WAYPOINTS.length; i++) {
+    87→    const d = Math.hypot(WAYPOINTS[i][0] - x, WAYPOINTS[i][1] - z)
+    88→    if (d < bestD) { bestD = d; best = i }
+    89→  }
+    90→  return best
+    91→}
+    92→
+    93→export class GameSim {
+    94→  private players = new Map<string, SimPlayer>()
+    95→  private grenades = new Map<string, SimGrenade>()
+    96→  private grenadeSeq = 0
+    97→  private botSeq = 0
+    98→  private timer: ReturnType<typeof setInterval> | null = null
+    99→  private lastTick = now()
+   100→  private tickCount = 0
+   101→  private route: RouteFn | null = null
+   102→
+   103→  private round = {
+   104→    phase: 'live' as 'live' | 'ended' | 'matchend',
+   105→    endsAt: now() + GAME.ROUND_TIME * 1000,
+   106→    intermissionEndsAt: 0,
+   107→    roundNumber: 1,
+   108→    scoresA: 0,
+   109→    scoresB: 0,
+   110→    roundWinsA: 0,
+   111→    roundWinsB: 0,
+   112→  }
+   113→
+   114→  constructor(private difficulty: BotDifficulty = 'normal') {}
+   115→
+   116→  onRoute(fn: RouteFn): void { this.route = fn }
+   117→
+   118→  start(): void {
+   119→    if (this.timer) return
+   120→    this.lastTick = now()
+   121→    this.timer = setInterval(() => this.tick(), GAME.TICK)
+   122→  }
+   123→
+   124→  stop(): void {
+   125→    if (this.timer) { clearInterval(this.timer); this.timer = null }
+   126→    this.grenades.clear()
+   127→  }
+   128→
+   129→  private emit(ev: string, data: unknown, to?: string): void {
+   130→    this.route?.(ev, data, to)
+   131→  }
+   132→
+   133→  // ------------------------------------------------------------
+   134→  // Creación de jugadores
+   135→  // ------------------------------------------------------------
+   136→  private teamCounts(): { A: number; B: number } {
+   137→    const c = { A: 0, B: 0 }
+   138→    for (const p of this.players.values()) c[p.team]++
+   139→    return c
+   140→  }
+   141→
+   142→  addBots(perTeam: number): void {
+   143→    for (let t = 0; t < 2; t++) {
+   144→      const team: Team = t === 0 ? 'A' : 'B'
+   145→      for (let i = 0; i < perTeam; i++) {
+   146→        this.spawnBot(team)
+   147→      }
+   148→    }
+   149→  }
+   150→
+   151→  private spawnBot(team: Team): SimPlayer {
+   152→    const id = `bot-${this.botSeq++}`
+   153→    let name = ''
+   154→    for (const n of BOT_NAMES) {
+   155→      if (!Array.from(this.players.values()).some(p => p.name === n)) { name = n; break }
+   156→    }
+   157→    if (!name) name = `BOT-${100 + this.botSeq}`
+   158→    const p = this.createPlayer(id, name, team, true)
+   159→    this.players.set(id, p)
+   160→    return p
+   161→  }
+   162→
+   163→  join(id: string, name: string, team?: Team, announce = true): SimPlayer {
+   164→    const counts = this.teamCounts()
+   165→    const t: Team = team ?? (counts.A <= counts.B ? 'A' : 'B')
+   166→    const p = this.createPlayer(id, String(name).slice(0, 16).trim() || 'Operador', t, false)
+   167→    this.players.set(id, p)
+   168→    if (announce) {
+   169→      this.emit('playerJoined', { id, name: p.name, team: t })
+   170→      this.emit('announce', { text: `${p.name} se unió al ${t === 'A' ? 'ÁMBAR' : 'VERDE'}`, kind: 'info' })
+   171→    }
+   172→    return p
+   173→  }
+   174→
+   175→  leave(id: string): void {
+   176→    const p = this.players.get(id)
+   177→    if (!p) return
+   178→    this.players.delete(id)
+   179→    this.emit('playerLeft', { id, name: p.name })
+   180→    this.emit('announce', { text: `${p.name} abandonó`, kind: 'info' })
+   181→  }
+   182→
+   183→  private createPlayer(id: string, name: string, team: Team, bot: boolean): SimPlayer {
+   184→    const p: SimPlayer = {
+   185→      id, name, team, bot,
+   186→      x: 0, y: 0, z: 0,
+   187→      yaw: team === 'A' ? Math.PI * 0.75 : -Math.PI * 0.25,
+   188→      pitch: 0,
+   189→      crouch: false, speed: 0,
+   190→      hp: 100, armor: 0, dead: false, respawnAt: 0,
+   191→      weapon: 'p9',
+   192→      owned: ['knife', 'p9'],
+   193→      frags: 0,
+   194→      kills: 0, deaths: 0, money: GAME.START_MONEY,
+   195→      streak: 0, lastKillAt: 0, multi: 0,
+   196→      lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0,
+   197→    }
+   198→    if (bot) {
+   199→      p.ai = {
+   200→        state: 'patrol', wp: nearestWaypoint(p.x, p.z),
+   201→        target: null, reactAt: 0, strafe: Math.random() < 0.5 ? -1 : 1, strafePhase: Math.random() * 2,
+   202→        nextShotAt: 0, burst: 0,
+   203→        lastScan: Math.floor(Math.random() * 200), lastSeen: 0, lastKnown: null, huntUntil: 0, retreatUntil: 0, crouchUntil: 0,
+   204→        aimErr: 0, aimErrNext: 0,
+   205→        stuckCheck: now(), lastX: 0, lastZ: 0,
+   206→        speedMult: 0.88 + Math.random() * 0.26,
+   207→      }
+   208→    }
+   209→    this.respawnPlayer(p, true)
+   210→    return p
+   211→  }
+   212→
+   213→  private respawnPlayer(p: SimPlayer, initial = false): void {
+   214→    const idx = Array.from(this.players.values()).filter(q => q.team === p.team).indexOf(p)
+   215→    const [x, , z] = spawnPoint(p.team, Math.max(0, idx))
+   216→    p.x = x; p.y = 0.02; p.z = z
+   217→    p.hp = 100
+   218→    p.dead = false
+   219→    p.crouch = false
+   220→    p.protectUntil = now() + GAME.SPAWN_PROTECT * 1000
+   221→    p.owned = ['knife', 'p9']
+   222→    p.weapon = 'p9'
+   223→    p.frags = Math.min(p.frags, 0)
+   224→    if (p.ai) {
+   225→      p.ai.state = 'patrol'
+   226→      p.ai.wp = nearestWaypoint(x, z)
+   227→      p.ai.target = null
+   228→      p.ai.lastKnown = null
+   229→    }
+   230→    if (p.bot) this.botBuy(p)
+   231→    this.emit('spawnEvent', {
+   232→      pos: [p.x, p.y, p.z],
+   233→      yaw: p.yaw,
+   234→      hp: p.hp, armor: p.armor,
+   235→      weapons: p.owned,
+   236→      weapon: p.weapon,
+   237→      frags: p.frags,
+   238→      money: p.money,
+   239→      protect: GAME.SPAWN_PROTECT,
+   240→    }, p.id)
+   241→  }
+   242→
+   243→  // ------------------------------------------------------------
+   244→  // Economía / compra
+   245→  // ------------------------------------------------------------
+   246→  private spawnX(team: Team): number { return team === 'A' ? -48 : 48 }
+   247→  private spawnZ(team: Team): number { return team === 'A' ? -48 : 48 }
+   248→
+   249→  private inBuyZone(p: SimPlayer): boolean {
+   250→    return Math.hypot(p.x - this.spawnX(p.team), p.z - this.spawnZ(p.team)) < GAME.BUY_RADIUS + 2
+   251→  }
+   252→
+   253→  private botBuy(p: SimPlayer): void {
+   254→    if (p.money >= 4750 && Math.random() < 0.22) {
+   255→      p.owned = ['knife', 'p9', 'awp338']; p.weapon = 'awp338'; p.money -= 4750
+   256→    } else if (p.money >= 2900) {
+   257→      const w: WeaponId = Math.random() < 0.5 ? 'cr4' : 'ar47'
+   258→      p.owned = ['knife', 'p9', w]; p.weapon = w; p.money -= WEAPONS[w].price
+   259→    } else if (p.money >= 1250 && Math.random() < 0.75) {
+   260→      p.owned = ['knife', 'p9', 'mp9']; p.weapon = 'mp9'; p.money -= 1250
+   261→    } else if (p.money >= 700 && Math.random() < 0.5) {
+   262→      p.owned = ['knife', 'p9', 'aguila']; p.weapon = 'aguila'; p.money -= 700
+   263→    }
+   264→    if (p.money >= 1000 && p.armor < 50) { p.armor = 100; p.money -= 1000 }
+   265→    if (p.money >= 600 && p.frags < 1 && Math.random() < 0.45) { p.frags = 1; p.money -= 300 }
+   266→  }
+   267→
+   268→  handleBuy(p: SimPlayer, itemId: string): void {
+   269→    const item = BUY_ITEMS.find(i => i.id === itemId)
+   270→    if (!item) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Artículo desconocido' }, p.id)
+   271→    if (p.dead) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Estás eliminado' }, p.id)
+   272→    if (!this.inBuyZone(p)) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Compra solo en tu base' }, p.id)
+   273→    if (p.money < item.price) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Fondos insuficientes' }, p.id)
+   274→
+   275→    if (item.weapon) {
+   276→      const w = WEAPONS[item.weapon]
+   277→      p.money -= item.price
+   278→      if (p.owned.includes(w.id)) {
+   279→        this.emit('refillAmmo', { weapon: w.id }, p.id)
+   280→      } else {
+   281→        p.owned.push(w.id)
+   282→        p.weapon = w.id
+   283→        this.emit('giveWeapon', { weapon: w.id }, p.id)
+   284→      }
+   285→    } else if (item.equip === 'armor') {
+   286→      p.money -= item.price
+   287→      p.armor = 100
+   288→    } else if (item.equip === 'frag') {
+   289→      if (p.frags >= 2) {
+   290→        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Máximo 2 granadas' }, p.id)
+   291→      }
+   292→      p.money -= item.price
+   293→      p.frags++
+   294→    }
+   295→    this.emit('buyResult', { ok: true, itemId, money: p.money }, p.id)
+   296→    this.emit('econ', { money: p.money, frags: p.frags }, p.id)
+   297→  }
+   298→
+   299→  // ------------------------------------------------------------
+   300→  // Daño y muerte
+   301→  // ------------------------------------------------------------
+   302→  private announce(text: string, kind: 'kill' | 'round' | 'info' = 'info', team?: Team): void {
+   303→    this.emit('announce', { text, kind, team })
+   304→  }
+   305→
+   306→  private applyDamage(attacker: SimPlayer, victim: SimPlayer, dmg: number, part: BodyPart, weapon: WeaponId, dirHint: [number, number]): void {
+   307→    if (victim.dead) return
+   308→    if (now() < victim.protectUntil) return
+   309→    if (attacker.team === victim.team && attacker.id !== victim.id) return
+   310→
+   311→    if (victim.armor > 0 && part !== 'legs') {
+   312→      const absorbed = Math.min(victim.armor, Math.round(dmg * 0.5))
+   313→      victim.armor -= absorbed
+   314→      dmg -= absorbed
+   315→    }
+   316→    victim.hp -= dmg
+   317→
+   318→    this.emit('takeDamage', {
+   319→      attacker: attacker.id, dmg, part, weapon,
+   320→      dir: dirHint,
+   321→      attackerPos: [attacker.x, attacker.y, attacker.z],
+   322→    }, victim.id)
+   323→    if (attacker.id !== victim.id && !attacker.bot) {
+   324→      this.emit('hitConfirm', { victim: victim.id, dmg, part, weapon, headshot: part === 'head', victimHp: Math.max(0, victim.hp) }, attacker.id)
+   325→    }
+   326→    this.emit('damageFX', { x: victim.x, y: victim.y + 1.2, z: victim.z, part })
+   327→
+   328→    // los bots reaccionan al recibir daño (se giran rápido hacia el atacante)
+   329→    if (victim.bot && victim.ai) {
+   330→      const skill = BOT_SKILL[this.difficulty]
+   331→      victim.ai.target = attacker.id
+   332→      victim.ai.state = 'combat'
+   333→      victim.ai.lastKnown = [attacker.x, attacker.z]
+   334→      victim.ai.reactAt = now() + skill.react[0] * 0.6
+   335→      victim.ai.aimErrNext = 0
+   336→    }
+   337→
+   338→    if (victim.hp <= 0) this.killPlayer(attacker, victim, weapon, part === 'head')
+   339→  }
+   340→
+   341→  private killPlayer(killer: SimPlayer, victim: SimPlayer, weapon: WeaponId, headshot: boolean): void {
+   342→    victim.dead = true
+   343→    victim.hp = 0
+   344→    victim.deaths++
+   345→    victim.streak = 0
+   346→    victim.respawnAt = now() + GAME.RESPAWN_TIME * 1000
+   347→    victim.frags = 0
+   348→
+   349→    if (killer.id !== victim.id) {
+   350→      killer.kills++
+   351→      killer.streak++
+   352→      const t = now()
+   353→      killer.multi = (t - killer.lastKillAt < 4000) ? killer.multi + 1 : 1
+   354→      killer.lastKillAt = t
+   355→      killer.money = Math.min(GAME.MAX_MONEY, killer.money + GAME.KILL_REWARD + (headshot ? GAME.HS_REWARD : 0))
+   356→      if (killer.team === 'A') this.round.scoresA++; else this.round.scoresB++
+   357→    }
+   358→
+   359→    const ev: NetKillEvent = {
+   360→      killer: killer.id, killerName: killer.name, killerTeam: killer.team,
+   361→      victim: victim.id, victimName: victim.name, victimTeam: victim.team,
+   362→      weapon, headshot,
+   363→      killerStreak: killer.streak,
+   364→      multi: killer.multi,
+   365→    }
+   366→    this.emit('kill', ev)
+   367→
+   368→    const msgs: string[] = []
+   369→    if (killer.multi === 2) msgs.push('¡DOBLE MUERTE!')
+   370→    else if (killer.multi === 3) msgs.push('¡TRIPLE MUERTE!')
+   371→    else if (killer.multi === 4) msgs.push('¡FURIA LETAL!')
+   372→    else if (killer.multi >= 5) msgs.push('¡MASACRE!')
+   373→    if (killer.streak === 5) msgs.push(`${killer.name}: RACHA DE 5`)
+   374→    else if (killer.streak === 8) msgs.push(`${killer.name}: RACHA DE 8`)
+   375→    else if (killer.streak === 10) msgs.push(`${killer.name}: ¡IMPARABLE!`)
+   376→    if (killer.streak === 12) msgs.push(`${killer.name}: ¡DIOS DE LA GUERRA!`)
+   377→    for (const m of msgs) this.announce(m, 'kill', killer.team)
+   378→
+   379→    this.emit('deathEvent', { killer: killer.id, killerName: killer.name, weapon, respawnIn: GAME.RESPAWN_TIME }, victim.id)
+   380→
+   381→    this.checkRoundEnd()
+   382→  }
+   383→
+   384→  private checkRoundEnd(): void {
+   385→    if (this.round.phase !== 'live') return
+   386→    if (this.round.scoresA >= GAME.ROUND_KILLS || this.round.scoresB >= GAME.ROUND_KILLS) {
+   387→      this.endRound(this.round.scoresA > this.round.scoresB ? 'A' : 'B')
+   388→    }
+   389→  }
+   390→
+   391→  private endRound(winner: Team): void {
+   392→    this.round.phase = 'ended'
+   393→    this.round.intermissionEndsAt = now() + 6000
+   394→    if (winner === 'A') this.round.roundWinsA++; else this.round.roundWinsB++
+   395→    this.announce(`RONDA ${this.round.roundNumber} PARA ${winner === 'A' ? 'ÁMBAR' : 'VERDE'}`, 'round')
+   396→    this.emit('roundEnd', { winner, scoresA: this.round.scoresA, scoresB: this.round.scoresB, roundWinsA: this.round.roundWinsA, roundWinsB: this.round.roundWinsB })
+   397→
+   398→    for (const p of this.players.values()) {
+   399→      p.money = Math.min(GAME.MAX_MONEY, p.money + (p.team === winner ? GAME.WIN_REWARD : GAME.LOSE_REWARD))
+   400→      this.emit('econ', { money: p.money, frags: p.frags }, p.id)
+   401→    }
+   402→  }
+   403→
+   404→  private startRound(): void {
+   405→    this.round.roundNumber++
+   406→    this.round.phase = 'live'
+   407→    this.round.endsAt = now() + GAME.ROUND_TIME * 1000
+   408→    this.round.scoresA = 0
+   409→    this.round.scoresB = 0
+   410→    this.announce(`RONDA ${this.round.roundNumber} — ¡EN COMBATE!`, 'round')
+   411→    for (const p of this.players.values()) {
+   412→      p.respawnAt = now() + rand(200, 900)
+   413→      p.multi = 0
+   414→    }
+   415→    this.emit('roundStart', { roundNumber: this.round.roundNumber })
+   416→  }
+   417→
+   418→  private endMatch(winner: Team): void {
+   419→    this.round.phase = 'matchend'
+   420→    this.round.intermissionEndsAt = now() + 12000
+   421→    this.announce(`¡VICTORIA FINAL PARA ${winner === 'A' ? 'ESCUADRÓN ÁMBAR' : 'ESCUADRÓN VERDE'}!`, 'round')
+   422→    this.emit('matchEnd', { winner, roundWinsA: this.round.roundWinsA, roundWinsB: this.round.roundWinsB })
+   423→  }
+   424→
+   425→  private resetMatch(): void {
+   426→    this.round.roundNumber = 1
+   427→    this.round.roundWinsA = 0
+   428→    this.round.roundWinsB = 0
+   429→    this.round.scoresA = 0
+   430→    this.round.scoresB = 0
+   431→    this.round.phase = 'live'
+   432→    this.round.endsAt = now() + GAME.ROUND_TIME * 1000
+   433→    for (const p of this.players.values()) {
+   434→      p.kills = 0; p.deaths = 0; p.streak = 0; p.money = GAME.START_MONEY
+   435→      p.respawnAt = now() + rand(200, 900)
+   436→      this.emit('econ', { money: p.money }, p.id)
+   437→    }
+   438→    this.announce('NUEVA PARTIDA — RONDA 1', 'round')
+   439→    this.emit('roundStart', { roundNumber: 1 })
+   440→  }
+   441→
+   442→  // ------------------------------------------------------------
+   443→  // BOTS — IA con dificultad
+   444→  // ------------------------------------------------------------
+   445→  private canSee(a: SimPlayer, b: SimPlayer): boolean {
+   446→    const skill = BOT_SKILL[this.difficulty]
+   447→    const [ax, ay, az] = eye(a)
+   448→    const bx = b.x, by = b.y + (b.crouch ? 0.9 : 1.2), bz = b.z
+   449→    const d = dist3(ax, ay, az, bx, by, bz)
+   450→    if (d > skill.seeDist) return false
+   451→    return !segmentBlocked(ax, ay, az, bx, by, bz, MAP_AABBS)
+   452→  }
+   453→
+   454→  private botFindTarget(p: SimPlayer): SimPlayer | null {
+   455→    let best: SimPlayer | null = null
+   456→    let bestD = Infinity
+   457→    const [ex, ey, ez] = eye(p)
+   458→    for (const q of this.players.values()) {
+   459→      if (q.dead || q.team === p.team) continue
+   460→      if (now() < q.protectUntil) continue
+   461→      const d = dist3(ex, ey, ez, q.x, q.y + 1.2, q.z)
+   462→      if (d < bestD && this.canSee(p, q)) { bestD = d; best = q }
+   463→    }
+   464→    return best
+   465→  }
+   466→
+   467→  private botUpdate(p: SimPlayer, dt: number, t: number): void {
+   468→    const ai = p.ai!
+   469→    const skill = BOT_SKILL[this.difficulty]
+   470→    if (p.dead) return
+   471→
+   472→    // --- búsqueda de objetivo (cada 200 ms) ---
+   473→    if (t - ai.lastScan > 200) {
+   474→      ai.lastScan = t
+   475→      const target = this.botFindTarget(p)
+   476→      if (target) {
+   477→        if (ai.target !== target.id) {
+   478→          ai.target = target.id
+   479→          ai.reactAt = t + rand(skill.react[0], skill.react[1])
+   480→          ai.burst = 0
+   481→          ai.aimErrNext = 0
+   482→        }
+   483→        ai.state = 'combat'
+   484→        ai.lastSeen = t
+   485→        ai.lastKnown = [target.x, target.z]
+   486→      } else if (ai.state === 'combat') {
+   487→        const cur = this.players.get(ai.target ?? '')
+   488→        if (!cur || cur.dead || t - ai.lastSeen > 1400) {
+   489→          // objetivo perdido → cazar última posición conocida
+   490→          ai.state = ai.lastKnown ? 'hunt' : 'patrol'
+   491→          ai.huntUntil = t + 5000
+   492→          ai.target = null
+   493→        }
+   494→      }
+   495→    }
+   496→
+   497→    const target = ai.target ? this.players.get(ai.target) : undefined
+   498→    const MOVE = 5.8 * ai.speedMult
+   499→
+   500→    // --- retirada con poca vida ---
+   501→    if (ai.state === 'combat' && target && p.hp < 32 && ai.retreatUntil < t && Math.random() < 0.6) {
+   502→      ai.state = 'retreat'
+   503→      ai.retreatUntil = t + rand(1800, 3000)
+   504→    }
+   505→    if (ai.state === 'retreat' && t > ai.retreatUntil) ai.state = 'patrol'
+   506→
+   507→    if (ai.state === 'retreat' && ai.lastKnown) {
+   508→      // alejarse de la última posición conocida del enemigo
+   509→      const [lx, lz] = ai.lastKnown
+   510→      const dx = p.x - lx, dz = p.z - lz
+   511→      const d = Math.hypot(dx, dz) || 1
+   512→      const nx = p.x + (dx / d) * MOVE * dt
+   513→      const nz = p.z + (dz / d) * MOVE * dt
+   514→      if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz }
+   515→      else {
+   516→        if (!this.posBlocked(p.x + (dx / d) * MOVE * dt, p.z)) p.x += (dx / d) * MOVE * dt
+   517→        else if (!this.posBlocked(p.x, p.z + (dz / d) * MOVE * dt)) p.z += (dz / d) * MOVE * dt
+   518→      }
+   519→      p.speed = MOVE
+   520→      const wantYaw = Math.atan2(lx - p.x, lz - p.z)
+   521→      p.yaw += this.angleLerp(p.yaw, wantYaw, dt * 6)
+   522→      p.pitch += (0 - p.pitch) * Math.min(1, dt * 4)
+   523→      p.crouch = false
+   524→      return
+   525→    }
+   526→
+   527→    if (ai.state === 'hunt') {
+   528→      // ir a la última posición conocida del enemigo
+   529→      const dest = ai.lastKnown
+   530→      if (!dest || t > ai.huntUntil) { ai.state = 'patrol'; ai.lastKnown = null }
+   531→      else {
+   532→        const [wx, wz] = dest
+   533→        const dx = wx - p.x, dz = wz - p.z
+   534→        const d = Math.hypot(dx, dz)
+   535→        if (d < 2) { ai.state = 'patrol'; ai.lastKnown = null }
+   536→        else {
+   537→          const wantYaw = Math.atan2(dx, dz)
+   538→          p.yaw += this.angleLerp(p.yaw, wantYaw, dt * 5)
+   539→          p.pitch += (0 - p.pitch) * Math.min(1, dt * 4)
+   540→          const nx = p.x + (dx / d) * MOVE * dt
+   541→          const nz = p.z + (dz / d) * MOVE * dt
+   542→          if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz; p.speed = MOVE }
+   543→          else { ai.state = 'patrol'; p.speed = 0 }
+   544→        }
+   545→        p.crouch = false
+   546→        return
+   547→      }
+   548→    }
+   549→
+   550→    if (ai.state === 'combat' && target && !target.dead) {
+   551→      const d = dist3(p.x, p.y, p.z, target.x, target.y, target.z)
+   552→      const w = WEAPONS[p.weapon]
+   553→
+   554→      // agacharse a distancia larga para mejorar puntería
+   555→      if (d > 24 && w.auto) {
+   556→        if (ai.crouchUntil < t && Math.random() < 0.004) ai.crouchUntil = t + rand(900, 2200)
+   557→      } else {
+   558→        ai.crouchUntil = 0
+   559→      }
+   560→      p.crouch = t < ai.crouchUntil
+   561→
+   562→      // error de puntería con deriva (más estable cuanto más tiempo apuntando)
+   563→      if (t > ai.aimErrNext) {
+   564→        ai.aimErrNext = t + rand(350, 800)
+   565→        const aimT = clamp((t - ai.reactAt) / 1100, 0, 1)
+   566→        const base = skill.aimErr * (1 - aimT * 0.75) * (0.7 + Math.random() * 0.6)
+   567→        ai.aimErr = base * (Math.random() < 0.5 ? -1 : 1)
+   568→      }
+   569→
+   570→      // apuntar con predicción de movimiento (lead)
+   571→      const lead = Math.min(0.22, d / 300) * (target.speed > 2 ? 1 : 0.2)
+   572→      const tx = target.x + Math.sin(target.yaw + Math.PI) * target.speed * lead
+   573→      const tz = target.z + Math.cos(target.yaw + Math.PI) * target.speed * lead
+   574→      const wantYaw = Math.atan2(tx - p.x, tz - p.z) + ai.aimErr
+   575→      const dy = target.y + (target.crouch ? 0.95 : 1.15) - (p.y + 1.55)
+   576→      const flat = Math.hypot(tx - p.x, tz - p.z)
+   577→      const wantPitch = Math.atan2(dy, flat) + ai.aimErr * 0.4
+   578→      p.yaw += this.angleLerp(p.yaw, wantYaw, dt * skill.aimSpeed)
+   579→      p.pitch += (wantPitch - p.pitch) * Math.min(1, dt * skill.aimSpeed)
+   580→
+   581→      // strafe con cambios aleatorios
+   582→      ai.strafePhase += dt
+   583→      if (ai.strafePhase > rand(0.7, 1.6)) { ai.strafePhase = 0; ai.strafe *= -1 }
+   584→      const perpX = Math.cos(p.yaw) * ai.strafe
+   585→      const perpZ = -Math.sin(p.yaw) * ai.strafe
+   586→      const combatSpeed = 3.9 * (p.crouch ? 0.5 : 1)
+   587→      let vx = perpX * combatSpeed
+   588→      let vz = perpZ * combatSpeed
+   589→      const pref = w.id === 'awp338' ? 28 : w.id === 'breacher' ? 6 : 13
+   590→      const toX = (target.x - p.x) / (d || 1)
+   591→      const toZ = (target.z - p.z) / (d || 1)
+   592→      if (d > pref + 4) { vx += toX * MOVE * 0.7; vz += toZ * MOVE * 0.7 }
+   593→      else if (d < pref - 4) { vx -= toX * MOVE * 0.7; vz -= toZ * MOVE * 0.7 }
+   594→
+   595→      const nx = p.x + vx * dt, nz = p.z + vz * dt
+   596→      if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz }
+   597→      else if (!this.posBlocked(p.x + vx * dt, p.z)) { p.x += vx * dt }
+   598→      else if (!this.posBlocked(p.x, p.z + vz * dt)) { p.z += vz * dt }
+   599→      p.speed = Math.hypot(vx, vz)
+   600→
+   601→      // --- disparo ---
+   602→      if (t > ai.reactAt && t > ai.nextShotAt && this.canSee(p, target)) {
+   603→        this.botShoot(p, target, d, t)
+   604→      }
+   605→    } else {
+   606→      // --- patrulla con sesgo hacia el territorio enemigo ---
+   607→      p.crouch = false
+   608→      const [wx, wz] = WAYPOINTS[ai.wp]
+   609→      const dx = wx - p.x, dz = wz - p.z
+   610→      const d = Math.hypot(dx, dz)
+   611→      if (d < 1.4) {
+   612→        const edges = WAYPOINT_EDGES[ai.wp]
+   613→        if (edges.length) {
+   614→          // lejos del enemigo → avanzar con más sesgo; cerca → exploración táctica
+   615→          const exX = this.spawnX(p.team === 'A' ? 'B' : 'A')
+   616→          const exZ = this.spawnZ(p.team === 'A' ? 'B' : 'A')
+   617→          const distEnemy = Math.hypot(p.x - exX, p.z - exZ)
+   618→          const bias = distEnemy > 38 ? 0.72 : 0.35
+   619→          if (Math.random() < bias) {
+   620→            let bestW = edges[0], bestD = Infinity
+   621→            for (const e of edges) {
+   622→              const dd = Math.hypot(WAYPOINTS[e][0] - exX, WAYPOINTS[e][1] - exZ)
+   623→              if (dd < bestD) { bestD = dd; bestW = e }
+   624→            }
+   625→            ai.wp = bestW
+   626→          } else {
+   627→            ai.wp = edges[Math.floor(Math.random() * edges.length)]
+   628→          }
+   629→        } else {
+   630→          ai.wp = nearestWaypoint(p.x, p.z)
+   631→        }
+   632→      } else {
+   633→        const wantYaw = Math.atan2(dx, dz)
+   634→        p.yaw += this.angleLerp(p.yaw, wantYaw, dt * 5)
+   635→        p.pitch += (0 - p.pitch) * Math.min(1, dt * 4)
+   636→        const nx = p.x + (dx / d) * MOVE * dt
+   637→        const nz = p.z + (dz / d) * MOVE * dt
+   638→        if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz; p.speed = MOVE }
+   639→        else { ai.wp = nearestWaypoint(p.x, p.z); p.speed = 0 }
+   640→      }
+   641→    }
+   642→
+   643→    // anti-atasco: si no se mueve, saltar al waypoint más cercano
+   644→    if (t - ai.stuckCheck > 2500) {
+   645→      if (Math.hypot(p.x - ai.lastX, p.z - ai.lastZ) < 1 && ai.state !== 'combat') {
+   646→        ai.wp = nearestWaypoint(p.x, p.z)
+   647→        const [tx, tz] = WAYPOINTS[ai.wp]
+   648→        if (!this.posBlocked(tx, tz)) { p.x = tx; p.z = tz }
+   649→      }
+   650→      ai.lastX = p.x; ai.lastZ = p.z; ai.stuckCheck = t
+   651→    }
+   652→    p.y = 0.02
+   653→  }
+   654→
+   655→  private angleLerp(cur: number, want: number, rate: number): number {
+   656→    let d = want - cur
+   657→    while (d > Math.PI) d -= Math.PI * 2
+   658→    while (d < -Math.PI) d += Math.PI * 2
+   659→    return d * Math.min(1, rate)
+   660→  }
+   661→
+   662→  private posBlocked(x: number, z: number): boolean {
+   663→    for (const b of MAP_AABBS) {
+   664→      if (x > b.minX - 0.35 && x < b.maxX + 0.35 && z > b.minZ - 0.35 && z < b.maxZ + 0.35 && b.minY < 1.6) return true
+   665→    }
+   666→    return false
+   667→  }
+   668→
+   669→  private botShoot(p: SimPlayer, target: SimPlayer, d: number, t: number): void {
+   670→    const ai = p.ai!
+   671→    const skill = BOT_SKILL[this.difficulty]
+   672→    const w = WEAPONS[p.weapon]
+   673→
+   674→    if (w.auto) {
+   675→      if (ai.burst <= 0) {
+   676→        if (t < ai.nextShotAt) return
+   677→        ai.burst = Math.floor(rand(3, 9))
+   678→      }
+   679→      ai.burst--
+   680→      ai.nextShotAt = t + (60000 / w.rpm) + (ai.burst <= 0 ? rand(skill.burstPause[0], skill.burstPause[1]) : 0)
+   681→    } else {
+   682→      if (t < ai.nextShotAt) return
+   683→      ai.nextShotAt = t + Math.max(60000 / w.rpm, w.id === 'awp338' ? rand(1400, 2100) : (60000 / w.rpm) + rand(60, 250))
+   684→    }
+   685→
+   686→    p.lastShotAt = t
+   687→
+   688→    // precisión
+   689→    let hitChance = skill.hitBase - clamp((d - 10) / 70, 0, 0.5)
+   690→    if (target.speed > 3.5) hitChance -= 0.12
+   691→    if (target.crouch) hitChance += 0.04
+   692→    if (p.crouch) hitChance += 0.06
+   693→    if (w.id === 'awp338') hitChance = d < 45 ? Math.max(0.85, skill.hitBase) : skill.hitBase - 0.1
+   694→    if (w.id === 'breacher') hitChance = d < 8 ? 0.9 : 0.45
+   695→    if (w.id === 'mp9' && d > 25) hitChance -= 0.1
+   696→
+   697→    const hit = Math.random() < hitChance
+   698→    const aimY = target.y + 1.2
+   699→    const spread = hit ? 0 : rand(0.4, 1.4)
+   700→    const hitPos: [number, number, number] = hit
+   701→      ? [target.x, aimY, target.z]
+   702→      : [target.x + rand(-1, 1) * spread, aimY + rand(-0.5, 0.8), target.z + rand(-1, 1) * spread]
+   703→
+   704→    this.emit('shotFired', {
+   705→      playerId: p.id,
+   706→      origin: [p.x, p.y + 1.5, p.z],
+   707→      hit: hitPos,
+   708→      weapon: p.weapon,
+   709→    })
+   710→
+   711→    if (hit) {
+   712→      const r = Math.random()
+   713→      const part: BodyPart = r < (d < 18 ? 0.17 : 0.08) ? 'head' : r < 0.85 ? 'body' : 'legs'
+   714→      const dmg = computeDamage(w, part, d, target.armor)
+   715→      const dx = p.x - target.x, dz = p.z - target.z
+   716→      this.applyDamage(p, target, dmg, part, p.weapon, [dx, dz])
+   717→    }
+   718→  }
+   719→
+   720→  // ------------------------------------------------------------
+   721→  // Granadas
+   722→  // ------------------------------------------------------------
+   723→  handleGrenadeThrow(p: SimPlayer, pos: [number, number, number], vel: [number, number, number]): void {
+   724→    if (p.dead || p.frags <= 0) return
+   725→    p.frags--
+   726→    const id = `g${this.grenadeSeq++}`
+   727→    const lim = GAME.MAP_HALF - 0.5
+   728→    const g: SimGrenade = {
+   729→      id, owner: p.id, team: p.team,
+   730→      x: clamp(pos[0], -lim, lim), y: clamp(pos[1], 0.2, 30), z: clamp(pos[2], -lim, lim),
+   731→      vx: vel[0], vy: vel[1], vz: vel[2],
+   732→      fuse: 2.4,
+   733→    }
+   734→    this.grenades.set(id, g)
+   735→    this.emit('grenadeSpawn', { id, owner: p.id, pos, vel })
+   736→    this.emit('econ', { money: p.money, frags: p.frags }, p.id)
+   737→  }
+   738→
+   739→  private updateGrenades(dt: number): void {
+   740→    const lim = GAME.MAP_HALF - 0.5
+   741→    for (const g of this.grenades.values()) {
+   742→      g.fuse -= dt
+   743→      if (g.fuse <= 0) { this.explodeGrenade(g); continue }
+   744→      g.vy -= GAME.GRAVITY * dt
+   745→      let nx = g.x + g.vx * dt
+   746→      let ny = g.y + g.vy * dt
+   747→      let nz = g.z + g.vz * dt
+   748→      if (ny < 0.12) {
+   749→        ny = 0.12
+   750→        g.vy = -g.vy * 0.42
+   751→        g.vx *= 0.72
+   752→        g.vz *= 0.72
+   753→      }
+   754→      for (const b of MAP_AABBS) {
+   755→        if (nx > b.minX - 0.1 && nx < b.maxX + 0.1 && ny > b.minY - 0.1 && ny < b.maxY + 0.1 && nz > b.minZ - 0.1 && nz < b.maxZ + 0.1) {
+   756→          const px = Math.min(nx - (b.minX - 0.1), (b.maxX + 0.1) - nx)
+   757→          const py = Math.min(ny - (b.minY - 0.1), (b.maxY + 0.1) - ny)
+   758→          const pz = Math.min(nz - (b.minZ - 0.1), (b.maxZ + 0.1) - nz)
+   759→          if (px <= py && px <= pz) { g.vx = -g.vx * 0.45; nx = g.x }
+   760→          else if (pz <= py) { g.vz = -g.vz * 0.45; nz = g.z }
+   761→          else { g.vy = -g.vy * 0.4; ny = g.y }
+   762→          g.vx *= 0.75; g.vz *= 0.75
+   763→          break
+   764→        }
+   765→      }
+   766→      g.x = clamp(nx, -lim, lim)
+   767→      g.y = Math.max(0.12, ny)
+   768→      g.z = clamp(nz, -lim, lim)
+   769→    }
+   770→  }
+   771→
+   772→  private explodeGrenade(g: SimGrenade): void {
+   773→    this.grenades.delete(g.id)
+   774→    this.emit('grenadeExplode', { id: g.id, pos: [g.x, g.y, g.z] })
+   775→    const owner = this.players.get(g.owner)
+   776→    const RADIUS = 6.5
+   777→    for (const p of this.players.values()) {
+   778→      if (p.dead) continue
+   779→      const d = dist3(g.x, g.y, g.z, p.x, p.y + 1, p.z)
+   780→      if (d > RADIUS) continue
+   781→      const blocked = segmentBlocked(g.x, g.y + 0.2, g.z, p.x, p.y + 1, p.z, MAP_AABBS)
+   782→      let dmg = 112 * (1 - d / RADIUS) * (blocked ? 0.35 : 1)
+   783→      dmg = Math.round(dmg)
+   784→      if (dmg < 8) continue
+   785→      if (owner) {
+   786→        const dx = g.x - p.x, dz = g.z - p.z
+   787→        this.applyDamage(owner, p, dmg, 'body', 'knife', [dx, dz])
+   788→      }
+   789→    }
+   790→  }
+   791→
+   792→  // ------------------------------------------------------------
+   793→  // Entradas de clientes
+   794→  // ------------------------------------------------------------
+   795→  handleInput(p: SimPlayer, data: {
+   796→    pos: [number, number, number]; yaw: number; pitch: number
+   797→    crouch: boolean; speed: number; weapon: string
+   798→  }): void {
+   799→    if (p.dead) return
+   800→    const lim = GAME.MAP_HALF - 0.5
+   801→    p.x = clamp(Number(data.pos?.[0]) || 0, -lim, lim)
+   802→    p.y = clamp(Number(data.pos?.[1]) || 0, -1, 30)
+   803→    p.z = clamp(Number(data.pos?.[2]) || 0, -lim, lim)
+   804→    p.yaw = Number(data.yaw) || 0
+   805→    p.pitch = clamp(Number(data.pitch) || 0, -1.4, 1.4)
+   806→    p.crouch = !!data.crouch
+   807→    p.speed = clamp(Number(data.speed) || 0, 0, 12)
+   808→    const wid = data.weapon as WeaponId
+   809→    if (wid && WEAPONS[wid] && p.owned.includes(wid)) p.weapon = wid
+   810→  }
+   811→
+   812→  handleHits(p: SimPlayer, data: {
+   813→    weapon: WeaponId
+   814→    hits: { target: string, part: BodyPart, dist: number }[]
+   815→  }): void {
+   816→    if (p.dead) return
+   817→    const w = WEAPONS[data.weapon]
+   818→    if (!w) return
+   819→    const t = now()
+   820→    const minInterval = (60000 / w.rpm) * 0.55
+   821→    if (t - p.lastShotAt < minInterval) return
+   822→    p.lastShotAt = t
+   823→    const maxHits = Math.max(1, w.pellets)
+   824→    for (const h of (data.hits || []).slice(0, maxHits)) {
+   825→      const victim = this.players.get(String(h.target))
+   826→      if (!victim || victim.dead || victim.team === p.team) continue
+   827→      const dist = clamp(Number(h.dist) || 10, 0, 200)
+   828→      const dmg = computeDamage(w, h.part, dist, victim.armor)
+   829→      const dx = p.x - victim.x, dz = p.z - victim.z
+   830→      this.applyDamage(p, victim, dmg, h.part, data.weapon, [dx, dz])
+   831→    }
+   832→  }
+   833→
+   834→  getWelcomeData(id: string): unknown {
+   835→    const p = this.players.get(id)!
+   836→    return {
+   837→      id,
+   838→      name: p.name,
+   839→      team: p.team,
+   840→      players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
+   841→      round: this.netRound(),
+   842→      econ: { money: p.money, frags: p.frags },
+   843→    }
+   844→  }
+   845→
+   846→  // ------------------------------------------------------------
+   847→  // Bucle principal
+   848→  // ------------------------------------------------------------
+   849→  private tick(): void {
+   850→    const t = now()
+   851→    let dt = (t - this.lastTick) / 1000
+   852→    this.lastTick = t
+   853→    dt = Math.min(dt, 0.1)
+   854→    this.tickCount++
+   855→
+   856→    for (const p of this.players.values()) {
+   857→      if (p.dead && t >= p.respawnAt && this.round.phase === 'live') this.respawnPlayer(p)
+   858→    }
+   859→
+   860→    for (const p of this.players.values()) {
+   861→      if (p.bot) this.botUpdate(p, dt, t)
+   862→    }
+   863→
+   864→    this.updateGrenades(dt)
+   865→
+   866→    if (this.round.phase === 'live' && t > this.round.endsAt) {
+   867→      const winner = this.round.scoresA === this.round.scoresB
+   868→        ? (this.teamCounts().A <= this.teamCounts().B ? 'A' : 'B')
+   869→        : (this.round.scoresA > this.round.scoresB ? 'A' : 'B')
+   870→      this.endRound(winner)
+   871→    } else if (this.round.phase === 'ended' && t > this.round.intermissionEndsAt) {
+   872→      if (this.round.roundWinsA >= GAME.ROUNDS_TO_WIN || this.round.roundWinsB >= GAME.ROUNDS_TO_WIN) {
+   873→        this.endMatch(this.round.roundWinsA > this.round.roundWinsB ? 'A' : 'B')
+   874→      } else this.startRound()
+   875→    } else if (this.round.phase === 'matchend' && t > this.round.intermissionEndsAt) {
+   876→      this.resetMatch()
+   877→    }
+   878→
+   879→    if (this.tickCount % GAME.SNAPSHOT_EVERY === 0) this.broadcastSnapshot()
+   880→  }
+   881→
+   882→  private netPlayer(p: SimPlayer): NetPlayerState {
+   883→    return {
+   884→      id: p.id, name: p.name, team: p.team, bot: p.bot,
+   885→      x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100, z: Math.round(p.z * 100) / 100,
+   886→      yaw: Math.round(p.yaw * 1000) / 1000,
+   887→      pitch: Math.round(p.pitch * 1000) / 1000,
+   888→      hp: Math.max(0, Math.round(p.hp)), armor: Math.round(p.armor),
+   889→      weapon: p.weapon, dead: p.dead, crouch: p.crouch,
+   890→      speed: Math.round(p.speed * 10) / 10,
+   891→      kills: p.kills, deaths: p.deaths, money: p.money, streak: p.streak,
+   892→    }
+   893→  }
+   894→
+   895→  private netGrenade(g: SimGrenade): NetGrenade {
+   896→    return { id: g.id, x: Math.round(g.x * 100) / 100, y: Math.round(g.y * 100) / 100, z: Math.round(g.z * 100) / 100, team: g.team }
+   897→  }
+   898→
+   899→  private netRound(): NetRoundState {
+   900→    return {
+   901→      phase: this.round.phase,
+   902→      timeLeft: Math.max(0, Math.round((this.round.endsAt - now()) / 1000)),
+   903→      roundNumber: this.round.roundNumber,
+   904→      scoresA: this.round.scoresA, scoresB: this.round.scoresB,
+   905→      roundWinsA: this.round.roundWinsA, roundWinsB: this.round.roundWinsB,
+   906→    }
+   907→  }
+   908→
+   909→  private broadcastSnapshot(): void {
+   910→    const snap: NetSnapshot = {
+   911→      t: now(),
+   912→      players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
+   913→      grenades: Array.from(this.grenades.values()).map(x => this.netGrenade(x)),
+   914→      round: this.netRound(),
+   915→    }
+   916→    this.emit('snapshot', snap)
+   917→  }
+   918→
+   919→  getPlayer(id: string): SimPlayer | undefined { return this.players.get(id) }
+   920→
+   921→  emitSnapshotOnce(): void { this.broadcastSnapshot() }
+   922→}
+   923→

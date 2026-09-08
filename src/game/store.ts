@@ -153,5 +153,26 @@ export const useGame = create<GameState>((set) => ({
       set((s) => ({ announcements: s.announcements.filter(x => x.id !== a.id) }))
     }, kind === 'round' ? 4200 : 2800)
   },
-  setSettings: (s) => set((st) => ({ settings: { ...st.settings, ...s } })),
+  setSettings: (s) => {
+    const next = { ...useGame.getState().settings, ...s }
+    set({ settings: next })
+    try { localStorage.setItem('fzc-settings', JSON.stringify(next)) } catch { /* sin almacenamiento */ }
+  },
 }))
+
+// restaurar ajustes persistidos (calidad/sensibilidad/volumen)
+try {
+  const saved = typeof window !== 'undefined' ? localStorage.getItem('fzc-settings') : null
+  if (saved) {
+    const parsed = JSON.parse(saved) as Partial<GameState['settings']>
+    if (parsed && (parsed.quality || parsed.sens || parsed.volume || parsed.padSens)) {
+      const cur = useGame.getState().settings
+      useGame.getState().setSettings({
+        quality: parsed.quality ?? cur.quality,
+        sens: parsed.sens ?? cur.sens,
+        padSens: parsed.padSens ?? cur.padSens,
+        volume: parsed.volume ?? cur.volume,
+      })
+    }
+  }
+} catch { /* JSON inválido: ignorar */ }

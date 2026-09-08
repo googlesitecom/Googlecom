@@ -461,6 +461,11 @@ export class NetClient {
         }
         break
       }
+      case 'pickupEvent': {
+        const d = data as { kind: string; hpGain: number; shieldGain: number }
+        game.onPickup(d.kind as 'medkit' | 'bandage' | 'shieldSmall' | 'shieldBig', d.hpGain, d.shieldGain)
+        break
+      }
       case 'giveWeapon': {
         const d = data as { weapon: WeaponId }
         game.giveWeapon(d.weapon)

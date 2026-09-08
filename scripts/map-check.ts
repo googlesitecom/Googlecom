@@ -1,14 +1,14 @@
 // Verificación de integridad del mapa grande
 import {
   MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, WAYPOINTS, WAYPOINT_EDGES,
-  spawnPoint, segmentBlocked, GAME, WEAPONS,
+  spawnPoint, segmentBlocked, GAME, WEAPONS, PICKUP_SPOTS,
 } from '../src/game/shared'
 
 let errors = 0
 
 // 1) cajas dentro de límites
 for (const b of MAP_BOXES) {
-  if (Math.abs(b.x) > 57 || Math.abs(b.z) > 57) { console.error(`FUERA DE LÍMITES: box(${b.x},${b.z})`); errors++ }
+  if (Math.abs(b.x) > 72 || Math.abs(b.z) > 72) { console.error(`FUERA DE LÍMITES: box(${b.x},${b.z})`); errors++ }
   if (b.h <= 0 || b.w <= 0 || b.d <= 0) { console.error(`DIMENSIÓN INVÁLIDA: box(${b.x},${b.y},${b.z})`); errors++ }
 }
 console.log(`Cajas: ${MAP_BOXES.length}`)
@@ -69,5 +69,11 @@ for (const w of Object.values(WEAPONS)) {
   if (w.recoilV > 6) { console.error(`RETROCESO EXCESIVO: ${w.id} recoilV=${w.recoilV}`); errors++ }
 }
 
-console.log(GAME.MAP_HALF === 55 ? 'MAP_HALF = 55 ✓' : 'MAP_HALF INCORRECTO')
+// 6) pociones no dentro de cajas sólidas
+for (const p of PICKUP_SPOTS) {
+  if (blockedAt(p.x, p.z, 0.45)) { console.error(`POCIÓN ${p.kind} (${p.x},${p.z}) BLOQUEADA`); errors++ }
+}
+console.log(`Pociones: ${PICKUP_SPOTS.length}`)
+
+console.log(GAME.MAP_HALF === 70 ? 'MAP_HALF = 70 ✓' : 'MAP_HALF INCORRECTO')
 console.log(errors === 0 ? 'SIN ERRORES' : `ERRORES: ${errors}`)

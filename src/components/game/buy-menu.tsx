@@ -69,7 +69,7 @@ export function BuyMenu() {
                 {BUY_ITEMS.filter(i => i.cat === cat).map(item => {
                   const isWeapon = !!item.weapon
                   const ownedAlready = isWeapon && owned.includes(item.weapon as WeaponId)
-                  const armorFull = item.equip === 'armor' && armor >= 100
+                  const armorFull = item.equip === 'shield' && armor >= 100
                   const fragsFull = item.equip === 'frag' && frags >= 2
                   const afford = money >= item.price
                   const disabled = !afford || armorFull || fragsFull
@@ -96,9 +96,9 @@ export function BuyMenu() {
                               {w.sniper && <span className="text-emerald-400">MIRA ×8</span>}
                             </div>
                           )}
-                          {item.equip === 'armor' && (
-                            <div className="mt-2 text-[10px] text-stone-400 flex items-center gap-1">
-                              <Shield className="w-3 h-3" /> {armor > 0 ? `Actual: ${Math.round(armor)}` : 'Sin protección'}
+                          {item.equip === 'shield' && (
+                            <div className="mt-2 text-[10px] text-sky-300/80 flex items-center gap-1">
+                              <Shield className="w-3 h-3" /> {armor > 0 ? `Escudo actual: ${Math.round(armor)}` : 'Sin escudo'} · Pociones por el mapa
                             </div>
                           )}
                           {item.equip === 'frag' && (

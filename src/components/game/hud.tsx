@@ -81,7 +81,7 @@ export function Hud() {
         ))}
       </div>
 
-      {/* ===== Vida y armadura (abajo-izquierda) ===== */}
+      {/* ===== Vida y escudo estilo Fortnite (abajo-izquierda) ===== */}
       <div className="absolute bottom-6 left-6 space-y-2 w-64">
         <div className="flex items-center gap-3 bg-stone-950/70 rounded-lg px-4 py-2.5 border border-stone-700/60 shadow-xl">
           <Heart className={`w-5 h-5 ${hp > 60 ? 'text-green-500' : hp > 25 ? 'text-amber-500' : 'text-red-500'}`} />
@@ -95,14 +95,14 @@ export function Hud() {
           </div>
           <span className="text-xl font-black tabular-nums text-stone-100 w-10 text-right">{Math.max(0, Math.round(hp))}</span>
         </div>
-        <div className="flex items-center gap-3 bg-stone-950/70 rounded-lg px-4 py-2 border border-stone-700/60 shadow-xl">
-          <Shield className="w-5 h-5 text-stone-400" />
+        <div className={`flex items-center gap-3 bg-stone-950/70 rounded-lg px-4 py-2 border shadow-xl transition-opacity ${armor > 0 ? 'border-sky-700/60' : 'border-stone-700/60 opacity-60'}`}>
+          <Shield className="w-5 h-5 text-sky-400" />
           <div className="flex-1">
             <div className="h-2 bg-stone-800 rounded-full overflow-hidden">
-              <div className="h-full bg-stone-400 transition-all duration-200" style={{ width: `${Math.max(0, armor)}%` }} />
+              <div className="h-full bg-gradient-to-r from-sky-500 to-cyan-400 transition-all duration-200" style={{ width: `${Math.max(0, armor)}%` }} />
             </div>
           </div>
-          <span className="text-sm font-bold tabular-nums text-stone-300 w-10 text-right">{Math.round(armor)}</span>
+          <span className="text-sm font-bold tabular-nums text-sky-300 w-10 text-right">{Math.round(armor)}</span>
         </div>
         <div className="flex gap-2">
           <div className="flex items-center gap-1.5 bg-stone-950/70 rounded px-3 py-1.5 border border-amber-700/40 shadow-lg">

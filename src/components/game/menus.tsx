@@ -365,7 +365,7 @@ const MECHANICS = [
   { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, armadura con casco, caída por distancia' },
   { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, gestiona tu presupuesto' },
   { icon: Swords, title: '8 armas distintas', desc: 'Pistolas, SMG, escopeta, rifles y francotirador' },
-  { icon: Shield, title: 'Blindaje y granadas', desc: 'Chaleco+casco, granadas MOLO de área' },
+  { icon: Shield, title: 'Escudo y granadas', desc: 'Escudo de 100, pociones por el mapa, granadas MOLO' },
   { icon: Bomb, title: 'Salas P2P 1 vs 1', desc: 'Multijugador real por WebRTC (PeerJS) sin servidor propio' },
   { icon: Zap, title: 'Rachas y multimuertes', desc: 'Doble, triple, dominación… anuncios de combate' },
   { icon: Crosshair, title: 'HUD de combate', desc: 'Minimapa con pings, killfeed, hitmarkers y números de daño' },
@@ -549,6 +549,9 @@ export function PauseMenu() {
             <br />
             <b className="text-stone-500">Mando:</b> sticks mover/apuntar · RT disparar · LT apuntar · A saltar ·
             B agacharse · X recargar · Y arma · LB granada · RB comprar · Start pausa
+            <br />
+            <b className="text-stone-500">Vida:</b> el escudo absorbe el daño primero · regeneras vida tras 8 s sin
+            recibir daño · <span className="text-sky-400">pociones</span> y <span className="text-red-400">botiquines</span> flotan por el mapa: acércate para recogerlos
           </div>
         </div>
       </div>

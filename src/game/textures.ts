@@ -162,6 +162,7 @@ export function makeWorldTextures(): Record<MatKey, THREE.Texture> {
   T.metalBlue = metalBase('#2e5a6e', '#1a3844')
   T.metalGreen = metalBase('#4a6b3a', '#2c4020')
   T.metalOrange = metalBase('#b06a28', '#6e3f14')
+  T.metalGrey = metalBase('#6e7076', '#3d4046')
 
   // --- Sacos de arena ---
   {
@@ -330,32 +331,80 @@ export function makeDecalTexture(): THREE.Texture {
 }
 
 // ------------------------------------------------------------
-// Cielo (gradiente atardecer desierto)
+// Cielo (atardecer de desierto, más dramático)
 // ------------------------------------------------------------
 export function makeSkyTexture(): THREE.Texture {
   const [c, ctx] = makeCanvas(512)
   const g = ctx.createLinearGradient(0, 0, 0, 512)
-  g.addColorStop(0, '#4a7ba6')
-  g.addColorStop(0.35, '#7fa3bd')
-  g.addColorStop(0.62, '#d9c49a')
-  g.addColorStop(0.8, '#e8c890')
-  g.addColorStop(1, '#d9a86a')
+  g.addColorStop(0, '#2d4a73')
+  g.addColorStop(0.3, '#6a8fb0')
+  g.addColorStop(0.55, '#d9a86a')
+  g.addColorStop(0.72, '#e8934f')
+  g.addColorStop(0.86, '#c96f3a')
+  g.addColorStop(1, '#8f4d2e')
   ctx.fillStyle = g
   ctx.fillRect(0, 0, 512, 512)
-  // nubes tenues
-  for (let i = 0; i < 26; i++) {
+  // nubes alargadas tenues
+  for (let i = 0; i < 30; i++) {
     const x = Math.random() * 512
     const y = Math.random() * 300
-    const r = 20 + Math.random() * 50
+    const r = 20 + Math.random() * 55
     const cg = ctx.createRadialGradient(x, y, 0, x, y, r)
-    cg.addColorStop(0, `rgba(255,245,235,${0.12 + Math.random() * 0.12})`)
+    const warm = y > 150
+    cg.addColorStop(0, warm ? `rgba(255,214,170,${0.10 + Math.random() * 0.14})` : `rgba(240,246,255,${0.10 + Math.random() * 0.12})`)
     cg.addColorStop(1, 'rgba(255,245,235,0)')
     ctx.fillStyle = cg
     ctx.beginPath()
-    ctx.ellipse(x, y, r * 1.8, r * 0.5, 0, 0, Math.PI * 2)
+    ctx.ellipse(x, y, r * 2.0, r * 0.45, 0, 0, Math.PI * 2)
     ctx.fill()
   }
   return new THREE.CanvasTexture(c)
+}
+
+// ------------------------------------------------------------
+// Blob de oclusión (sombra de contacto suave)
+// ------------------------------------------------------------
+export function makeAOBlobTexture(): THREE.Texture {
+  const [c, ctx] = makeCanvas(128)
+  const g = ctx.createRadialGradient(64, 64, 8, 64, 64, 62)
+  g.addColorStop(0, 'rgba(0,0,0,0.55)')
+  g.addColorStop(0.55, 'rgba(0,0,0,0.28)')
+  g.addColorStop(1, 'rgba(0,0,0,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, 128, 128)
+  return new THREE.CanvasTexture(c)
+}
+
+// ------------------------------------------------------------
+// Letrero de neón (texto brillante para el bloom)
+// ------------------------------------------------------------
+export function makeNeonTexture(text: string, color: string): THREE.Texture {
+  const fontSize = 72
+  const probe = document.createElement('canvas').getContext('2d')!
+  probe.font = `900 ${fontSize}px monospace`
+  const w = Math.max(64, probe.measureText(text.toUpperCase()).width + 48)
+  const c = document.createElement('canvas')
+  c.width = Math.ceil(w)
+  c.height = 112
+  const ctx = c.getContext('2d')!
+  ctx.clearRect(0, 0, c.width, c.height)
+  ctx.font = `900 ${fontSize}px monospace`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  // halo exterior
+  ctx.shadowColor = color
+  ctx.shadowBlur = 26
+  ctx.fillStyle = color
+  ctx.fillText(text.toUpperCase(), c.width / 2, c.height / 2)
+  ctx.shadowBlur = 12
+  ctx.fillText(text.toUpperCase(), c.width / 2, c.height / 2)
+  // núcleo casi blanco
+  ctx.shadowBlur = 0
+  ctx.fillStyle = '#ffffff'
+  ctx.fillText(text.toUpperCase(), c.width / 2, c.height / 2)
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
 }
 
 // ------------------------------------------------------------

@@ -54,8 +54,8 @@ export function GameMount() {
       {/* minimapa (dibujado por el motor) */}
       <canvas
         ref={minimapRef}
-        width={190}
-        height={190}
+        width={240}
+        height={240}
         className="absolute top-4 left-4 rounded-lg border-2 border-stone-600/70 shadow-2xl z-20 pointer-events-none"
       />
       {showClickToPlay && <ClickToPlay />}

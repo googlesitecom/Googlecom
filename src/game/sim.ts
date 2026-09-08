@@ -4,10 +4,10 @@
 // enrutan al jugador local y, si lo hay, al invitado P2P.
 // ============================================================
 import {
-  GAME, WEAPONS, BUY_ITEMS, computeDamage, spawnPoint, segmentBlocked,
+  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, PICKUP_SPOTS, computeDamage, spawnPoint, segmentBlocked,
   WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL,
-  type Team, type WeaponId, type BodyPart, type BotDifficulty,
-  type NetPlayerState, type NetGrenade, type NetRoundState, type NetKillEvent, type NetSnapshot,
+  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind,
+  type NetPlayerState, type NetGrenade, type NetPickup, type NetRoundState, type NetKillEvent, type NetSnapshot,
 } from './shared'
 
 export type RouteFn = (ev: string, data: unknown, to?: string) => void
@@ -45,7 +45,7 @@ interface SimPlayer {
   crouch: boolean
   speed: number
   hp: number
-  armor: number
+  shield: number
   dead: boolean
   respawnAt: number
   weapon: WeaponId
@@ -60,6 +60,7 @@ interface SimPlayer {
   lastShotAt: number
   protectUntil: number
   lastSeenEnemy: number
+  lastDamageAt: number
   ai?: BotAI
 }
 
@@ -70,6 +71,14 @@ interface SimGrenade {
   x: number; y: number; z: number
   vx: number; vy: number; vz: number
   fuse: number
+}
+
+interface SimPickup {
+  id: string
+  kind: PickupKind
+  x: number; z: number
+  active: boolean
+  respawnAt: number
 }
 
 function now(): number { return Date.now() }
@@ -93,6 +102,7 @@ function nearestWaypoint(x: number, z: number): number {
 export class GameSim {
   private players = new Map<string, SimPlayer>()
   private grenades = new Map<string, SimGrenade>()
+  private pickups: SimPickup[] = []
   private grenadeSeq = 0
   private botSeq = 0
   private timer: ReturnType<typeof setInterval> | null = null
@@ -111,7 +121,16 @@ export class GameSim {
     roundWinsB: 0,
   }
 
-  constructor(private difficulty: BotDifficulty = 'normal') {}
+  constructor(private difficulty: BotDifficulty = 'normal') {
+    // pociones repartidas por el mapa (respawn escalonado)
+    let pk = 0
+    for (const s of PICKUP_SPOTS) {
+      this.pickups.push({
+        id: `p${pk++}`, kind: s.kind, x: s.x, z: s.z,
+        active: true, respawnAt: 0,
+      })
+    }
+  }
 
   onRoute(fn: RouteFn): void { this.route = fn }
 
@@ -187,13 +206,13 @@ export class GameSim {
       yaw: team === 'A' ? Math.PI * 0.75 : -Math.PI * 0.25,
       pitch: 0,
       crouch: false, speed: 0,
-      hp: 100, armor: 0, dead: false, respawnAt: 0,
+      hp: 100, shield: 0, dead: false, respawnAt: 0,
       weapon: 'p9',
       owned: ['knife', 'p9'],
       frags: 0,
       kills: 0, deaths: 0, money: GAME.START_MONEY,
       streak: 0, lastKillAt: 0, multi: 0,
-      lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0,
+      lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0, lastDamageAt: 0,
     }
     if (bot) {
       p.ai = {
@@ -215,8 +234,10 @@ export class GameSim {
     const [x, , z] = spawnPoint(p.team, Math.max(0, idx))
     p.x = x; p.y = 0.02; p.z = z
     p.hp = 100
+    p.shield = 0
     p.dead = false
     p.crouch = false
+    p.lastDamageAt = 0
     p.protectUntil = now() + GAME.SPAWN_PROTECT * 1000
     p.owned = ['knife', 'p9']
     p.weapon = 'p9'
@@ -231,7 +252,7 @@ export class GameSim {
     this.emit('spawnEvent', {
       pos: [p.x, p.y, p.z],
       yaw: p.yaw,
-      hp: p.hp, armor: p.armor,
+      hp: p.hp, armor: p.shield,
       weapons: p.owned,
       weapon: p.weapon,
       frags: p.frags,
@@ -261,7 +282,8 @@ export class GameSim {
     } else if (p.money >= 700 && Math.random() < 0.5) {
       p.owned = ['knife', 'p9', 'aguila']; p.weapon = 'aguila'; p.money -= 700
     }
-    if (p.money >= 1000 && p.armor < 50) { p.armor = 100; p.money -= 1000 }
+    // los bots compran un escudo a medias (menos tanque que el jugador)
+    if (p.money >= 1000 && p.shield < 25) { p.shield = 50; p.money -= 1000 }
     if (p.money >= 600 && p.frags < 1 && Math.random() < 0.45) { p.frags = 1; p.money -= 300 }
   }
 
@@ -282,9 +304,9 @@ export class GameSim {
         p.weapon = w.id
         this.emit('giveWeapon', { weapon: w.id }, p.id)
       }
-    } else if (item.equip === 'armor') {
+    } else if (item.equip === 'shield') {
       p.money -= item.price
-      p.armor = 100
+      p.shield = 100
     } else if (item.equip === 'frag') {
       if (p.frags >= 2) {
         return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Máximo 2 granadas' }, p.id)
@@ -308,12 +330,13 @@ export class GameSim {
     if (now() < victim.protectUntil) return
     if (attacker.team === victim.team && attacker.id !== victim.id) return
 
-    if (victim.armor > 0 && part !== 'legs') {
-      const absorbed = Math.min(victim.armor, Math.round(dmg * 0.5))
-      victim.armor -= absorbed
-      dmg -= absorbed
-    }
-    victim.hp -= dmg
+    // escudo primero (estilo Fortnite): absorbe todo el daño hasta agotarse
+    const total = dmg
+    const absorbed = Math.min(victim.shield, dmg)
+    victim.shield -= absorbed
+    dmg -= absorbed
+    victim.lastDamageAt = now()
+    if (dmg > 0) victim.hp -= dmg
 
     this.emit('takeDamage', {
       attacker: attacker.id, dmg, part, weapon,
@@ -321,7 +344,7 @@ export class GameSim {
       attackerPos: [attacker.x, attacker.y, attacker.z],
     }, victim.id)
     if (attacker.id !== victim.id && !attacker.bot) {
-      this.emit('hitConfirm', { victim: victim.id, dmg, part, weapon, headshot: part === 'head', victimHp: Math.max(0, victim.hp) }, attacker.id)
+      this.emit('hitConfirm', { victim: victim.id, dmg: total, part, weapon, headshot: part === 'head', victimHp: Math.max(0, victim.hp), victimShield: Math.max(0, victim.shield) }, attacker.id)
     }
     this.emit('damageFX', { x: victim.x, y: victim.y + 1.2, z: victim.z, part })
 
@@ -710,8 +733,9 @@ export class GameSim {
 
     if (hit) {
       const r = Math.random()
-      const part: BodyPart = r < (d < 18 ? 0.17 : 0.08) ? 'head' : r < 0.85 ? 'body' : 'legs'
-      const dmg = computeDamage(w, part, d, target.armor)
+      const part: BodyPart = r < (d < 18 ? 0.09 : 0.05) ? 'head' : r < 0.85 ? 'body' : 'legs'
+      const skill = BOT_SKILL[this.difficulty]
+      const dmg = Math.max(1, Math.round(computeDamage(w, part, d) * skill.dmg))
       const dx = p.x - target.x, dz = p.z - target.z
       this.applyDamage(p, target, dmg, part, p.weapon, [dx, dz])
     }
@@ -825,7 +849,7 @@ export class GameSim {
       const victim = this.players.get(String(h.target))
       if (!victim || victim.dead || victim.team === p.team) continue
       const dist = clamp(Number(h.dist) || 10, 0, 200)
-      const dmg = computeDamage(w, h.part, dist, victim.armor)
+      const dmg = computeDamage(w, h.part, dist)
       const dx = p.x - victim.x, dz = p.z - victim.z
       this.applyDamage(p, victim, dmg, h.part, data.weapon, [dx, dz])
     }
@@ -857,6 +881,18 @@ export class GameSim {
       if (p.dead && t >= p.respawnAt && this.round.phase === 'live') this.respawnPlayer(p)
     }
 
+    // regeneración de vida estilo Fortnite (tras 8 s sin daño)
+    if (this.round.phase === 'live') {
+      for (const p of this.players.values()) {
+        if (p.dead || p.hp >= 100) continue
+        if (p.lastDamageAt && t - p.lastDamageAt < GAME.REGEN_DELAY * 1000) continue
+        p.hp = Math.min(100, p.hp + GAME.REGEN_HP * dt)
+      }
+    }
+
+    // pociones: reaparición y recogida por proximidad
+    this.updatePickups(t)
+
     for (const p of this.players.values()) {
       if (p.bot) this.botUpdate(p, dt, t)
     }
@@ -885,7 +921,7 @@ export class GameSim {
       x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100, z: Math.round(p.z * 100) / 100,
       yaw: Math.round(p.yaw * 1000) / 1000,
       pitch: Math.round(p.pitch * 1000) / 1000,
-      hp: Math.max(0, Math.round(p.hp)), armor: Math.round(p.armor),
+      hp: Math.max(0, Math.round(p.hp)), armor: Math.max(0, Math.round(p.shield)),
       weapon: p.weapon, dead: p.dead, crouch: p.crouch,
       speed: Math.round(p.speed * 10) / 10,
       kills: p.kills, deaths: p.deaths, money: p.money, streak: p.streak,
@@ -894,6 +930,10 @@ export class GameSim {
 
   private netGrenade(g: SimGrenade): NetGrenade {
     return { id: g.id, x: Math.round(g.x * 100) / 100, y: Math.round(g.y * 100) / 100, z: Math.round(g.z * 100) / 100, team: g.team }
+  }
+
+  private netPickup(p: SimPickup): NetPickup {
+    return { id: p.id, kind: p.kind, x: p.x, z: p.z, active: p.active }
   }
 
   private netRound(): NetRoundState {
@@ -911,6 +951,7 @@ export class GameSim {
       t: now(),
       players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
       grenades: Array.from(this.grenades.values()).map(x => this.netGrenade(x)),
+      pickups: this.pickups.map(x => this.netPickup(x)),
       round: this.netRound(),
     }
     this.emit('snapshot', snap)
@@ -919,4 +960,35 @@ export class GameSim {
   getPlayer(id: string): SimPlayer | undefined { return this.players.get(id) }
 
   emitSnapshotOnce(): void { this.broadcastSnapshot() }
+
+  // ------------------------------------------------------------
+  // Pociones (estilo Fortnite): recogen los jugadores humanos
+  // ------------------------------------------------------------
+  private updatePickups(t: number): void {
+    for (const pk of this.pickups) {
+      if (!pk.active) {
+        if (t >= pk.respawnAt) pk.active = true
+        continue
+      }
+      const info = PICKUP_INFO[pk.kind]
+      for (const p of this.players.values()) {
+        if (p.dead || p.bot) continue
+        const d = Math.hypot(p.x - pk.x, p.z - pk.z)
+        if (d > GAME.PICKUP_RADIUS) continue
+        // no recoger si sería un desperdicio total
+        const hpGain = Math.min(info.hp, 100 - p.hp)
+        const shGain = Math.min(info.shield, 100 - p.shield)
+        if (hpGain <= 0 && shGain <= 0) continue
+        p.hp = Math.min(100, p.hp + info.hp)
+        p.shield = Math.min(100, p.shield + info.shield)
+        pk.active = false
+        pk.respawnAt = t + GAME.PICKUP_RESPAWN * 1000
+        this.emit('pickupEvent', {
+          kind: pk.kind, hp: Math.round(p.hp), shield: Math.round(p.shield),
+          hpGain: Math.round(hpGain), shieldGain: Math.round(shGain),
+        }, p.id)
+        break
+      }
+    }
+  }
 }

@@ -3,15 +3,20 @@
 // Movimiento, colisiones, cámara, armas, efectos, minimapa
 // ============================================================
 import * as THREE from 'three'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import {
-  GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B,
-  type Team, type WeaponId, type NetSnapshot, type NetPlayerState,
+  GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
+  PICKUP_INFO,
+  type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey,
 } from './shared'
 import { AudioEngine } from './audio'
 import { Effects } from './effects'
 import { RemotePlayers } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
-import { makeWorldTextures, makeSkyTexture } from './textures'
+import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, makeSparkTexture } from './textures'
 import { useGame } from './store'
 import { NetClient } from './net'
 
@@ -19,6 +24,7 @@ interface DamageNumber { x: number; y: number; amount: number; t: number; headsh
 interface HitMarker { t: number; headshot: boolean }
 interface DamageDir { angle: number; t: number }
 interface Ping { x: number; z: number; t: number }
+interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
 
 interface WeaponRuntime { mag: number; reserve: number }
 
@@ -29,12 +35,29 @@ const EYE_STAND = 1.62
 const EYE_CROUCH = 1.14
 const BASE_FOV = 75
 
+/** Parámetros PBR por material del mapa */
+const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
+  sand: { roughness: 0.95, metalness: 0.0 },
+  concrete: { roughness: 0.9, metalness: 0.0 },
+  wood: { roughness: 0.85, metalness: 0.0 },
+  metalRed: { roughness: 0.5, metalness: 0.55 },
+  metalBlue: { roughness: 0.5, metalness: 0.55 },
+  metalGreen: { roughness: 0.5, metalness: 0.55 },
+  metalOrange: { roughness: 0.5, metalness: 0.55 },
+  metalGrey: { roughness: 0.45, metalness: 0.65 },
+  sandbag: { roughness: 1.0, metalness: 0.0 },
+  crate: { roughness: 0.8, metalness: 0.0 },
+  barrel: { roughness: 0.45, metalness: 0.5 },
+  roof: { roughness: 0.65, metalness: 0.3 },
+}
+
 export class Game {
   // three
   private renderer!: THREE.WebGLRenderer
   private scene!: THREE.Scene
   private camera!: THREE.PerspectiveCamera
   private sunLight!: THREE.DirectionalLight
+  private composer: EffectComposer | null = null
 
   // canvas
   private canvas3d!: HTMLCanvasElement
@@ -61,7 +84,7 @@ export class Game {
   private sprinting = false
   dead = false
   hp = 100
-  armor = 0
+  shield = 0
   money = 1000
   team: Team = 'A'
   private owned: WeaponId[] = ['knife', 'p9']
@@ -120,6 +143,9 @@ export class Game {
   // granadas visibles
   private grenadeViews = new Map<string, { group: THREE.Group; last: THREE.Vector3; trailT: number }>()
 
+  // pociones visibles
+  private pickupViews = new Map<string, PickupView>()
+
   // minimapa / mundo
   private shootables: THREE.Object3D[] = []
   private raycaster = new THREE.Raycaster()
@@ -153,18 +179,19 @@ export class Game {
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.06
+    this.renderer.toneMappingExposure = 1.12
     this.renderer.shadowMap.enabled = quality !== 'baja'
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
     this.scene = new THREE.Scene()
-    this.scene.fog = new THREE.FogExp2(0xd8bd97, 0.0058)
+    this.scene.fog = new THREE.FogExp2(0xd9ab7c, 0.0062)
 
-    this.camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 420)
+    this.camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 560)
     this.scene.add(this.camera)
 
     this.buildSky()
-    this.buildLights(quality !== 'baja')
+    this.buildEnvironment()
+    this.buildLights(quality)
     this.buildMap()
     this.buildMinimapStatic()
 
@@ -175,6 +202,15 @@ export class Game {
     this.vmHolder = new THREE.Group()
     this.camera.add(this.vmHolder)
     this.setWeapon('p9', true)
+
+    // post-proceso: bloom de neones y fogonazos (solo en calidad alta)
+    if (quality === 'alta') {
+      this.composer = new EffectComposer(this.renderer)
+      this.composer.addPass(new RenderPass(this.scene, this.camera))
+      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.42, 0.7, 0.88)
+      this.composer.addPass(bloom)
+      this.composer.addPass(new OutputPass())
+    }
 
     // eventos
     this.bindEvents()
@@ -188,77 +224,134 @@ export class Game {
   private buildSky(): void {
     const skyTex = makeSkyTexture()
     const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(260, 24, 16),
+      new THREE.SphereGeometry(340, 32, 20),
       new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
     )
     this.scene.add(sky)
-    // sol
-    const sunDir = new THREE.Vector3(0.55, 0.6, -0.45).normalize()
-    const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: makeSkyTexture(), color: 0xfff5d0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, fog: false,
+    // halo del sol bajo (atardecer)
+    const sunDir = new THREE.Vector3(0.62, 0.42, -0.52).normalize()
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: makeSkyTexture(), color: 0xffd9a0, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, fog: false,
     }))
-    sunSprite.position.copy(sunDir.clone().multiplyScalar(230))
-    sunSprite.scale.setScalar(30)
-    this.scene.add(sunSprite)
+    glow.position.copy(sunDir.clone().multiplyScalar(300))
+    glow.scale.setScalar(150)
+    this.scene.add(glow)
+    const core = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: makeSkyTexture(), color: 0xfff2cc, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, fog: false,
+    }))
+    core.position.copy(sunDir.clone().multiplyScalar(298))
+    core.scale.setScalar(46)
+    this.scene.add(core)
   }
 
-  private buildLights(shadows: boolean): void {
-    const sun = new THREE.DirectionalLight(0xffe6bf, 2.1)
-    sun.position.set(55, 62, -42)
-    if (shadows) {
+  /** Mapa de entorno para reflexiones PBR (PMREM del cielo de atardecer) */
+  private buildEnvironment(): void {
+    const pmrem = new THREE.PMREMGenerator(this.renderer)
+    const envScene = new THREE.Scene()
+    const envSky = new THREE.Mesh(
+      new THREE.SphereGeometry(60, 24, 16),
+      new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide }),
+    )
+    envScene.add(envSky)
+    const sunBall = new THREE.Mesh(
+      new THREE.SphereGeometry(5, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xfff0c8 }),
+    )
+    sunBall.position.set(30, 20, -25)
+    envScene.add(sunBall)
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, 120),
+      new THREE.MeshBasicMaterial({ color: 0x93714e }),
+    )
+    ground.rotation.x = -Math.PI / 2
+    ground.position.y = -3
+    envScene.add(ground)
+    const envRT = pmrem.fromScene(envScene, 0.05)
+    this.scene.environment = envRT.texture
+    envRT.texture.needsUpdate = true
+    pmrem.dispose()
+  }
+
+  private buildLights(quality: 'baja' | 'media' | 'alta'): void {
+    const sun = new THREE.DirectionalLight(0xffdcae, 2.6)
+    sun.position.set(52, 58, -40)
+    if (quality !== 'baja') {
       sun.castShadow = true
-      sun.shadow.mapSize.set(2048, 2048)
-      sun.shadow.camera.left = -64
-      sun.shadow.camera.right = 64
-      sun.shadow.camera.top = 64
-      sun.shadow.camera.bottom = -64
-      sun.shadow.camera.far = 240
-      sun.shadow.bias = -0.0006
-      sun.shadow.normalBias = 0.02
+      sun.shadow.mapSize.set(quality === 'alta' ? 4096 : 2048, quality === 'alta' ? 4096 : 2048)
+      // la cámara de sombras sigue al jugador → sombras detalladas donde importa
+      sun.shadow.camera.left = -48
+      sun.shadow.camera.right = 48
+      sun.shadow.camera.top = 48
+      sun.shadow.camera.bottom = -48
+      sun.shadow.camera.near = 4
+      sun.shadow.camera.far = 260
+      sun.shadow.bias = -0.00035
+      sun.shadow.normalBias = 0.035
     }
     this.scene.add(sun)
+    this.scene.add(sun.target)
     this.sunLight = sun
 
-    const hemi = new THREE.HemisphereLight(0xcfdce8, 0xc9a870, 0.55)
+    const hemi = new THREE.HemisphereLight(0x9db4d0, 0x8a6a4a, 0.5)
     this.scene.add(hemi)
+
+    // relleno cálido del atardecer desde el oeste
+    const fill = new THREE.DirectionalLight(0xc7a17a, 0.5)
+    fill.position.set(-40, 30, 30)
+    this.scene.add(fill)
   }
 
   private buildMap(): void {
     const texs = makeWorldTextures()
 
-    // suelo
-    const groundMat = new THREE.MeshLambertMaterial({ map: texs.sand })
-    groundMat.map!.repeat.set(34, 34)
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(170, 170), groundMat)
+    // suelo (ligeramente satinado para reflejar el cielo del atardecer)
+    const groundMat = new THREE.MeshStandardMaterial({ map: texs.sand, roughness: 0.88, metalness: 0.05 })
+    groundMat.map!.repeat.set(46, 46)
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(230, 230), groundMat)
     ground.rotation.x = -Math.PI / 2
     ground.receiveShadow = true
     this.scene.add(ground)
     this.shootables.push(ground)
 
-    // cajas del mapa
+    // materiales PBR compartidos (uno por tipo)
+    const mats = new Map<MatKey, THREE.MeshStandardMaterial>()
+    for (const key of Object.keys(MAT_PBR) as MatKey[]) {
+      const p = MAT_PBR[key]
+      mats.set(key, new THREE.MeshStandardMaterial({ map: texs[key], roughness: p.roughness, metalness: p.metalness }))
+    }
+
+    // cajas del mapa (UVs escaladas por cara para densidad de texel constante)
+    const geoCache = new Map<string, THREE.BufferGeometry>()
     for (const b of MAP_BOXES) {
       let mesh: THREE.Mesh
       if (b.mat === 'barrel') {
-        mesh = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.36, 0.36, b.h, 12),
-          new THREE.MeshLambertMaterial({ map: texs.barrel }),
-        )
+        const key = `b${b.h}`
+        let geo = geoCache.get(key)
+        if (!geo) { geo = new THREE.CylinderGeometry(0.36, 0.36, b.h, 12); geoCache.set(key, geo) }
+        mesh = new THREE.Mesh(geo, mats.get('barrel')!)
       } else {
-        const tex = texs[b.mat].clone()
-        tex.needsUpdate = true
-        tex.repeat.set(Math.max(1, Math.round(Math.max(b.w, b.d) / 2.5)), Math.max(1, Math.round(b.h / 2.5)))
-        mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(b.w, b.h, b.d),
-          new THREE.MeshLambertMaterial({ map: tex }),
-        )
-        mesh.castShadow = true
-        mesh.receiveShadow = true
+        const key = `${b.w}|${b.h}|${b.d}`
+        let geo = geoCache.get(key)
+        if (!geo) {
+          geo = new THREE.BoxGeometry(b.w, b.h, b.d)
+          this.scaleBoxUVs(geo as THREE.BoxGeometry, b.w, b.h, b.d)
+          geoCache.set(key, geo)
+        }
+        mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
       }
+      mesh.castShadow = true
+      mesh.receiveShadow = true
       mesh.position.set(b.x, b.y, b.z)
       this.scene.add(mesh)
       this.shootables.push(mesh)
       this.mapMeshes.push(mesh)
     }
+
+    // ---- oclusión de contacto fusionada (sombra suave bajo los objetos) ----
+    this.buildContactShadows()
+
+    // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
+    this.buildDecor(texs)
 
     // marcas de spawn (zonas de compra)
     for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
@@ -270,6 +363,147 @@ export class Game {
       ring.position.set(sp[0], 0.03, sp[2])
       this.scene.add(ring)
     }
+  }
+
+  /** Escala las UVs de cada cara de una caja para texel uniforme con material compartido */
+  private scaleBoxUVs(geo: THREE.BoxGeometry, w: number, h: number, d: number): void {
+    const uv = geo.attributes.uv as THREE.BufferAttribute
+    const dims: [number, number][] = [
+      [d, h], [d, h],  // +x, -x
+      [w, d], [w, d],  // +y, -y
+      [w, h], [w, h],  // +z, -z
+    ]
+    for (let f = 0; f < 6; f++) {
+      const [du, dv] = dims[f]
+      const su = Math.max(1, Math.round(Math.max(du, 0.6) / 2.4))
+      const sv = Math.max(1, Math.round(Math.max(dv, 0.6) / 2.4))
+      for (let v = 0; v < 4; v++) {
+        const i = f * 4 + v
+        uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv)
+      }
+    }
+    uv.needsUpdate = true
+  }
+
+  /** Quads de sombra suave fusionados en una sola malla (1 draw call) */
+  private buildContactShadows(): void {
+    const pos: number[] = []
+    const uvs: number[] = []
+    for (const b of MAP_BOXES) {
+      if (b.h < 1.0) continue                       // solo objetos altos
+      if (b.y - b.h / 2 > 0.6) continue             // apoyados en el suelo
+      if (b.w > 26 || b.d > 26) continue            // sin muros de perímetro
+      if (b.w < 1.4 && b.d < 1.4) continue
+      const ex = b.w * 0.68, ez = b.d * 0.68
+      const y = 0.021
+      const x0 = b.x - ex, x1 = b.x + ex, z0 = b.z - ez, z1 = b.z + ez
+      pos.push(x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z0, x1, y, z1, x0, y, z1)
+      uvs.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1)
+    }
+    if (!pos.length) return
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+    const mat = new THREE.MeshBasicMaterial({
+      map: makeAOBlobTexture(), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.renderOrder = 1
+    this.scene.add(mesh)
+  }
+
+  /** Decoración sin colisión: árboles, farolas con luz, neones, charcos reflectantes */
+  private buildDecor(texs: Record<MatKey, THREE.Texture>): void {
+    // --- árboles (tronco con colisión ya está en el mapa) ---
+    const leafMatA = new THREE.MeshStandardMaterial({ color: 0x55683d, roughness: 0.95, flatShading: true })
+    const leafMatB = new THREE.MeshStandardMaterial({ color: 0x47592f, roughness: 0.95, flatShading: true })
+    const leafGeo = new THREE.SphereGeometry(1, 8, 7)
+    for (const [tx, tz] of TREES) {
+      for (const [ox, oy, oz, s, m] of [
+        [0, 4.6, 0, 2.1, leafMatA], [0.9, 3.8, 0.4, 1.5, leafMatB], [-0.8, 3.9, -0.3, 1.4, leafMatB],
+      ] as [number, number, number, number, THREE.MeshStandardMaterial][]) {
+        const leaf = new THREE.Mesh(leafGeo, m)
+        leaf.position.set(tx + ox, oy, tz + oz)
+        leaf.scale.setScalar(s)
+        leaf.castShadow = true
+        this.scene.add(leaf)
+        this.shootables.push(leaf)
+      }
+    }
+
+    // --- farolas: cabezal + bombilla emisiva + luz puntual cálida ---
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.6, metalness: 0.7 })
+    const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc26b, emissiveIntensity: 4, roughness: 0.4 })
+    const sparkTex = makeSparkTexture()
+    for (const [lx, lz] of LAMPS) {
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.22, 0.42), headMat)
+      head.position.set(lx, 5.15, lz)
+      head.castShadow = true
+      this.scene.add(head)
+      const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.09, 0.3), bulbMat)
+      bulb.position.set(lx, 5.02, lz)
+      this.scene.add(bulb)
+      const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
+      light.position.set(lx, 4.85, lz)
+      this.scene.add(light)
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: sparkTex, color: 0xffc98a, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false,
+      }))
+      glow.position.set(lx, 5.0, lz)
+      glow.scale.setScalar(1.6)
+      this.scene.add(glow)
+    }
+
+    // --- letreros de neón ---
+    for (const n of NEONS) {
+      const tex = makeNeonTexture(n.text, n.color)
+      const aspect = tex.image ? (tex.image as HTMLCanvasElement).width / (tex.image as HTMLCanvasElement).height : 4
+      const h = n.w / aspect
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, fog: true })
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(n.w, h), mat)
+      plane.position.set(n.x, n.y, n.z)
+      plane.rotation.y = n.ry
+      this.scene.add(plane)
+      // marco trasero discreto
+      const frame = new THREE.Mesh(
+        new THREE.PlaneGeometry(n.w + 0.3, h + 0.25),
+        new THREE.MeshStandardMaterial({ color: 0x1b1d22, roughness: 0.8 }),
+      )
+      frame.position.set(n.x - Math.sin(n.ry) * 0.08, n.y, n.z - Math.cos(n.ry) * 0.08)
+      frame.rotation.y = n.ry
+      this.scene.add(frame)
+    }
+
+    // --- charcos reflectantes (reflejan el cielo del atardecer) ---
+    const puddleMat = new THREE.MeshStandardMaterial({
+      color: 0x2a3038, roughness: 0.12, metalness: 0.85, envMapIntensity: 1.8,
+    })
+    for (const p of PUDDLES) {
+      const puddle = new THREE.Mesh(new THREE.CircleGeometry(p.r, 20), puddleMat)
+      puddle.rotation.x = -Math.PI / 2
+      puddle.position.set(p.x, 0.024, p.z)
+      puddle.scale.set(1, 0.75, 1)
+      this.scene.add(puddle)
+    }
+
+    // --- neumáticos apilados (barrio y gasolinera) ---
+    const tireMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95 })
+    const tireGeo = new THREE.TorusGeometry(0.46, 0.2, 8, 16)
+    for (const [tx, tz, count] of [
+      [-46.5, -9.6, 3], [33.5, -25.5, 2], [-33.5, 25.5, 2], [41.5, -26.5, 3],
+    ] as [number, number, number][]) {
+      for (let i = 0; i < count; i++) {
+        const tire = new THREE.Mesh(tireGeo, tireMat)
+        tire.rotation.x = -Math.PI / 2
+        tire.rotation.z = Math.random() * Math.PI
+        tire.position.set(tx + (Math.random() - 0.5) * 0.15, 0.2 + i * 0.38, tz + (Math.random() - 0.5) * 0.15)
+        tire.castShadow = true
+        tire.receiveShadow = true
+        this.scene.add(tire)
+      }
+    }
+    void texs
   }
 
   // ----------------------------------------------------------
@@ -300,6 +534,7 @@ export class Game {
     document.removeEventListener('pointerlockchange', this.onLockChange)
     removeEventListener('contextmenu', this.onCtxMenu)
     this.net?.disconnect()
+    this.composer?.dispose()
     this.renderer?.dispose()
   }
 
@@ -307,6 +542,7 @@ export class Game {
     this.renderer.setSize(innerWidth, innerHeight)
     this.camera.aspect = innerWidth / innerHeight
     this.camera.updateProjectionMatrix()
+    this.composer?.setSize(innerWidth, innerHeight)
     this.overlay.width = innerWidth
     this.overlay.height = innerHeight
   }
@@ -572,6 +808,15 @@ export class Game {
     this.trauma = Math.max(0, this.trauma - dt * 1.4)
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 1.6)
 
+    // el sol sigue al jugador → sombras detalladas a su alrededor
+    const p = this.camera.position
+    this.sunLight.position.set(p.x + 52, 58, p.z - 40)
+    this.sunLight.target.position.set(p.x, 0, p.z)
+    this.sunLight.target.updateMatrixWorld()
+
+    // pociones flotantes
+    this.updatePickupViews(dt, t)
+
     // HUD canvas
     this.drawOverlay(t)
     if (performance.now() - this.minimapT > 100) {
@@ -599,7 +844,8 @@ export class Game {
       this.fpsT = t
     }
 
-    this.renderer.render(this.scene, this.camera)
+    if (this.composer) this.composer.render()
+    else this.renderer.render(this.scene, this.camera)
   }
 
   // ----------------------------------------------------------
@@ -1232,7 +1478,7 @@ export class Game {
     s.setHud({ team, money })
   }
 
-  onSpawn(pos: [number, number, number], yaw: number, weapons: WeaponId[], weapon: WeaponId, hp: number, armor: number, frags: number, money: number): void {
+  onSpawn(pos: [number, number, number], yaw: number, weapons: WeaponId[], weapon: WeaponId, hp: number, shield: number, frags: number, money: number): void {
     this.pos.set(pos[0], pos[1], pos[2])
     this.vel.set(0, 0, 0)
     this.yaw = yaw
@@ -1240,7 +1486,7 @@ export class Game {
     this.dead = false
     this.deathT = 0
     this.hp = hp
-    this.armor = armor
+    this.shield = shield
     this.frags = frags
     this.money = money
     this.owned = weapons.slice()
@@ -1253,7 +1499,7 @@ export class Game {
     const s = useGame.getState()
     s.setHud({
       phase: 'playing',
-      hp, armor, frags, money,
+      hp, armor: shield, frags, money,
       deathInfo: null,
       owned: [...this.owned],
     })
@@ -1272,8 +1518,8 @@ export class Game {
 
   onTakeDamage(dmg: number, attackerPos: [number, number, number]): void {
     if (this.dead) return
-    this.hurtFlash = 1
-    this.trauma = Math.min(1, this.trauma + dmg / 90)
+    this.hurtFlash = Math.min(1, this.hurtFlash + dmg / 60)
+    this.trauma = Math.min(1, this.trauma + dmg / 130)
     this.audio.playerHurt()
     // dirección del atacante relativa a la vista
     const dx = attackerPos[0] - this.pos.x
@@ -1286,10 +1532,20 @@ export class Game {
     s.setHud({ hp: this.hp })
   }
 
-  setHealth(hp: number, armor: number): void {
+  setHealth(hp: number, shield: number): void {
     this.hp = hp
-    this.armor = armor
-    useGame.getState().setHud({ hp, armor })
+    this.shield = shield
+    useGame.getState().setHud({ hp, armor: shield })
+  }
+
+  /** Recogida de poción/botiquín */
+  onPickup(kind: PickupKind, hpGain: number, shieldGain: number): void {
+    const info = PICKUP_INFO[kind]
+    this.audio.pickup(info.shield > 0)
+    const parts: string[] = [info.name.toUpperCase()]
+    if (hpGain > 0) parts.push(`+${hpGain} VIDA`)
+    if (shieldGain > 0) parts.push(`+${shieldGain} ESCUDO`)
+    useGame.getState().addAnnouncement(parts.join(' '), 'info')
   }
 
   setMoney(money: number, frags?: number): void {
@@ -1330,6 +1586,24 @@ export class Game {
       if (st.id === this.net.id) continue
       this.remotes.upsert(st, t)
     }
+    // pociones
+    const seenP = new Set<string>()
+    for (const pk of snap.pickups ?? []) {
+      seenP.add(pk.id)
+      let pv = this.pickupViews.get(pk.id)
+      if (!pv) {
+        pv = this.buildPickupView(pk)
+        this.pickupViews.set(pk.id, pv)
+        this.scene.add(pv.group)
+      }
+      pv.group.visible = pk.active
+    }
+    for (const [id, pv] of this.pickupViews) {
+      if (!seenP.has(id)) {
+        this.scene.remove(pv.group)
+        this.pickupViews.delete(id)
+      }
+    }
     // granadas
     const seen = new Set<string>()
     for (const g of snap.grenades) {
@@ -1351,6 +1625,80 @@ export class Game {
     }
     // ronda
     useGame.getState().setHud({ round: snap.round })
+  }
+
+  /** Modelo flotante de una poción/botiquín */
+  private buildPickupView(pk: NetPickup): PickupView {
+    const info = PICKUP_INFO[pk.kind]
+    const group = new THREE.Group()
+    group.position.set(pk.x, 0, pk.z)
+
+    // anillo en el suelo
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.44, 0.58, 26),
+      new THREE.MeshBasicMaterial({ color: info.color, transparent: true, opacity: 0.45, side: THREE.DoubleSide }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.y = 0.03
+    group.add(ring)
+
+    // objeto flotante
+    const item = new THREE.Group()
+    item.position.y = 0.55
+    if (pk.kind === 'medkit' || pk.kind === 'bandage') {
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(pk.kind === 'medkit' ? 0.42 : 0.24, pk.kind === 'medkit' ? 0.24 : 0.16, pk.kind === 'medkit' ? 0.3 : 0.22),
+        new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.6 }),
+      )
+      item.add(body)
+      if (pk.kind === 'medkit') {
+        const cross1 = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.02, 0.09), new THREE.MeshStandardMaterial({ color: 0xdc2626, emissive: 0x991b1b, emissiveIntensity: 0.8 }))
+        const cross2 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.02, 0.26), cross1.material as THREE.Material)
+        cross1.position.y = 0.13
+        cross2.position.y = 0.13
+        item.add(cross1, cross2)
+      }
+    } else {
+      const big = pk.kind === 'shieldBig'
+      const bottle = new THREE.Mesh(
+        new THREE.CylinderGeometry(big ? 0.13 : 0.09, big ? 0.15 : 0.11, big ? 0.46 : 0.32, 12),
+        new THREE.MeshStandardMaterial({
+          color: info.color, roughness: 0.25, metalness: 0.1,
+          emissive: info.color, emissiveIntensity: 0.85, transparent: true, opacity: 0.92,
+        }),
+      )
+      item.add(bottle)
+      const cap = new THREE.Mesh(
+        new THREE.CylinderGeometry(big ? 0.06 : 0.045, big ? 0.06 : 0.045, 0.08, 10),
+        new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.6 }),
+      )
+      cap.position.y = (big ? 0.46 : 0.32) / 2 + 0.04
+      item.add(cap)
+    }
+    group.add(item)
+
+    // halo aditivo
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: makeSparkTexture(), color: info.color, transparent: true, opacity: 0.7,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }))
+    glow.scale.setScalar(1.1)
+    glow.position.y = 0.55
+    group.add(glow)
+
+    return { group, glow, phase: Math.random() * Math.PI * 2 }
+  }
+
+  private updatePickupViews(dt: number, t: number): void {
+    void dt
+    for (const pv of this.pickupViews.values()) {
+      if (!pv.group.visible) continue
+      const item = pv.group.children[1]  // item group
+      item.rotation.y = t * 1.8 + pv.phase
+      item.position.y = 0.55 + Math.sin(t * 2.2 + pv.phase) * 0.08
+      const glow = pv.glow
+      glow.material.opacity = 0.55 + Math.sin(t * 3 + pv.phase) * 0.18
+    }
   }
 
   onGrenadeExplode(pos: [number, number, number]): void {
@@ -1520,12 +1868,12 @@ export class Game {
   // ----------------------------------------------------------
   private buildMinimapStatic(): void {
     const c = document.createElement('canvas')
-    c.width = c.height = 190
+    c.width = c.height = 240
     const ctx = c.getContext('2d')!
     ctx.fillStyle = 'rgba(12,14,10,0.88)'
-    ctx.fillRect(0, 0, 190, 190)
-    const S = 190 / (GAME.MAP_HALF * 2 + 2) // escala px/m
-    const O = 95
+    ctx.fillRect(0, 0, 240, 240)
+    const S = 240 / (GAME.MAP_HALF * 2 + 2) // escala px/m
+    const O = 120
     // cajas (solo muros altos visibles)
     for (const b of MAP_BOXES) {
       if (b.h < 1.0) continue
@@ -1546,8 +1894,8 @@ export class Game {
     const W = this.minimap.width
     ctx.clearRect(0, 0, W, W)
     ctx.drawImage(this.mapStatic, 0, 0)
-    const S = 190 / (GAME.MAP_HALF * 2 + 2)
-    const O = 95
+    const S = 240 / (GAME.MAP_HALF * 2 + 2)
+    const O = 120
     const now = performance.now()
 
     // pings de enemigos
