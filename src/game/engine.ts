@@ -149,6 +149,9 @@ export class Game {
   // minimapa / mundo
   private shootables: THREE.Object3D[] = []
   private raycaster = new THREE.Raycaster()
+  // reutilizados en cada raycast de bala (sin asignaciones por perdigón)
+  private bulletRay = new THREE.Ray()
+  private bulletPoint = new THREE.Vector3()
   private clock = new THREE.Clock()
   private raf = 0
   private fpsFrames = 0
@@ -534,6 +537,7 @@ export class Game {
     document.removeEventListener('pointerlockchange', this.onLockChange)
     removeEventListener('contextmenu', this.onCtxMenu)
     this.net?.disconnect()
+    this.effects?.dispose()
     this.composer?.dispose()
     this.renderer?.dispose()
   }
@@ -1258,7 +1262,8 @@ export class Game {
       this.audio.knifeSwing()
       this.vmKick = 1.4
       const dir = forward.clone()
-      const hit = this.castBullet(eye, dir, 2.4)
+      const hbCache = this.buildHitboxCache()
+      const hit = this.castBullet(eye, dir, 2.4, hbCache)
       if (hit) this.processHit(hit, dir)
       this.updateHudWeapon()
       return
@@ -1268,6 +1273,9 @@ export class Game {
     const pellets = w.pellets
     const hits: { target: string; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3 }[] = []
 
+    // caché de hitboxes: UNA vez por disparo, no por perdigón
+    const hbCache = this.buildHitboxCache()
+
     for (let i = 0; i < pellets; i++) {
       const r = (spread * Math.PI / 180) * Math.sqrt(Math.random())
       const ang = Math.random() * Math.PI * 2
@@ -1276,17 +1284,9 @@ export class Game {
         .addScaledVector(up, Math.sin(ang) * r)
         .normalize()
 
-      const hit = this.castBullet(eye, dir, 200)
+      const hit = this.castBullet(eye, dir, 200, hbCache)
       if (!hit) {
-        // impacto lejano en el mapa
-        this.raycaster.set(eye, dir)
-        this.raycaster.far = 200
-        const intersect = this.raycaster.intersectObjects(this.shootables, false)[0]
-        if (intersect) {
-          const normal = intersect.face ? intersect.face.normal.clone().transformDirection(intersect.object.matrixWorld) : dir.clone().negate()
-          this.effects.impact(intersect.point, normal)
-          this.effects.tracer(this.muzzleWorld(), intersect.point)
-        }
+        // castBullet ya trazó el rayo completo (far 200) y no tocó nada
         continue
       }
       // efecto local
@@ -1345,10 +1345,22 @@ export class Game {
     return this.camera.position.clone()
   }
 
-  /** Raycast local: mapa + hitboxes de jugadores remotos */
-  private castBullet(eye: THREE.Vector3, dir: THREE.Vector3, maxDist: number): {
+  /** Hitboxes de todos los remotos, calculadas una sola vez por disparo */
+  private buildHitboxCache(): Map<string, { head: THREE.Box3; body: THREE.Box3; legs: THREE.Box3 } | null> {
+    const cache = new Map<string, { head: THREE.Box3; body: THREE.Box3; legs: THREE.Box3 } | null>()
+    for (const [id] of this.remotes.map) {
+      cache.set(id, this.remotes.hitboxes(id))
+    }
+    return cache
+  }
+
+  /** Raycast local: mapa + hitboxes de jugadores remotos (hitboxes cacheadas) */
+  private castBullet(eye: THREE.Vector3, dir: THREE.Vector3, maxDist: number,
+    hbCache?: Map<string, { head: THREE.Box3; body: THREE.Box3; legs: THREE.Box3 } | null>): {
     player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3
   } | null {
+    const cache = hbCache ?? this.buildHitboxCache()
+
     // 1) mapa
     this.raycaster.set(eye, dir)
     this.raycaster.far = maxDist
@@ -1357,7 +1369,8 @@ export class Game {
     const mapDist = mapHit ? mapHit.distance : Infinity
 
     // 2) jugadores remotos (enemigos vivos)
-    const ray = new THREE.Ray(eye, dir)
+    const ray = this.bulletRay
+    ray.set(eye, dir)
     let bestPlayer: string | null = null
     let bestPart: 'head' | 'body' | 'legs' = 'body'
     let bestDist = Infinity
@@ -1366,20 +1379,19 @@ export class Game {
     for (const [id] of this.remotes.map) {
       const st = this.remotes.map.get(id)!.state
       if (!st || st.dead || st.team === this.team) continue
-      const boxes = this.remotes.hitboxes(id)
+      const boxes = cache.get(id)
       if (!boxes) continue
       const parts: ['head' | 'body' | 'legs', THREE.Box3][] = [
         ['head', boxes.head], ['body', boxes.body], ['legs', boxes.legs],
       ]
       for (const [part, box] of parts) {
-        const p = new THREE.Vector3()
-        if (ray.intersectBox(box, p)) {
-          const d = p.distanceTo(eye)
+        if (ray.intersectBox(box, this.bulletPoint)) {
+          const d = this.bulletPoint.distanceTo(eye)
           if (d < bestDist) {
             bestDist = d
             bestPlayer = id
             bestPart = part
-            bestPoint = p
+            bestPoint = this.bulletPoint.clone()
           }
         }
       }

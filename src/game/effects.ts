@@ -1,12 +1,26 @@
 // ============================================================
-// FRONTERA CERO — Efectos visuales
+// FRONTERA CERO — Efectos visuales (con pools de reciclaje)
 // Trazadoras, fogonazos, impactos, sangre, decals, explosiones
+//
+// ⚠ RENDIMIENTO (bug del congelamiento al disparar):
+// - Las luces de fogonazo/explosión vienen de un pool FIJO que se
+//   crea en el constructor (antes del primer render). En Three.js,
+//   cambiar el número de luces de la escena fuerza a recompilar
+//   TODOS los shaders del mapa → congelamiento de cientos de ms.
+//   Con el pool fijo, la cantidad de luces NUNCA cambia: solo se
+//   modifica intensidad/posición (uniformes, sin recompilar).
+// - Sprites, partículas, casquillos y decals también se reciclan
+//   de pools: ningún material se crea/destruye durante el juego
+//   (crear+destruir materiales libera y recompila programas GPU).
 // ============================================================
 import * as THREE from 'three'
 import {
   makeMuzzleTexture, makeSmokeTexture, makeSparkTexture,
   makeBloodTexture, makeDecalTexture,
 } from './textures'
+
+type SpriteKind = 'spark' | 'blood' | 'smoke' | 'flash'
+type ParticleKind = SpriteKind | 'debris' | 'casing' | 'ring'
 
 interface Particle {
   mesh: THREE.Mesh | THREE.Sprite
@@ -16,7 +30,7 @@ interface Particle {
   gravity: number
   spin: number
   fade: number
-  kind: 'spark' | 'blood' | 'smoke' | 'debris' | 'casing'
+  kind: ParticleKind
 }
 
 interface Tracer {
@@ -24,18 +38,31 @@ interface Tracer {
   life: number
 }
 
-interface Decal {
-  mesh: THREE.Mesh
-  life: number
-}
+const MAX_DECALS = 44
+const MAX_PARTICLES = 320   // techo de seguridad para ráfagas largas
+
+/** vector cero compartido (solo para partículas con gravedad 0, nunca se muta) */
+const V0 = new THREE.Vector3()
 
 export class Effects {
   scene: THREE.Scene
   private particles: Particle[] = []
   private tracers: Tracer[] = []
-  private decals: Decal[] = []
-  private pool: THREE.Mesh[] = []
 
+  // ---- pools de reciclaje (se crean bajo demanda, nunca se destruyen) ----
+  private matPool: Record<SpriteKind, THREE.SpriteMaterial[]> = { spark: [], blood: [], smoke: [], flash: [] }
+  private spritePool: THREE.Sprite[] = []
+  private debrisPool: THREE.Mesh[] = []
+  private casingPool: THREE.Mesh[] = []
+  private ringPool: THREE.Mesh[] = []
+  private tracerPool: THREE.Mesh[] = []
+
+  // ---- decals: anillo fijo pre-creado ----
+  private decalMeshes: THREE.Mesh[] = []
+  private decalLife: number[] = []
+  private decalIdx = 0
+
+  // ---- geometrías/materiales compartidos ----
   private sparkTex: THREE.Texture
   private smokeTex: THREE.Texture
   private bloodTex: THREE.Texture
@@ -43,15 +70,21 @@ export class Effects {
   private muzzleTex: THREE.Texture
 
   private tracerMat!: THREE.MeshBasicMaterial
-  private sparkMat: THREE.SpriteMaterial
-  private bloodMat: THREE.SpriteMaterial
-  private smokeMat: THREE.SpriteMaterial
   private debrisGeo = new THREE.BoxGeometry(0.06, 0.06, 0.06)
   private debrisMat = new THREE.MeshLambertMaterial({ color: 0x5a4a38 })
   private casingGeo = new THREE.BoxGeometry(0.015, 0.015, 0.04)
   private casingMat = new THREE.MeshLambertMaterial({ color: 0xc8a028 })
   private decalGeo = new THREE.PlaneGeometry(0.14, 0.14)
+  private ringGeo = new THREE.RingGeometry(0.3, 0.55, 24)
   private tracerGeo = new THREE.BoxGeometry(0.02, 0.02, 1)
+
+  // ---- luces FIJAS (creadas una sola vez; su número nunca cambia) ----
+  private flashLights: THREE.PointLight[] = []
+  private flashUntil: number[] = []
+  private flashIdx = 0
+  private boomLights: THREE.PointLight[] = []
+  private boomActive: boolean[] = []
+  private boomIdx = 0
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -64,11 +97,89 @@ export class Effects {
     this.tracerMat = new THREE.MeshBasicMaterial({
       color: 0xffd080, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
     })
-    this.sparkMat = new THREE.SpriteMaterial({
-      map: this.sparkTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-    })
-    this.bloodMat = new THREE.SpriteMaterial({ map: this.bloodTex, transparent: true, depthWrite: false })
-    this.smokeMat = new THREE.SpriteMaterial({ map: this.smokeTex, transparent: true, depthWrite: false, opacity: 0.7 })
+
+    // Pool de luces de fogonazo (3) y de explosión (2): intensidad 0,
+    // añadidas AHORA (antes del primer render) para que todos los
+    // shaders se compilen UNA sola vez con el número final de luces.
+    for (let i = 0; i < 3; i++) {
+      const l = new THREE.PointLight(0xffb050, 0, 16, 2)
+      scene.add(l)
+      this.flashLights.push(l)
+      this.flashUntil.push(0)
+    }
+    for (let i = 0; i < 2; i++) {
+      const l = new THREE.PointLight(0xffa040, 0, 30, 2)
+      scene.add(l)
+      this.boomLights.push(l)
+      this.boomActive.push(false)
+    }
+
+    // Decals pre-creados (anillo fijo, se reciclan en su sitio)
+    for (let i = 0; i < MAX_DECALS; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        map: this.decalTex, transparent: true, depthWrite: false,
+        polygonOffset: true, polygonOffsetFactor: -2, opacity: 1,
+      })
+      const m = new THREE.Mesh(this.decalGeo, mat)
+      m.visible = false
+      scene.add(m)
+      this.decalMeshes.push(m)
+      this.decalLife.push(0)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Adquisición / reciclaje de materiales y objetos
+  // ----------------------------------------------------------
+  private makeMat(kind: SpriteKind): THREE.SpriteMaterial {
+    switch (kind) {
+      case 'spark':
+        return new THREE.SpriteMaterial({
+          map: this.sparkTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+        })
+      case 'blood':
+        return new THREE.SpriteMaterial({ map: this.bloodTex, transparent: true, depthWrite: false })
+      case 'smoke':
+        return new THREE.SpriteMaterial({ map: this.smokeTex, transparent: true, depthWrite: false, opacity: 0.7 })
+      case 'flash':
+        return new THREE.SpriteMaterial({
+          map: this.muzzleTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+        })
+    }
+  }
+
+  private acquireMat(kind: SpriteKind): THREE.SpriteMaterial {
+    const m = this.matPool[kind].pop() ?? this.makeMat(kind)
+    if (kind === 'smoke') m.color.set(0xffffff)
+    m.opacity = kind === 'smoke' ? 0.7 : 1
+    return m
+  }
+
+  private releaseMat(m: THREE.SpriteMaterial, kind: ParticleKind): void {
+    if (kind === 'debris' || kind === 'casing' || kind === 'ring') return
+    this.matPool[kind].push(m)
+  }
+
+  private acquireSprite(mat: THREE.SpriteMaterial): THREE.Sprite {
+    const s = this.spritePool.pop() ?? new THREE.Sprite(mat)
+    s.material = mat
+    return s
+  }
+
+  /** devuelve una partícula muerta a los pools (nunca dispose) */
+  private recycle(p: Particle): void {
+    this.scene.remove(p.mesh)
+    const mesh = p.mesh
+    if (mesh instanceof THREE.Sprite) {
+      this.releaseMat(mesh.material as THREE.SpriteMaterial, p.kind)
+      this.spritePool.push(mesh)
+    } else if (p.kind === 'debris') {
+      this.debrisPool.push(mesh)
+    } else if (p.kind === 'casing') {
+      this.casingPool.push(mesh)
+    } else if (p.kind === 'ring') {
+      this.ringPool.push(mesh)
+    }
   }
 
   // ----------------------------------------------------------
@@ -78,8 +189,9 @@ export class Effects {
     const dir = to.clone().sub(from)
     const dist = dir.length()
     if (dist < 0.5) return
-    let mesh = this.pool.pop()
+    let mesh = this.tracerPool.pop()
     if (!mesh) {
+      // material clonado SOLO cuando crece el pool (limitado por uso)
       mesh = new THREE.Mesh(this.tracerGeo, this.tracerMat.clone())
       this.scene.add(mesh)
     }
@@ -93,45 +205,38 @@ export class Effects {
   }
 
   // ----------------------------------------------------------
-  // Fogonazo (sprite + luz)
+  // Fogonazo (sprite + luz del pool fijo)
   // ----------------------------------------------------------
-  private flashLights: { light: THREE.PointLight; until: number }[] = []
-
   muzzleFlash(pos: THREE.Vector3, scale = 1): void {
-    // sprite efímero
-    const mat = new THREE.SpriteMaterial({
-      map: this.muzzleTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-    })
-    const s = new THREE.Sprite(mat)
-    s.position.copy(pos)
-    s.scale.setScalar(0.55 * scale)
-    s.material.rotation = Math.random() * Math.PI * 2
-    this.scene.add(s)
-    this.particles.push({
-      mesh: s, vel: new THREE.Vector3(), life: 0.05, maxLife: 0.05, gravity: 0, spin: 0, fade: 1, kind: 'spark',
-    })
-    // luz puntual breve (reutilizada)
-    let light: THREE.PointLight | null = this.flashLights.find(f => f.until < performance.now() / 1000)?.light ?? null
-    if (!light) {
-      light = new THREE.PointLight(0xffb050, 0, 14, 2)
-      this.scene.add(light)
-      this.flashLights.push({ light, until: 0 })
+    if (this.particles.length < MAX_PARTICLES) {
+      const mat = this.acquireMat('flash')
+      mat.rotation = Math.random() * Math.PI * 2
+      const s = this.acquireSprite(mat)
+      s.position.copy(pos)
+      s.scale.setScalar(0.55 * scale)
+      this.scene.add(s)
+      this.particles.push({
+        mesh: s, vel: V0, life: 0.05, maxLife: 0.05, gravity: 0, spin: 0, fade: 1, kind: 'flash',
+      })
     }
+    // luz puntual breve del pool FIJO (nunca se crea ni se elimina)
+    const i = this.flashIdx
+    const light = this.flashLights[i]
+    this.flashIdx = (this.flashIdx + 1) % this.flashLights.length
     light.position.copy(pos)
     light.intensity = 26 * scale
-    light.distance = 16
-    const fl = this.flashLights.find(f => f.light === light)!
-    fl.until = performance.now() / 1000 + 0.05
+    this.flashUntil[i] = performance.now() / 1000 + 0.05
   }
 
   // ----------------------------------------------------------
   // Impacto en superficie
   // ----------------------------------------------------------
   impact(point: THREE.Vector3, normal: THREE.Vector3, onFlesh = false): void {
+    if (this.particles.length >= MAX_PARTICLES) return
     const count = onFlesh ? 7 : 6
     for (let i = 0; i < count; i++) {
-      const mat = (onFlesh ? this.bloodMat : this.sparkMat).clone()
-      const s = new THREE.Sprite(mat)
+      const mat = this.acquireMat(onFlesh ? 'blood' : 'spark')
+      const s = this.acquireSprite(mat)
       s.position.copy(point)
       const sc = onFlesh ? 0.12 + Math.random() * 0.1 : 0.05 + Math.random() * 0.06
       s.scale.setScalar(sc)
@@ -147,8 +252,8 @@ export class Effects {
     }
     if (!onFlesh) {
       // humo pequeño
-      const mat = this.smokeMat.clone()
-      const s = new THREE.Sprite(mat)
+      const mat = this.acquireMat('smoke')
+      const s = this.acquireSprite(mat)
       s.position.copy(point).add(normal.clone().multiplyScalar(0.05))
       s.scale.setScalar(0.18)
       this.scene.add(s)
@@ -156,34 +261,32 @@ export class Effects {
         mesh: s, vel: normal.clone().multiplyScalar(0.6).add(new THREE.Vector3(0, 0.5, 0)),
         life: 0.6, maxLife: 0.6, gravity: -0.5, spin: 0, fade: 1, kind: 'smoke',
       })
-      // decal
+      // decal (reciclado del anillo fijo)
       this.addDecal(point, normal)
     }
   }
 
   private addDecal(point: THREE.Vector3, normal: THREE.Vector3): void {
-    const mat = new THREE.MeshBasicMaterial({
-      map: this.decalTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2,
-    })
-    const m = new THREE.Mesh(this.decalGeo, mat)
+    const i = this.decalIdx
+    this.decalIdx = (this.decalIdx + 1) % MAX_DECALS
+    const m = this.decalMeshes[i]
+    m.visible = true
     m.position.copy(point).add(normal.clone().multiplyScalar(0.012))
     m.lookAt(point.clone().add(normal))
     m.rotation.z = Math.random() * Math.PI * 2
     m.scale.setScalar(0.8 + Math.random() * 0.5)
-    this.scene.add(m)
-    this.decals.push({ mesh: m, life: 14 })
-    if (this.decals.length > 44) {
-      const d = this.decals.shift()!
-      this.scene.remove(d.mesh)
-      ;(d.mesh.material as THREE.Material).dispose()
-    }
+    const mat = m.material as THREE.MeshBasicMaterial
+    mat.opacity = 1
+    this.decalLife[i] = 14
   }
 
   // ----------------------------------------------------------
   // Casquillo expulsado
   // ----------------------------------------------------------
   casing(pos: THREE.Vector3, rightDir: THREE.Vector3): void {
-    const m = new THREE.Mesh(this.casingGeo, this.casingMat)
+    if (this.particles.length >= MAX_PARTICLES) return
+    const m = this.casingPool.pop() ?? new THREE.Mesh(this.casingGeo, this.casingMat)
+    m.visible = true
     m.position.copy(pos)
     this.scene.add(m)
     const v = rightDir.clone().multiplyScalar(1.4 + Math.random() * 0.8)
@@ -199,41 +302,45 @@ export class Effects {
   // ----------------------------------------------------------
   explosion(pos: THREE.Vector3): void {
     // destello central
-    const flashMat = new THREE.SpriteMaterial({
-      map: this.muzzleTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-    })
-    const flash = new THREE.Sprite(flashMat)
+    const flashMat = this.acquireMat('flash')
+    const flash = this.acquireSprite(flashMat)
     flash.position.copy(pos)
     flash.scale.setScalar(1.2)
     this.scene.add(flash)
     this.particles.push({
-      mesh: flash, vel: new THREE.Vector3(), life: 0.14, maxLife: 0.14, gravity: 0, spin: 0, fade: 1, kind: 'spark',
+      mesh: flash, vel: V0, life: 0.14, maxLife: 0.14, gravity: 0, spin: 0, fade: 1, kind: 'flash',
     })
 
-    // luz
-    const light = new THREE.PointLight(0xffa040, 90, 30, 2)
+    // luz del pool FIJO de explosiones (se desvanece en update)
+    const i = this.boomIdx
+    const light = this.boomLights[i]
+    this.boomIdx = (this.boomIdx + 1) % this.boomLights.length
     light.position.copy(pos).add(new THREE.Vector3(0, 0.5, 0))
-    this.scene.add(light)
-    this.flashLights.push({ light, until: performance.now() / 1000 + 0.22 })
+    light.intensity = 90
+    this.boomActive[i] = true
 
-    // anillo de onda expansiva
-    const ringGeo = new THREE.RingGeometry(0.3, 0.55, 24)
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffcf90, transparent: true, opacity: 0.8, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
-    })
-    const ring = new THREE.Mesh(ringGeo, ringMat)
+    // anillo de onda expansiva (pool)
+    const ring = this.ringPool.pop() ?? (() => {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xffcf90, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })
+      return new THREE.Mesh(this.ringGeo, mat)
+    })()
+    ring.visible = true
     ring.position.copy(pos).add(new THREE.Vector3(0, 0.1, 0))
-    ring.rotation.x = -Math.PI / 2
+    ring.rotation.set(-Math.PI / 2, 0, 0)
     this.scene.add(ring)
     this.particles.push({
-      mesh: ring, vel: new THREE.Vector3(0, 0.4, 0), life: 0.5, maxLife: 0.5, gravity: 0, spin: 0, fade: 1, kind: 'smoke',
+      mesh: ring, vel: new THREE.Vector3(0, 0.4, 0), life: 0.5, maxLife: 0.5, gravity: 0, spin: 0, fade: 1, kind: 'ring',
     })
 
     // humo
     for (let i = 0; i < 14; i++) {
-      const mat = this.smokeMat.clone()
-      mat.color = new THREE.Color(0x9a8a72)
-      const s = new THREE.Sprite(mat)
+      if (this.particles.length >= MAX_PARTICLES) break
+      const mat = this.acquireMat('smoke')
+      mat.color.set(0x9a8a72)
+      const s = this.acquireSprite(mat)
       s.position.copy(pos).add(new THREE.Vector3((Math.random() - 0.5) * 0.8, 0.2 + Math.random() * 0.6, (Math.random() - 0.5) * 0.8))
       s.scale.setScalar(0.5 + Math.random() * 0.7)
       this.scene.add(s)
@@ -245,7 +352,9 @@ export class Effects {
     }
     // escombros
     for (let i = 0; i < 16; i++) {
-      const m = new THREE.Mesh(this.debrisGeo, this.debrisMat)
+      if (this.particles.length >= MAX_PARTICLES) break
+      const m = this.debrisPool.pop() ?? new THREE.Mesh(this.debrisGeo, this.debrisMat)
+      m.visible = true
       m.position.copy(pos).add(new THREE.Vector3(0, 0.3, 0))
       this.scene.add(m)
       this.particles.push({
@@ -261,15 +370,15 @@ export class Effects {
   // Actualización
   // ----------------------------------------------------------
   update(dt: number, camera: THREE.Camera): void {
-    // partículas
+    void camera
+    const tNow = performance.now() / 1000
+
+    // partículas (reciclaje a los pools, nunca dispose)
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i]
       p.life -= dt
       if (p.life <= 0) {
-        this.scene.remove(p.mesh)
-        const mat = (p.mesh as THREE.Sprite).material ?? (p.mesh as THREE.Mesh).material
-        if (mat) (mat as THREE.Material).dispose()
-        if (p.mesh instanceof THREE.Mesh && p.mesh.geometry === this.tracerGeo) this.pool.push(p.mesh)
+        this.recycle(p)
         this.particles.splice(i, 1)
         continue
       }
@@ -287,6 +396,7 @@ export class Effects {
         mat.opacity = Math.max(0, (p.life / p.maxLife)) * (p.kind === 'smoke' ? 0.65 : 1)
       }
     }
+
     // trazadoras
     for (let i = this.tracers.length - 1; i >= 0; i--) {
       const t = this.tracers[i]
@@ -296,37 +406,48 @@ export class Effects {
       if (t.life <= 0) {
         t.mesh.visible = false
         this.tracers.splice(i, 1)
-        this.pool.push(t.mesh)
+        this.tracerPool.push(t.mesh)
       }
     }
-    // decals
-    for (let i = this.decals.length - 1; i >= 0; i--) {
-      const d = this.decals[i]
-      d.life -= dt
-      if (d.life < 2) {
-        (d.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, d.life / 2)
-      }
-      if (d.life <= 0) {
-        this.scene.remove(d.mesh)
-        ;(d.mesh.material as THREE.Material).dispose()
-        this.decals.splice(i, 1)
-      }
-    }
-    // luces de fogonazo
-    const tNow = performance.now() / 1000
-    for (const f of this.flashLights) {
-      if (f.until < tNow) {
-        if (f.light.intensity !== 0) f.light.intensity = 0
-        // las luces de la explosación se limpian aparte
+
+    // decals (anillo fijo: solo se ocultan, nunca se eliminan)
+    for (let i = 0; i < MAX_DECALS; i++) {
+      const life = this.decalLife[i]
+      if (life <= 0) continue
+      const nl = life - dt
+      this.decalLife[i] = nl
+      const m = this.decalMeshes[i]
+      if (nl <= 0) { m.visible = false; continue }
+      if (nl < 2) {
+        (m.material as THREE.MeshBasicMaterial).opacity = Math.max(0, nl / 2)
       }
     }
-    this.flashLights = this.flashLights.filter(f => {
-      if (f.light.intensity >= 70) { // luz de explosión: desvanecer y eliminar
-        f.light.intensity *= Math.max(0, 1 - dt * 7)
-        return f.light.intensity > 1
+
+    // luces de fogonazo: apagar las caducadas (intensidad 0, siguen en escena)
+    for (let i = 0; i < this.flashLights.length; i++) {
+      if (this.flashUntil[i] < tNow && this.flashLights[i].intensity !== 0) {
+        this.flashLights[i].intensity = 0
       }
-      return f.until >= tNow - 2
-    })
-    void camera
+    }
+    // luces de explosión: desvanecer
+    for (let i = 0; i < this.boomLights.length; i++) {
+      if (!this.boomActive[i]) continue
+      const light = this.boomLights[i]
+      light.intensity *= Math.max(0, 1 - dt * 7)
+      if (light.intensity <= 1) {
+        light.intensity = 0
+        this.boomActive[i] = false
+      }
+    }
+  }
+
+  /** limpieza total (al desmontar el juego) */
+  dispose(): void {
+    for (const l of this.flashLights) this.scene.remove(l)
+    for (const l of this.boomLights) this.scene.remove(l)
+    for (const m of this.decalMeshes) this.scene.remove(m)
+    this.particles.length = 0
+    this.tracers.length = 0
+    this.matPool = { spark: [], blood: [], smoke: [], flash: [] }
   }
 }

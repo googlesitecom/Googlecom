@@ -74,3 +74,51 @@ Stage Summary:
 - Simulación autoritativa en Web Worker (inmune a pestaña oculta) reemplaza al servidor socket.io: el mini-servicio de 3003 ya no es necesario
 - Soporte completo de mando (Xbox/PlayStation/genéricos) con sensibilidad configurable
 - Mapa 110×110 con 328 cajas y IA de bots con 4 dificultades
+
+---
+Task ID: 3
+Agent: Super Z (agente principal)
+Task: Mapa más grande y mejor diseñado (escondites/tensión), decoración y gráficos mejorados (sombras, luces, reflexiones), daño de bots rebalanceado y sistema de vida estilo Fortnite (HP+escudo)
+
+Work Log:
+- (Sesión anterior, completada y commiteada pero sin registro en el worklog)
+- Mapa ampliado a 130×130 con perímetro, spawns en ±64 y ~380 cajas: gasolinera, estación de radar, barrio con cabañas, mercado central, coberturas simétricas
+- Sistema de vida estilo Fortnite: 100 HP + 100 escudo (el escudo absorbe primero), potis/botiquines como pickups flotantes (PICKUP_INFO, PickupKind) con glow y respawn
+- Daño de bots reducido y rebalanceado (escudo/hp en sim.ts)
+- Gráficos: PMREM del cielo de atardecer como envMap PBR (reflexiones en metal/charcos), sombras de sol 4096px con cámara que sigue al jugador, oclusión de contacto fusionada (1 draw call), 14 farolas con PointLight cálida, letreros de neón, 10 charcos reflectantes, neumáticos, árboles con copas, niebla cálida, bloom (UnrealBloomPass) en calidad alta
+- Materiales PBR por tipo (roughness/metalness) con UVs escaladas por cara
+
+Stage Summary:
+- Todo commiteado en fab81e8; faltaba este registro de trabajo
+
+---
+Task ID: 4
+Agent: Super Z (agente principal)
+Task: Corregir congelamiento total al disparar ("se congela y traba todo") y subir el proyecto al repositorio de GitHub del usuario
+
+Work Log:
+- DIAGNÓSTICO (causa raíz, 3 problemas encadenados en effects.ts):
+  1) Cada disparo creaba `new THREE.PointLight` (fogonazo) y cada granada otro: en Three.js, cambiar el NÚMERO de luces de la escena cambia la cache-key de programas → recompila TODOS los shaders del mapa (14 farolas + sombras 4096 + bloom) → congelón de cientos de ms a segundos con el primer disparo
+  2) Las luces muertas NUNCA se quitaban de la escena (solo del array de seguimiento): tras >2 s sin disparar, el siguiente disparo creaba OTRA luz → otro congelón; las luces se acumulaban sin límite → costo por fragmento creciente → "traba todo" progresivo
+  3) Cada partícula/fogonazo/decal clonaba un material y lo destruía al morir → liberación y recompilación de programas GPU por ráfaga → microcongelones sostenidos
+- FIX effects.ts (reescrito con pools):
+  - Pool FIJO de luces creado en el constructor (antes del primer render): 3 fogonazos + 2 explosiones, intensidad 0, NUNCA se añaden/eliminan luces en runtime → el número de luces es constante → cero recompilaciones (solo cambian intensidad/posición = uniforms)
+  - Pools de reciclaje: materiales Sprite por tipo (spark/blood/smoke/flash), sprites, escombros, casquillos, anillos de explosión y trazadoras
+  - Decals: anillo fijo pre-creado de 44, se reciclan en su sitio (nunca dispose/add/remove)
+  - Techo de seguridad MAX_PARTICLES=320
+  - dispose() para limpieza al desmontar (enganchado en engine.dispose)
+- FIX engine.ts (churn por perdigón):
+  - Caché de hitboxes: se calculan UNA vez por disparo (buildHitboxCache) en vez de por perdigón (antes: 8 perdigones × 9 bots × 3 cajas = 216 Box3 por escopetazo)
+  - Ray y Vector3 reutilizados (bulletRay/bulletPoint) sin asignaciones por perdigón
+  - Eliminado raycast duplicado del mapa en perdigones que no tocan nada (castBullet ya trazaba far=200)
+- VERIFICACIÓN (agent-browser + VLM):
+  - 8 s de fuego sostenido + segunda ráfaga: 40 frames, peor frame 9 ms, 0 frames >300 ms (antes: el primer disparo congelaba 500-3000 ms)
+  - Munición desciende (15→7→3): disparos reales; bots combaten (A 17-15 B)
+  - VLM confirma: escena 3D, viewmodel, HUD completo, efectos visibles (chispas, trazadora, retroceso), sin defectos visuales
+  - tsc (solo errores preexistentes en skills/ ajenos al build) y eslint limpios
+- Subida a GitHub: repo github.com/googlesitecom/Googlecom (rama main, push con token del usuario sin guardarlo en .git/config)
+
+Stage Summary:
+- Congelamiento al disparar eliminado de raíz (pool fijo de luces + reciclaje total de efectos)
+- Rendimiento estable en fuego sostenido: peor frame <10 ms
+- Proyecto completo publicado en el repositorio de GitHub del usuario
