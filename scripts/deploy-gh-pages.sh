@@ -22,7 +22,7 @@ touch .nojekyll   # imprescindible: sin esto Jekyll ignora _next/
 
 git add -A
 git -c user.name="Super Z" -c user.email="dev@fronteracero.local" \
-  commit -m "deploy: sitio estático v4.1 (armas GLB arregladas + flores de color)" >/dev/null
+  commit -m "deploy: sitio estático v4.2 (armas bien orientadas + bots mueren + strafe sereno + lag optimizado)" >/dev/null
 git push "${GITHUB_PUSH_URL:?exporta GITHUB_PUSH_URL=https://x-access-token:TOKEN@github.com/googlesitecom/Googlecom.git}" gh-pages:gh-pages --force 2>&1 | tail -2
 
 cd /home/z/my-project
