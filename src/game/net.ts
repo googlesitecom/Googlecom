@@ -9,7 +9,7 @@ import type { Game } from './engine'
 import { useGame } from './store'
 import {
   GAME, generateRoomCode, peerIdForRoom,
-  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty,
+  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind,
 } from './shared'
 
 export type NetMode = 'solo' | 'host' | 'guest'
@@ -322,12 +322,12 @@ export class NetClient {
     this.sendToSim({ e: 'buy', d: { id: this.id, itemId } })
   }
 
-  throwGrenade(pos: [number, number, number], vel: [number, number, number]): void {
+  throwGrenade(pos: [number, number, number], vel: [number, number, number], kind: GrenadeKind = 'frag'): void {
     if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'grenadeThrow', d: { pos, vel } })
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'grenadeThrow', d: { pos, vel, kind } })
       return
     }
-    this.sendToSim({ e: 'grenadeThrow', d: { id: this.id, data: { pos, vel } } })
+    this.sendToSim({ e: 'grenadeThrow', d: { id: this.id, data: { pos, vel, kind } } })
   }
 
   /** Disparo del jugador local (para que los demás vean traza + animación de disparo) */
@@ -432,6 +432,11 @@ export class NetClient {
         game.onGrenadeExplode(d.pos)
         break
       }
+      case 'smokeSpawn': {
+        const d = data as { id: string; pos: [number, number, number]; duration: number }
+        game.onSmokeSpawn(d.id, d.pos, d.duration)
+        break
+      }
       case 'barrelExplode': {
         const d = data as { playerId: string; pos: [number, number, number] }
         if (d.playerId === this.id) break   // el tirador ya reprodujo el efecto localmente
@@ -471,8 +476,8 @@ export class NetClient {
         break
       }
       case 'econ': {
-        const d = data as { money: number; frags?: number }
-        game.setMoney(d.money, d.frags)
+        const d = data as { money: number; frags?: number; smokes?: number }
+        game.setMoney(d.money, d.frags, d.smokes)
         break
       }
       case 'buyResult': {

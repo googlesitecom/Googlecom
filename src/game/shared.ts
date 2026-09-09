@@ -297,21 +297,17 @@ export const PICKUP_SPOTS: PickupSpot[] = [
   // almacenes
   { kind: 'shieldBig', x: 0, z: -44 },
   { kind: 'medkit', x: 0, z: 44 },
-  // gasolinera / radar
+  // gasolinera / barracón del radar
   { kind: 'shieldSmall', x: -49.5, z: 0 },
-  { kind: 'shieldBig', x: 44, z: 4 },
-  // barrios NE / SW
-  { kind: 'bandage', x: 34, z: -26 },
-  { kind: 'shieldSmall', x: -34, z: 26 },
-  // patios NW / SE
-  { kind: 'shieldSmall', x: -32, z: -30 },
-  { kind: 'bandage', x: 32, z: 30 },
-  // junto a los autobuses
-  { kind: 'medkit', x: 19, z: 0 },
-  { kind: 'shieldBig', x: -19, z: 0 },
-  // flancos de torres
-  { kind: 'shieldSmall', x: 3, z: -26 },
-  { kind: 'bandage', x: -3, z: 26 },
+  { kind: 'shieldBig', x: 44, z: 3.8 },
+  // colonia NE / SW (dentro de las casas)
+  { kind: 'bandage', x: 40, z: -34.5 },
+  { kind: 'bandage', x: -40, z: 34.5 },
+  { kind: 'shieldSmall', x: 36, z: -50 },
+  { kind: 'shieldSmall', x: -36, z: 50 },
+  // depósitos NW / SE
+  { kind: 'medkit', x: 34, z: 43 },
+  { kind: 'medkit', x: -34, z: -43 },
 ]
 
 export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
@@ -366,6 +362,183 @@ function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: numbe
       else B(at, H - lintelH / 2, mid, T, lintelH, gateHalf * 2, mat)
     }
   }
+}
+
+// ------------------------------------------------------------
+// Edificios con interior: muros con puerta + banda de ventanas
+// ------------------------------------------------------------
+/** Rotaciones: la fachada (puerta) del edificio local mira a -z; `f` gira el edificio */
+const ROT = { N: 0, E: Math.PI / 2, S: Math.PI, W: Math.PI * 1.5 } as const
+type Facing = keyof typeof ROT
+
+/** Caja en coordenadas locales del edificio, girada según `f` */
+function BR(cx: number, cz: number, f: Facing, lx: number, ly: number, lz: number, w: number, h: number, d: number, mat: MatKey): void {
+  const ang = ROT[f]
+  const c = Math.cos(ang), s = Math.sin(ang)
+  const rx = lx * c - lz * s
+  const rz = lx * s + lz * c
+  const swap = Math.abs(s) > 0.5
+  B(cx + rx, ly, cz + rz, swap ? d : w, h, swap ? w : d, mat)
+}
+
+interface WallOpts {
+  H?: number; T?: number; y0?: number
+  door?: number; doorHalf?: number; doorH?: number
+  wins?: number[]; winW?: number; bandLo?: number; bandHi?: number
+}
+
+/**
+ * Muro de edificio en coords. locales. `axis 'z'`: corre a lo largo de x en z=at;
+ * `axis 'x'`: corre a lo largo de z en x=at. Puerta = hueco a toda altura con dintel;
+ * ventanas = banda practicable (se puede disparar a través) entre zócalo y franja superior.
+ */
+function wallL(cx: number, cz: number, f: Facing, axis: 'x' | 'z', at: number, from: number, to: number, mat: MatKey, opts: WallOpts): void {
+  const H = opts.H ?? 3.3
+  const T = opts.T ?? 0.35
+  const y0 = opts.y0 ?? 0
+  const bandLo = y0 + (opts.bandLo ?? 1.45)
+  const bandHi = y0 + (opts.bandHi ?? 2.25)
+  const winW = opts.winW ?? 1.3
+  const lo = Math.min(from, to), hi = Math.max(from, to)
+  const put = (c: number, len: number, ya: number, yb: number) => {
+    if (len <= 0.06 || yb - ya <= 0.06) return
+    const cy = (ya + yb) / 2
+    if (axis === 'z') BR(cx, cz, f, c, cy, at, len, yb - ya, T, mat)
+    else BR(cx, cz, f, at, cy, c, T, yb - ya, len, mat)
+  }
+  let solids: [number, number][] = [[lo, hi]]
+  if (opts.door !== undefined) {
+    const dh = opts.doorHalf ?? 1.05
+    const doorH = y0 + (opts.doorH ?? 2.15)
+    const dLo = opts.door - dh, dHi = opts.door + dh
+    solids = []
+    if (dLo - lo > 0.05) solids.push([lo, dLo])
+    if (hi - dHi > 0.05) solids.push([dHi, hi])
+    put(opts.door, dh * 2, doorH, y0 + H) // dintel sobre la puerta
+  }
+  for (const [a, b] of solids) {
+    put((a + b) / 2, b - a, y0, bandLo)               // zócalo
+    put((a + b) / 2, b - a, bandHi, y0 + H)           // franza superior
+    const gaps: [number, number][] = []               // huecos de ventana
+    for (const w of opts.wins ?? []) {
+      const g0 = w - winW / 2, g1 = w + winW / 2
+      if (g0 > a + 0.3 && g1 < b - 0.3) gaps.push([g0, g1])
+    }
+    gaps.sort((p, q) => p[0] - q[0])
+    let cur = a
+    for (const [g0, g1] of gaps) { put((cur + g0) / 2, g0 - cur, bandLo, bandHi); cur = g1 }
+    put((cur + b) / 2, b - cur, bandLo, bandHi)
+  }
+}
+
+/** Waypoints interiores de una casa (puerta → salón → dormitorio) */
+const WP_EXTRA: [number, number][] = []
+function wpTransform(cx: number, cz: number, f: Facing, lx: number, lz: number): [number, number] {
+  const ang = ROT[f], c = Math.cos(ang), s = Math.sin(ang)
+  return [cx + lx * c - lz * s, cz + lx * s + lz * c]
+}
+
+/** Casa pequeña 9×8 con interior: salón + dormitorio, ventanas, tejado plano */
+function smallHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
+  const HW = 4.5, HD = 4.0, H = 3.3, T = 0.35
+  const o: WallOpts = { H, T }
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.05, doorH: 2.15, wins: [-2.85, 2.85] }) // fachada
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-2.2, 2.2] })                                            // trasera
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
+  wallL(cx, cz, f, 'z', 1.2, -HW + T, HW - T, mat, { ...o, door: 1.9, doorHalf: 0.8, doorH: 2.05 })                // tabique
+  // mobiliario (salón z<1.2 · dormitorio z>1.2)
+  BR(cx, cz, f, -2.7, 0.4, -3.1, 1.9, 0.8, 0.85, 'sandbag')   // sofá
+  BR(cx, cz, f, -0.6, 0.45, -2.5, 1.3, 0.9, 0.9, 'wood')      // mesa
+  BR(cx, cz, f, 3.9, 0.9, -1.5, 0.7, 1.8, 1.6, 'wood')        // estante
+  BR(cx, cz, f, -2.6, 0.3, 2.7, 1.7, 0.6, 1.9, 'wood')        // cama
+  BR(cx, cz, f, -1.1, 0.3, 3.3, 0.7, 0.6, 0.7, 'crate')       // mesita
+  BR(cx, cz, f, 3.6, 0.45, 3.2, 0.7, 0.9, 0.7, 'barrel')      // bidón
+  // tejado plano con pretiles
+  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
+  BR(cx, cz, f, 0, H + 0.475, -HD - 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, 0, H + 0.475, +HD + 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, -HW - 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
+  BR(cx, cz, f, +HW + 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
+  // waypoints: frente de puerta, salón y dormitorio (alineados con las puertas)
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -6.2),
+    wpTransform(cx, cz, f, 1.9, -1.5),
+    wpTransform(cx, cz, f, 1.9, 3.3),
+  )
+}
+
+/** Casa grande de dos plantas: escalera interior, ventanas en ambas plantas y tejado accesible */
+function bigHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
+  const HW = 5.5, HD = 4.5, H1 = 3.2, H2 = 2.8, T = 0.4
+  // ---- planta baja ----
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H1, T, door: 0, doorHalf: 1.15, doorH: 2.25, wins: [-3.6, 3.6] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H1, T, wins: [-3.3, 0, 3.3] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
+  // escalera interior junto a la pared este (sube hacia el norte)
+  for (let i = 0; i < 8; i++) {
+    const rise = 0.4 * (i + 1)
+    BR(cx, cz, f, 3.55, rise / 2, 2.7 - 0.8 * i, 1.4, rise, 0.85, 'concrete')
+  }
+  // mobiliario planta baja
+  BR(cx, cz, f, -3.4, 0.4, -3.3, 2.1, 0.8, 0.85, 'sandbag')   // sofá
+  BR(cx, cz, f, -1.2, 0.45, -2.7, 1.3, 0.9, 0.9, 'wood')      // mesa
+  BR(cx, cz, f, -4.85, 0.9, -0.5, 0.7, 1.8, 1.7, 'wood')      // estante
+  BR(cx, cz, f, -4.3, 0.6, 3.4, 1.2, 1.2, 1.2, 'crate')       // cajas apiladas
+  BR(cx, cz, f, -4.3, 1.8, 3.4, 1.2, 1.2, 1.2, 'crate')
+  // ---- forjado 2.ª planta (hueco sobre la escalera) ----
+  BR(cx, cz, f, -1.5, H1 + 0.15, 0, 8.0, 0.3, HD * 2, 'concrete')       // franja oeste
+  BR(cx, cz, f, 4.0, H1 + 0.15, 3.25, 3.0, 0.3, 2.5, 'concrete')        // rincón este-sur
+  // ---- muros 2.ª planta (ventanas amplias) ----
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
+  // mobiliario 2.ª planta
+  BR(cx, cz, f, -4.5, H1 + 0.9, 3.4, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, -4.5, H1 + 2.1, 3.4, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, -2.0, H1 + 0.75, -3.0, 1.3, 0.9, 0.9, 'wood')
+  // ---- tejado accesible + pretil (hueco oeste donde llega la escalera exterior) ----
+  BR(cx, cz, f, 0, H1 + 0.3 + H2 + 0.15, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
+  const py = H1 + 0.3 + H2 + 0.475
+  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, +HW + 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
+  BR(cx, cz, f, -HW - 0.12, py, 1.9, 0.22, 0.35, 5.2, 'concrete')      // pretil oeste, tramo sur
+  BR(cx, cz, f, -HW - 0.12, py, -3.5, 0.22, 0.35, 2.0, 'concrete')     // tramo norte (hueco entre ambos)
+  // escalera exterior al tejado (pared oeste, sube hacia el norte)
+  for (let i = 0; i < 14; i++) {
+    const rise = 0.5 * (i + 1)
+    BR(cx, cz, f, -6.3, rise / 2, 4.0 - 0.62 * i, 1.3, rise, 0.68, 'concrete')
+  }
+  // waypoints: puerta, interior y fondo
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -6.5),
+    wpTransform(cx, cz, f, 0, -1),
+    wpTransform(cx, cz, f, 0, 2.5),
+  )
+}
+
+/** Barracón militar pequeño (8×5.4) con interior: literas y taquillas */
+function barracks(cx: number, cz: number, f: Facing, mat: MatKey = 'metalGreen'): void {
+  const HW = 4.0, HD = 2.7, H = 2.9, T = 0.35
+  const o: WallOpts = { H, T }
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.0, doorH: 2.05, wins: [-2.5, 2.5] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-1.8, 1.8] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [0] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [0] })
+  // literas y taquillas
+  BR(cx, cz, f, 2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
+  BR(cx, cz, f, -2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
+  BR(cx, cz, f, -3.3, 0.9, -1.6, 0.6, 1.8, 1.0, 'metalGrey')
+  BR(cx, cz, f, 2.2, 0.6, -1.5, 1.2, 1.2, 1.2, 'crate')
+  // tejado
+  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -4.3),
+    wpTransform(cx, cz, f, 0, 0),
+  )
 }
 
 // --- Mercado Central (0,0) 22×22, puertas de 3.2 m en cada lado ---
@@ -486,59 +659,47 @@ gatedWall('x', 10, 33, 55, 2.6, 0.5, 'concrete', 2.2, 2.1)     // muro sur con p
 B(48, 1.5, -3, 3, 3, 3, 'concrete')                            // base del radar
 B(48, 3.2, -3, 4, 0.4, 4, 'metalOrange')                       // plataforma radar
 B(48, 4.2, -3, 0.4, 1.6, 0.4, 'metalGrey')                     // antena
-B(37, 0.7, 4, 1.4, 1.4, 1.4, 'crate')                          // generadores
-B(40, 0.7, 5, 1.4, 1.4, 1.4, 'crate')
+barracks(44, 5.8, 'N')                                         // barracón con literas (interior)
+B(37, 0.7, 4, 1.4, 1.4, 1.4, 'crate')                          // generador
 B(52, 0.6, 3, 1.2, 1.2, 1.2, 'crate')
 // trinchera exterior junto a la puerta oeste (con hueco central)
 for (const z of [-4, -2.2, 2.2, 4]) B(28.5, 0.4, z, 3, 0.8, 0.6, 'sandbag')
 
-// --- Barrio industrial NE / SW (callejones con escondites) ---
+// --- Colonia residencial NE / SW: casas con interior y calles limpias ---
+// Calles: E-O en z=sz·26 (ancha y despejada) · N-S en x=sx·30
 for (const [sx, sz] of [[1, -1], [-1, 1]] as [number, number][]) {
-  // muros en L que forman callejones
-  B(sx * 34, 1.4, sz * 20, 12, 2.8, 0.5, 'sand')
-  B(sx * 39, 1.4, sz * 26, 0.5, 2.8, 12, 'sand')
-  B(sx * 30, 1.4, sz * 32, 0.5, 2.8, 14, 'sand')
-  B(sx * 36, 1.4, sz * 38, 12, 2.8, 0.5, 'sand')
-  B(sx * 44, 1.4, sz * 34, 0.5, 2.8, 10, 'sand')
-  // contenedores con vista
-  B(sx * 30, 1.2, sz * 24, 6, 2.4, 2.5, 'metalRed')
-  B(sx * 44, 1.2, sz * 24, 2.5, 2.4, 6, 'metalBlue')
-  B(sx * 44, 3.6, sz * 24, 2.5, 2.4, 6, 'metalBlue')
-  // escalera de cajas para subir al contenedor apilado
-  for (let i = 0; i < 4; i++) {
-    const h = 0.5 * (i + 1)
-    B(sx * 44, h / 2, sz * (18.8 - 0.9 * i), 1.4, h, 0.9, 'crate')
-  }
-  // ruinas y cobertura suelta
-  B(sx * 24, 1.1, sz * 40, 8, 2.2, 0.45, 'sand')
-  B(sx * 50, 1.1, sz * 22, 0.45, 2.2, 6, 'sand')
-  B(sx * 27, 0.6, sz * 33, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 28.4, 0.6, sz * 33.4, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 27.7, 1.8, sz * 33.2, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 37, 0.45, sz * 42, 0.7, 0.9, 0.7, 'barrel')
-  B(sx * 50, 0.45, sz * 30, 0.7, 0.9, 0.7, 'barrel')
-  B(sx * 41, 0.4, sz * 28, 3, 0.8, 0.6, 'sandbag')
+  // casas 1 y 2: fachada hacia la calle E-O
+  smallHouse(sx * 19, sz * 36, sz < 0 ? 'S' : 'N')
+  smallHouse(sx * 41, sz * 36, sz < 0 ? 'S' : 'N')
+  // casa 3: fachada hacia la calle N-S
+  smallHouse(sx * 19, sz * 50, sx > 0 ? 'E' : 'W')
+  // casa grande de dos plantas (escalera interior + tejado accesible)
+  bigHouse(sx * 41, sz * 50, sx > 0 ? 'W' : 'E')
+  // mobiliario urbano ordenado: contenedor de residuos, muretes y bancos
+  B(sx * 34, 1.2, sz * 21.5, 2.6, 2.4, 2.4, 'metalGreen')   // contenedor de residuos
+  B(sx * 24, 0.55, sz * 24.5, 3, 1.1, 0.5, 'concrete')     // muro bajo de acera
+  B(sx * 50, 0.55, sz * 27.5, 3, 1.1, 0.5, 'concrete')     // parada de bus
+  B(sx * 52, 0.45, sz * 20, 1.8, 0.28, 0.6, 'wood')        // bancos del parque
+  B(sx * 48, 0.45, sz * 18, 0.6, 0.28, 1.8, 'wood')
+  B(sx * 54, 0.5, sz * 22, 2.0, 1.0, 2.0, 'concrete')      // fuente del parque
 }
 
-// --- Patio de contenedores NW / SE (filas con pasillos) ---
+// --- Depósito de contenedores NW / SE: filas alineadas con pasillos amplios ---
 for (const [sx, sz] of [[-1, -1], [1, 1]] as [number, number][]) {
-  B(sx * 24, 1.2, sz * 22, 2.5, 2.4, 6, 'metalGreen')
-  B(sx * 24, 3.6, sz * 22, 2.5, 2.4, 6, 'metalGreen')
-  B(sx * 32, 1.2, sz * 20, 6, 2.4, 2.5, 'metalOrange')
-  B(sx * 40, 1.2, sz * 22, 2.5, 2.4, 6, 'metalRed')
-  B(sx * 48, 1.2, sz * 24, 6, 2.4, 2.5, 'metalBlue')
-  B(sx * 28, 1.2, sz * 34, 2.5, 2.4, 6, 'metalBlue')
-  B(sx * 36, 1.2, sz * 36, 2.5, 2.4, 6, 'metalRed')
-  B(sx * 44, 1.2, sz * 34, 6, 2.4, 2.5, 'metalGreen')
-  B(sx * 52, 1.2, sz * 34, 2.5, 2.4, 6, 'metalOrange')
-  // torre de vigilancia del patio
+  const row1: MatKey[] = ['metalRed', 'metalBlue', 'metalGreen', 'metalOrange']
+  const row2: MatKey[] = ['metalBlue', 'metalOrange', 'metalRed', 'metalGreen']
+  const xs = [17, 27, 37, 47]
+  // fila 1 (z = sz·24) — 4 contenedores alineados con huecos regulares
+  for (let i = 0; i < 4; i++) B(sx * xs[i], 1.2, sz * 24, 6, 2.4, 2.5, row1[i])
+  // fila 2 (z = sz·36) + uno apilado (se sube con la plataforma de salto)
+  for (let i = 0; i < 4; i++) B(sx * xs[i], 1.2, sz * 36, 6, 2.4, 2.5, row2[i])
+  B(sx * 27, 3.6, sz * 36, 6, 2.4, 2.5, 'metalGrey')
+  // torre de vigilancia del depósito
   tower(sx * 44, sz * 46, -sz)
-  // cobertura suelta
-  B(sx * 34, 0.6, sz * 28, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 35.4, 0.6, sz * 28.4, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 34.7, 1.8, sz * 28.2, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 30, 0.45, sz * 40, 0.7, 0.9, 0.7, 'barrel')
-  B(sx * 46, 0.4, sz * 40, 3, 0.8, 0.6, 'sandbag')
+  // cobertura intencional y ordenada en los pasillos
+  B(sx * 32, 0.4, sz * 19.5, 3, 0.8, 0.6, 'sandbag')
+  B(sx * 14, 0.55, sz * 42, 3, 1.1, 0.5, 'concrete')
+  B(sx * 47, 0.45, sz * 19, 0.7, 0.9, 0.7, 'barrel')
 }
 
 // --- Carril central: autobuses abandonados ---
@@ -548,33 +709,25 @@ for (const sx of [-1, 1]) {
   B(sx * 19.5, 0.6, 3.2, 1.2, 1.2, 1.2, 'crate')
 }
 
-// --- Cobertura de plaza (esquinas del mercado) ---
+// --- Plaza del mercado: jardineras alineadas (ordenado, sin amontonar) ---
 for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
-  B(sx * 10, 0.7, sz * 10, 4.5, 1.4, 0.5, 'concrete')
-  B(sx * 8, 0.4, sz * 16, 3, 0.8, 0.6, 'sandbag')
-  B(sx * 16, 0.4, sz * 8, 3, 0.8, 0.6, 'sandbag')
-  B(sx * 6.5, 0.45, sz * 13, 0.7, 0.9, 0.7, 'barrel')
-  B(sx * 13, 0.45, sz * 6.5, 0.7, 0.9, 0.7, 'barrel')
+  B(sx * 10, 0.7, sz * 10, 4.5, 1.4, 0.5, 'concrete')          // jardinera/banco
+  B(sx * 10, 0.15, sz * 13.5, 4.5, 0.3, 0.5, 'concrete')       // borde de acera
 }
 
-// --- Barreras y ruinas simétricas en calles ---
-for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
-  B(sx * 26, 0.55, sz * 12, 3, 1.1, 0.5, 'concrete')
-  B(sx * 12, 0.55, sz * 26, 3, 1.1, 0.5, 'concrete')
-  B(sx * 20, 0.55, sz * 20, 3, 1.1, 0.5, 'concrete')
-  B(sx * 42, 1.0, sz * 8, 0.45, 2.0, 3.5, 'sand')
-  B(sx * 8, 1.0, sz * 42, 3.5, 2.0, 0.45, 'sand')
-  B(sx * 54, 0.55, sz * 14, 3, 1.1, 0.5, 'concrete')
-  B(sx * 14, 0.55, sz * 54, 3, 1.1, 0.5, 'concrete')
-  B(sx * 56, 0.6, sz * 24, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 24, 0.6, sz * 56, 1.2, 1.2, 1.2, 'crate')
-}
 
 // --- Árboles (tronco con colisión; copa es decorativa) ---
 export const TREES: [number, number][] = [
+  // perímetro
   [60, 8], [-60, -8], [-60, 8], [60, -8],
   [8, 60], [-8, -60], [-8, 60], [8, -60],
   [54, -40], [-54, 40],
+  // parques de las colonias NE / SW
+  [52, 16], [56, 21], [47, 20], [-52, -16], [-56, -21], [-47, -20],
+  // depósitos NW / SE
+  [52, 40], [-52, -40], [14, 44], [-14, -44],
+  // avenidas y calles
+  [9, 32], [-9, -32], [9, 46], [-9, -46], [58, 24], [-58, -24],
 ]
 for (const [tx, tz] of TREES) B(tx, 2.1, tz, 0.5, 4.2, 0.5, 'wood')
 
@@ -584,6 +737,7 @@ export const LAMPS: [number, number][] = [
   [20, 4], [-20, -4], [20, -4], [-20, 4],
   [4, 26], [-4, -26], [4, -26], [-4, 26],
   [-39, 6.5], [39, -6.5],
+  [14, -23], [-14, 23], [40, -23], [-40, 23],
 ]
 for (const [lx, lz] of LAMPS) B(lx, 2.6, lz, 0.35, 5.2, 0.35, 'metalGrey')
 
@@ -601,8 +755,8 @@ export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
   { x: 4.2, z: 6.8 }, { x: -4.2, z: -6.8 },       // mercado central
   { x: -36.8, z: 0.8 }, { x: -41.2, z: -0.8 },    // gasolinera (junto a las bombas)
   { x: 3.4, z: -34.6 }, { x: -3.4, z: 34.6 },     // almacenes
-  { x: 36.5, z: -30.5 }, { x: -36.5, z: 30.5 },   // callejones del barrio
-  { x: 28, z: 26 }, { x: -28, z: -26 },           // patios de contenedores
+  { x: 26, z: -23.5 }, { x: -26, z: 23.5 },       // calles de las colonias
+  { x: 32, z: 33 }, { x: -32, z: -33 },           // pasillos de los depósitos
   { x: 14, z: -14 }, { x: -14, z: 14 },           // plaza
 ]
 for (const eb of EXPLODING_BARRELS) B(eb.x, 0.5, eb.z, 0.74, 1.0, 0.74, 'explosive')
@@ -610,21 +764,21 @@ for (const eb of EXPLODING_BARRELS) B(eb.x, 0.5, eb.z, 0.74, 1.0, 0.74, 'explosi
 // --- Tirolinas (usar E junto al ancla para descender) ---
 export interface ZiplineSpec { from: [number, number, number]; to: [number, number, number] }
 export const ZIPLINES: ZiplineSpec[] = [
-  { from: [0, 5.0, 11.4], to: [16, 3.55, 0] },      // techo mercado → autobús
-  { from: [0, 5.0, -11.4], to: [-16, 3.55, 0] },    // techo mercado → autobús
-  { from: [44, 5.0, -24.5], to: [54, 2.3, 6] },     // contenedor barrio NE → estación radar
-  { from: [-44, 5.0, 24.5], to: [-50, 2.1, 12] },   // contenedor barrio SO → llano
+  { from: [0, 5.0, 11.4], to: [16, 3.55, 0] },      // techo mercado → autobús E
+  { from: [0, 5.0, -11.4], to: [-16, 3.55, 0] },    // techo mercado → autobús O
+  { from: [41, 7.0, -45.7], to: [52, 2.6, -2] },    // tejado casa grande NE → estación radar
+  { from: [-41, 7.0, 45.7], to: [-46, 2.3, 6] },    // tejado casa grande SO → gasolinera
 ]
 
 // --- Plataformas de salto (impulso vertical automático) ---
 export interface JumpPadSpec { x: number; z: number }
 export const JUMP_PADS: JumpPadSpec[] = [
-  { x: -27, z: -25 },  // patio NO (sube a los contenedores)
-  { x: 30, z: 28 },    // patio SE
-  { x: -2.5, z: -20.5 }, // torre norte
-  { x: 2.5, z: 20.5 },  // torre sur
-  { x: 34, z: 4 },      // radar
-  { x: -34, z: -4 },    // gasolinera
+  { x: -2.5, z: -20.5 },  // torre norte
+  { x: 2.5, z: 20.5 },    // torre sur
+  { x: 34, z: 4 },        // radar (junto a la puerta)
+  { x: -34, z: -4 },      // gasolinera
+  { x: 22, z: 31 },       // depósito SE (sube a los contenedores)
+  { x: -22, z: -31 },     // depósito NW
 ]
 
 export const MAP_BOXES: MapBox[] = MAP
@@ -702,36 +856,42 @@ export const WAYPOINTS: [number, number][] = [
   [44, 62], [22, 62], [0, 62], [-22, 62], [-44, 62], [-62, 62],
   [-62, 44], [-62, 22], [-62, 0], [-62, -22], [-62, -44],
   // anillo 46
-  [0, -46], [18, -46], [36, -46], [46, -36], [46, -18], [44, 0], [46, 18], [46, 36], [36, 46], [18, 46],
-  [0, 46], [-18, 46], [-36, 46], [-46, 36], [-46, 18], [-42, 0], [-46, -18], [-46, -36], [-36, -46], [-18, -46],
-  // anillo 30 con esquinas esquivadas
+  [0, -46], [18, -42], [34, -46], [47, -29], [46, -18], [44, 0], [46, 18], [47, 29], [34, 46], [18, 42],
+  [0, 46], [-18, 42], [-34, 46], [-47, 29], [-46, 18], [-42, 0], [-46, -18], [-47, -29], [-34, -46], [-18, -42],
+  // anillo 30
   [0, -30], [11, -30], [22, -30], [26, -26], [30, -11], [30, 0], [30, 11], [26, 26], [22, 30], [11, 30],
   [0, 30], [-11, 30], [-22, 30], [-26, 26], [-30, 11], [-30, 0], [-30, -11], [-26, -26], [-22, -30], [-11, -30],
-  // ejes intermedios
+  // ejes
   [22, 0], [-22, 0],
   // mercado central (interior y puertas)
   [0, 0], [0, -9], [0, 9], [9, 0], [-9, 0], [0, -16], [0, 16], [14, 0], [-14, 0],
-  // flancos de torres
-  [4, -21], [-4, 21], [4, 21], [-4, -21],
-  // conectores de plaza (rodean las escaleras del mercado)
-  [8, -13], [-8, 13],
+  // flancos de torres + conectores de plaza
+  [4, -21], [-4, 21], [4, 21], [-4, -21], [6, -13], [-6, 13],
   // almacén norte / sur
   [0, -31.5], [0, -44], [9, -40], [-9, -40], [17, -44], [-17, -44],
   [0, 31.5], [0, 44], [9, 40], [-9, 40], [17, 44], [-17, 44],
   // gasolinera oeste
   [-49.5, 0], [-39, 0], [-39, 8.5], [-39, -6], [-28, 0],
-  // radar este
-  [28, 0], [38, 0], [44, 4], [48, 6], [44, 13],
-  // barrio NE
-  [34, -23], [38, -32], [46, -30], [33, -34], [24, -26], [36, -18], [31, -22], [26, -21.5],
-  // barrio SW
-  [-34, 23], [-38, 32], [-46, 30], [-33, 34], [-24, 26], [-36, 18], [-31, 22], [-26, 21.5],
-  // patio NW
-  [-30, -26], [-38, -28], [-32, -32], [-26, -30],
-  // patio SE
-  [30, 26], [38, 28], [32, 32], [26, 30],
+  // estación de radar + barracón
+  [28, 0], [38, 0], [44, 1.5], [44, 5.8], [44, 13],
+  // colonia NE (calles y parque)
+  [12, -26], [24, -26], [36, -26], [48, -26], [56, -26],
+  [30, -12], [30, -40], [30, -54], [52, 18],
+  // colonia SW (calles y parque)
+  [-12, 26], [-24, 26], [-36, 26], [-48, 26], [-56, 26],
+  [-30, 12], [-30, 40], [-30, 54], [-52, -18],
+  // depósito SE (calle, pasillo y fondo)
+  [12, 16], [24, 16], [36, 16], [48, 16],
+  [12, 30], [22, 30], [32, 30], [42, 30],
+  [14, 41], [26, 41], [38, 41], [52, 41], [44, 38.5],
+  // depósito NW
+  [-12, -16], [-24, -16], [-36, -16], [-48, -16],
+  [-12, -30], [-22, -30], [-32, -30], [-42, -30],
+  [-14, -41], [-26, -41], [-38, -41], [-52, -41], [-44, -38.5],
   // carril central (autobuses)
   [13, 0], [-13, 0], [21, 4], [-21, -4],
+  // interiores de edificios (generados por las funciones de construcción)
+  ...WP_EXTRA,
 ]
 
 /** Aristas del grafo de waypoints (calculadas con LOS a altura de rodilla 0.5 m) */
@@ -762,16 +922,18 @@ export const NEONS: NeonSpec[] = [
   { text: 'GAS', x: -53.8, y: 3.9, z: -4, ry: Math.PI / 2, color: '#f87171', w: 3 },
   { text: '24H', x: -44.2, y: 2.9, z: 2.2, ry: Math.PI / 2, color: '#fbbf24', w: 2.2 },
   { text: 'RADAR', x: 44, y: 2.1, z: 10.6, ry: Math.PI, color: '#4ade80', w: 4.5 },
-  { text: 'BAR', x: 34, y: 2.4, z: -19.6, ry: 0, color: '#f472b6', w: 3 },
-  { text: 'BAR', x: -34, y: 2.4, z: 19.6, ry: Math.PI, color: '#f472b6', w: 3 },
+  { text: 'COLONIA', x: 35.15, y: 2.4, z: -50, ry: -Math.PI / 2, color: '#f472b6', w: 4.2 },
+  { text: 'COLONIA', x: -35.15, y: 2.4, z: 50, ry: Math.PI / 2, color: '#f472b6', w: 4.2 },
+  { text: 'DEPÓSITO', x: 32, y: 3.4, z: 34.8, ry: 0, color: '#fbbf24', w: 4.5 },
+  { text: 'DEPÓSITO', x: -32, y: 3.4, z: -34.8, ry: Math.PI, color: '#fbbf24', w: 4.5 },
 ]
 
 export interface PuddleSpec { x: number; z: number; r: number }
 export const PUDDLES: PuddleSpec[] = [
   { x: 8, z: 14, r: 1.6 }, { x: -8, z: -14, r: 1.4 },
   { x: 18, z: -3, r: 1.8 }, { x: -18, z: 3, r: 1.5 },
-  { x: 38, z: -30, r: 1.6 }, { x: -38, z: 30, r: 1.4 },
-  { x: -30, z: -26, r: 1.2 }, { x: 30, z: 26, r: 1.2 },
+  { x: 36, z: -26, r: 1.6 }, { x: -36, z: 26, r: 1.4 },
+  { x: 24, z: 32, r: 1.2 }, { x: -24, z: -32, r: 1.2 },
   { x: -42, z: 5, r: 1.6 }, { x: 42, z: -5, r: 1.4 },
 ]
 

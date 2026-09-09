@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) **Yes**, interior walls (tan textured) are visible on the left, right, and top.\n2) **No**, there is no furniture inside the room.\n3) **Yes**, there is a large doorway/opening to the outside on the left.\n4) **Yes**, there is a window opening in the wall to the right of the doorway.\n5) **No**, the player appears to be standing normally on the floor.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788919965,
+  "id": "20260909101240089c10ffb3fd4a0b",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909101240089c10ffb3fd4a0b",
+  "usage": {
+    "completion_tokens": 91,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 961,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1052
+  }
+}

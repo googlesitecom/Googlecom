@@ -420,8 +420,10 @@ export class Game {
     // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
     this.buildDecor(texs)
 
-    // ---- mecánicas del mapa: pasto, tirolinas, plataformas de salto ----
+    // ---- mecánicas del mapa: pasto, arbustos, flores, tirolinas, plataformas ----
     this.buildGrass(quality)
+    this.buildBushes(quality)
+    this.buildFlowers(quality)
     this.buildZiplines()
     this.buildJumpPads()
 
@@ -595,6 +597,11 @@ export class Game {
     // viento: balanceo en el vertex shader usando la fase por instancia
     mat.onBeforeCompile = shader => {
       shader.uniforms.uTime = this.grassUniform
+      // declarar el uniform en el GLSL (sin esto el programa no compila)
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        '#include <common>\nuniform float uTime;',
+      )
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
@@ -610,7 +617,7 @@ export class Game {
       )
     }
 
-    const count = quality === 'alta' ? 8200 : quality === 'media' ? 5200 : 2200
+    const count = quality === 'alta' ? 14000 : quality === 'media' ? 9000 : 3200
     const mesh = new THREE.InstancedMesh(geo, mat, count)
     mesh.frustumCulled = false
     const m = new THREE.Matrix4()
@@ -620,7 +627,7 @@ export class Game {
     const col = new THREE.Color()
     let placed = 0
     // matones alrededor de puntos abiertos (evitando AABBs y charcos)
-    const clumps = Math.floor(count / 72)
+    const clumps = Math.floor(count / 78)
     for (let c = 0; c < clumps && placed < count; c++) {
       const cx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
       const cz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
@@ -631,7 +638,7 @@ export class Game {
         if (d < 18) { nearTree = Math.max(nearTree, 1 - d / 18); break }
       }
       if (this.grassBlocked(cx, cz, 1.4)) continue
-      const per = 46 + Math.floor(Math.random() * 30) + Math.floor(nearTree * 26)
+      const per = 58 + Math.floor(Math.random() * 34) + Math.floor(nearTree * 34)
       for (let i = 0; i < per && placed < count; i++) {
         const a = Math.random() * Math.PI * 2
         const r = Math.pow(Math.random(), 0.6) * 1.5
@@ -689,6 +696,86 @@ export class Game {
       if (Math.hypot(p.x - x, p.z - z) < p.r + 0.3) return true
     }
     return false
+  }
+
+  // ----------------------------------------------------------
+  // Arbustos instanciados (1 draw call, sombra suave)
+  // ----------------------------------------------------------
+  private buildBushes(quality: 'baja' | 'media' | 'alta'): void {
+    const count = quality === 'alta' ? 170 : quality === 'media' ? 110 : 50
+    const geo = new THREE.IcosahedronGeometry(0.55, 1)
+    geo.translate(0, 0.3, 0)
+    geo.scale(1, 0.65, 1)
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true })
+    const mesh = new THREE.InstancedMesh(geo, mat, count)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    const m = new THREE.Matrix4()
+    const q = new THREE.Quaternion()
+    const sc = new THREE.Vector3()
+    const pos = new THREE.Vector3()
+    const col = new THREE.Color()
+    let placed = 0
+    let guard = 0
+    while (placed < count && guard++ < count * 30) {
+      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
+      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
+      if (this.grassBlocked(gx, gz, 0.8)) continue
+      pos.set(gx, 0, gz)
+      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI * 2)
+      const s = 0.7 + Math.random() * 0.9
+      sc.set(s, s * (0.75 + Math.random() * 0.5), s)
+      m.compose(pos, q, sc)
+      mesh.setMatrixAt(placed, m)
+      const t = Math.random()
+      col.setRGB(0.26 + t * 0.12, 0.36 + t * 0.16, 0.18 + t * 0.08)
+      mesh.setColorAt(placed, col)
+      placed++
+    }
+    mesh.count = placed
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    mesh.instanceMatrix.needsUpdate = true
+    this.scene.add(mesh)
+  }
+
+  // ----------------------------------------------------------
+  // Flores silvestres instanciadas (toques de color)
+  // ----------------------------------------------------------
+  private buildFlowers(quality: 'baja' | 'media' | 'alta'): void {
+    const count = quality === 'alta' ? 700 : quality === 'media' ? 420 : 140
+    const plane = new THREE.PlaneGeometry(0.17, 0.17)
+    plane.translate(0, 0.12, 0)
+    const plane2 = plane.clone()
+    plane2.rotateY(Math.PI / 2)
+    const geo = mergeGeometries([plane, plane2])!
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, fog: true })
+    const mesh = new THREE.InstancedMesh(geo, mat, count)
+    const m = new THREE.Matrix4()
+    const q = new THREE.Quaternion()
+    const sc = new THREE.Vector3()
+    const pos = new THREE.Vector3()
+    const col = new THREE.Color()
+    const palette = [0xffd94d, 0xfff3c8, 0xb18cff, 0xff8fb0]
+    let placed = 0
+    let guard = 0
+    while (placed < count && guard++ < count * 30) {
+      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
+      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
+      if (this.grassBlocked(gx, gz, 0.4)) continue
+      pos.set(gx, 0, gz)
+      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
+      const s = 0.7 + Math.random() * 0.7
+      sc.set(s, s, s)
+      m.compose(pos, q, sc)
+      mesh.setMatrixAt(placed, m)
+      col.setHex(palette[Math.floor(Math.random() * palette.length)])
+      mesh.setColorAt(placed, col)
+      placed++
+    }
+    mesh.count = placed
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    mesh.instanceMatrix.needsUpdate = true
+    this.scene.add(mesh)
   }
 
   // ----------------------------------------------------------
@@ -801,6 +888,11 @@ export class Game {
     removeEventListener('contextmenu', this.onCtxMenu)
     this.net?.disconnect()
     this.effects?.dispose()
+    for (const sv of this.smokeViews.values()) {
+      this.scene.remove(sv.group)
+      for (const sp of sv.sprites) (sp.material as THREE.SpriteMaterial).dispose()
+    }
+    this.smokeViews.clear()
     this.composer?.dispose()
     this.renderer?.dispose()
   }
@@ -1061,7 +1153,7 @@ export class Game {
     const phase = useGame.getState().phase
     const playing = phase === 'playing' || phase === 'dead'
 
-    if (playing) {
+    if (playing && !this.cine.active) {
       this.updateGamepad(dt)
       this.updateMovement(dt)
       this.updateWeapon(dt, t)
@@ -1077,6 +1169,7 @@ export class Game {
 
     // granadas visibles
     this.updateGrenadeViews(dt)
+    this.updateSmokeViews(dt)
 
     // efectos
     this.effects.update(dt, this.camera)
@@ -1419,10 +1512,22 @@ export class Game {
   // Cámara
   // ----------------------------------------------------------
   private updateCamera(dt: number, t: number): void {
+    // cinemática de entrada: la cámara vuela sobre el mapa hasta el despliegue
+    if (this.cine.active) {
+      const t01 = Math.min(1, (performance.now() - this.cine.t0) / (this.cine.dur * 1000))
+      const p = this.cine.curve!.getPoint(t01)
+      const lk = this.cine.look!.getPoint(Math.min(1, t01 * 1.04))
+      this.camera.position.copy(p)
+      this.camera.up.set(0, 1, 0)
+      this.camera.lookAt(lk)
+      if (t01 >= 1) this.endCinematic()
+      return
+    }
     // altura de ojos
     const targetEye = this.dead ? 0.4 : this.crouching ? EYE_CROUCH : EYE_STAND
     const curEye = this.camera.position.y - this.pos.y
     const eye = curEye + (targetEye - curEye) * Math.min(1, dt * 10)
+    void t
 
     // bob
     const hSpeed = Math.hypot(this.vel.x, this.vel.z)
@@ -1851,21 +1956,80 @@ export class Game {
   }
 
   // ----------------------------------------------------------
-  // Granadas
+  // Granadas (MOLO ofensiva · humo de cobertura)
   // ----------------------------------------------------------
-  throwGrenade(): void {
-    if (this.dead || this.frags <= 0 || this.throwCooldown > 0) return
+  throwGrenade(kind: GrenadeKind = 'frag'): void {
+    if (this.dead || this.throwCooldown > 0) return
+    if (kind === 'smoke') {
+      if (this.smokes <= 0) {
+        useGame.getState().addAnnouncement('Sin granadas de humo — cómpralas en la tienda (B)', 'info')
+        return
+      }
+      this.smokes--
+      useGame.getState().setHud({ smokes: this.smokes })
+    } else {
+      if (this.frags <= 0) {
+        useGame.getState().addAnnouncement('Sin granadas MOLO — cómpralas en la tienda (B)', 'info')
+        return
+      }
+      this.frags--
+      useGame.getState().setHud({ frags: this.frags })
+    }
     this.throwCooldown = 0.8
-    this.frags--
-    useGame.getState().setHud({ frags: this.frags })
     this.audio.throwSound()
     this.camera.updateMatrixWorld()
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
     const eye = this.camera.position.clone().addScaledVector(dir, 0.4)
-    const vel = dir.clone().multiplyScalar(16)
-    vel.y += 3.5
-    this.net.throwGrenade([eye.x, eye.y, eye.z], [vel.x, vel.y, vel.z])
-    useGame.getState().setHud({ frags: this.frags })
+    const speed = kind === 'smoke' ? 13 : 16
+    const vel = dir.clone().multiplyScalar(speed)
+    vel.y += kind === 'smoke' ? 4.2 : 3.5
+    this.net.throwGrenade([eye.x, eye.y, eye.z], [vel.x, vel.y, vel.z], kind)
+  }
+
+  /** Cortina de humo desplegada por una granada (evento de la simulación) */
+  onSmokeSpawn(id: string, pos: [number, number, number], duration: number): void {
+    if (!this.smokeTex) this.smokeTex = makeSmokeTexture()
+    const group = new THREE.Group()
+    group.position.set(pos[0], pos[1], pos[2])
+    const sprites: THREE.Sprite[] = []
+    for (let i = 0; i < 14; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: this.smokeTex, color: 0xc9c5bd, transparent: true, opacity: 0, depthWrite: false,
+      })
+      const sp = new THREE.Sprite(mat)
+      const a = (i / 14) * Math.PI * 2
+      const r = 1.2 + Math.random() * 2.4
+      sp.position.set(Math.cos(a) * r, 0.6 + Math.random() * 1.8, Math.sin(a) * r)
+      sp.scale.setScalar(4 + Math.random() * 3)
+      sp.userData.baseScale = sp.scale.x
+      sprites.push(sp)
+      group.add(sp)
+    }
+    this.scene.add(group)
+    this.smokeViews.set(id, { group, sprites, born: performance.now(), life: duration })
+  }
+
+  private updateSmokeViews(dt: number): void {
+    if (!this.smokeViews.size) return
+    const now = performance.now()
+    for (const [id, sv] of this.smokeViews) {
+      const age = now - sv.born
+      // despliegue (1,6 s) → cortina densa → disolución (últimos 3 s)
+      const grow = Math.min(1, age / 1600)
+      const fade = Math.max(0, Math.min(1, (sv.life - age) / 3000))
+      for (const sp of sv.sprites) {
+        const mat = sp.material as THREE.SpriteMaterial
+        mat.opacity = 0.82 * grow * fade
+        const base = (sp.userData.baseScale as number) * (0.55 + 0.45 * grow)
+        sp.scale.setScalar(base + Math.sin(now / 900 + sp.position.x * 3) * 0.25)
+        sp.position.y += dt * 0.14
+      }
+      if (age >= sv.life) {
+        this.scene.remove(sv.group)
+        for (const sp of sv.sprites) (sp.material as THREE.SpriteMaterial).dispose()
+        this.smokeViews.delete(id)
+      }
+    }
   }
 
   private updateGrenadeViews(dt: number): void {
@@ -1901,6 +2065,48 @@ export class Game {
   }
 
   // ----------------------------------------------------------
+  // Cinemática de entrada (sobrevuelo del mapa hasta el despliegue)
+  // ----------------------------------------------------------
+  startCinematic(): void {
+    if (this.cine.played || this.cine.active) return
+    this.cine.played = true
+    this.cine.active = true
+    this.cine.t0 = performance.now()
+    this.cine.dur = 11   // segundos (updateCamera multiplica por 1000)
+    const s = this.pos
+    const m = s.x < 0 ? 1 : -1   // espejo según el bando (A: vuela desde el SE · B: desde el NO)
+    this.cine.curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(m * 62, 30, m * 62),
+      new THREE.Vector3(m * 26, 17, m * 36),
+      new THREE.Vector3(-m * 2, 12, m * 6),        // sobre el mercado central
+      new THREE.Vector3(-m * 40, 9, -m * 2),       // gasolinera / radar
+      new THREE.Vector3(m * 30, 6.5, -m * 30),
+      new THREE.Vector3(s.x + m * 5, 3.0, s.z + m * 8),
+      new THREE.Vector3(s.x, 1.7, s.z),
+    ], false, 'catmullrom', 0.4)
+    this.cine.look = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 3, 0),
+      new THREE.Vector3(0, 2.4, 0),
+      new THREE.Vector3(0, 2.2, 0),
+      new THREE.Vector3(-m * 49, 2, 0),
+      new THREE.Vector3(m * 44, 2, -m * 4),
+      new THREE.Vector3(s.x - m * 10, 1.5, s.z - m * 10),
+      new THREE.Vector3(s.x - m * 10, 1.5, s.z - m * 10),
+    ], false, 'catmullrom', 0.4)
+    this.minimap.style.opacity = '0'
+    useGame.getState().setHud({ cineActive: true })
+    this.audio.roundStart()
+  }
+
+  endCinematic(): void {
+    if (!this.cine.active) return
+    this.cine.active = false
+    this.minimap.style.opacity = '1'
+    useGame.getState().setHud({ cineActive: false })
+    this.requestLock()
+  }
+
+  // ----------------------------------------------------------
   // Handlers de red (llamados por NetClient)
   // ----------------------------------------------------------
   onWelcome(team: Team, money: number): void {
@@ -1920,6 +2126,7 @@ export class Game {
     this.hp = hp
     this.shield = shield
     this.frags = frags
+    this.smokes = 0
     this.money = money
     this.owned = weapons.slice()
     this.ammo = {}
@@ -1931,10 +2138,12 @@ export class Game {
     const s = useGame.getState()
     s.setHud({
       phase: 'playing',
-      hp, armor: shield, frags, money,
+      hp, armor: shield, frags, money, smokes: this.smokes,
       deathInfo: null,
       owned: [...this.owned],
     })
+    // cinemática de entrada en el primer despliegue
+    if (!this.cine.played) this.startCinematic()
   }
 
   onDeath(killerName: string, respawnIn: number): void {
@@ -1980,10 +2189,11 @@ export class Game {
     useGame.getState().addAnnouncement(parts.join(' '), 'info')
   }
 
-  setMoney(money: number, frags?: number): void {
+  setMoney(money: number, frags?: number, smokes?: number): void {
     this.money = money
     if (frags !== undefined) this.frags = frags
-    useGame.getState().setHud({ money, frags: this.frags })
+    if (smokes !== undefined) this.smokes = smokes
+    useGame.getState().setHud({ money, frags: this.frags, smokes: this.smokes })
   }
 
   onHitConfirm(dmg: number, headshot: boolean): void {
@@ -2108,13 +2318,13 @@ export class Game {
         this.pickupViews.delete(id)
       }
     }
-    // granadas
+    // granadas visibles
     const seen = new Set<string>()
     for (const g of snap.grenades) {
       seen.add(g.id)
       let gv = this.grenadeViews.get(g.id)
       if (!gv) {
-        const group = buildGrenadeModel()
+        const group = buildGrenadeModel(g.kind)
         this.scene.add(group)
         gv = { group, last: new THREE.Vector3(g.x, g.y, g.z), trailT: 0 }
         this.grenadeViews.set(g.id, gv)
@@ -2239,6 +2449,35 @@ export class Game {
     const now = performance.now()
     const s = useGame.getState()
     const cx = W / 2, cy = H / 2
+
+    // cinemática de entrada: barras de cine + título
+    if (this.cine.active) {
+      const tCine = (performance.now() - this.cine.t0) / 1000
+      const barH = Math.min(1, tCine / 0.7) * H * 0.115
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, W, barH)
+      ctx.fillRect(0, H - barH, W, barH)
+      const fade = tCine < 0.8 ? tCine / 0.8 : tCine > 6.5 ? Math.max(0, 1 - (tCine - 6.5) / 1.5) : 1
+      if (fade > 0.01) {
+        ctx.save()
+        ctx.globalAlpha = fade
+        ctx.textAlign = 'center'
+        ctx.font = `900 ${Math.min(78, W * 0.062)}px "Arial Black", system-ui, sans-serif`
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'
+        ctx.fillText('FRONTERA CERO', cx + 3, H * 0.28 + 3)
+        ctx.fillStyle = '#f5f0e6'
+        ctx.fillText('FRONTERA CERO', cx, H * 0.28)
+        ctx.font = 'bold 15px monospace'
+        ctx.fillStyle = 'rgba(216,164,24,0.95)'
+        ctx.fillText('ESTACIÓN MERIDIANO 59 · ZONA DE EXCLUSIÓN TOTAL', cx, H * 0.28 + 36)
+        ctx.restore()
+      }
+      const pulse = 0.6 + 0.4 * Math.sin(now / 300)
+      ctx.textAlign = 'center'
+      ctx.font = 'bold 13px monospace'
+      ctx.fillStyle = `rgba(255,255,255,${pulse})`
+      ctx.fillText('CLIC O CUALQUIER TECLA PARA OMITIR', cx, H - barH - 18)
+    }
 
     // mira telescópica
     const w = WEAPONS[this.weapon]

@@ -49,6 +49,9 @@ interface GameState {
   frags: number
   smokes: number
 
+  /** true mientras se reproduce la cinemática de entrada (oculta el HUD) */
+  cineActive: boolean
+
   weapon: WeaponId
   mag: number
   reserve: number
@@ -112,6 +115,7 @@ export const useGame = create<GameState>((set) => ({
   money: 1000,
   frags: 0,
   smokes: 0,
+  cineActive: false,
 
   weapon: 'p9',
   mag: 15,

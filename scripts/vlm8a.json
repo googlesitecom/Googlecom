@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the screenshot of the \"Frontera Cero\" main menu, here is the description:\n\n1.  **Top Navigation Tabs:** There are four main tabs visible: **\"JUGAR\"** (Play), **\"CONTROLES\"** (Controls), **\"AJUSTES\"** (Settings), and **\"INFORMACIÓN\"** (Information). The \"JUGAR\" tab is currently active and highlighted in yellow.\n\n2.  **Mode Selection Options:** Under the \"JUGAR\" tab, there are three primary mode options:\n    *   **BOTS:** A 4v4 match against AI.\n    *   **CREAR SALA:** Create a room with a P2P code for 1v1 play.\n    *   **UNIRSE:** Join an existing game using a code.\n\n3.  **Big Yellow Play Button:** Yes, there is a large, prominent **yellow button at the bottom left** that says **\"¡A COMBATIR!\"** (To Battle!) with a play icon. Additionally, the \"JUGAR\" tab itself is styled as a yellow button.\n\n4.  **Overall Visual Style:**\n    *   **Colors:** The interface uses a dark, tactical theme with deep navy blue and black backgrounds. It features high-contrast **bright yellow/gold** accents for primary actions and selections, along with white text and light blue/cyan icons for secondary information.\n    *   **Layout:** It follows a clean, modern UI layout typical of competitive shooters. The title is centered at the top, navigation is in a horizontal bar below it, and the main content area is split between player/mode settings on the left and a \"Season 3 News\" list on the right.\n\n5.  **Visual Defects or Overlapping Elements:** The UI appears very clean and well-organized. There are **no obvious visual defects, overlapping elements, or cluttered text**. All buttons, input fields, and text lists are clearly separated and easy to read.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788918934,
+  "id": "202609090955170ea87f29e56b476c",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609090955170ea87f29e56b476c",
+  "usage": {
+    "completion_tokens": 420,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 953,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1373
+  }
+}

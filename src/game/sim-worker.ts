@@ -19,7 +19,7 @@ interface HitsCmd {
   id: string
   data: { weapon: WeaponId; hits: { target: string; part: 'head' | 'body' | 'legs'; dist: number }[] }
 }
-interface GrenadeCmd { id: string; data: { pos: [number, number, number]; vel: [number, number, number] } }
+interface GrenadeCmd { id: string; data: { pos: [number, number, number]; vel: [number, number, number]; kind?: 'frag' | 'smoke' } }
 interface PlayerShotCmd { id: string; data: { origin: [number, number, number]; hit: [number, number, number] } }
 interface BarrelCmd { id: string; data: { pos: [number, number, number] } }
 
@@ -73,7 +73,7 @@ self.onmessage = (ev: MessageEvent) => {
     case 'grenadeThrow': {
       const c = d as GrenadeCmd
       const p = sim?.getPlayer(c.id)
-      if (p && sim) sim.handleGrenadeThrow(p, c.data.pos, c.data.vel)
+      if (p && sim) sim.handleGrenadeThrow(p, c.data.pos, c.data.vel, c.data.kind ?? 'frag')
       break
     }
     case 'playerShot': {

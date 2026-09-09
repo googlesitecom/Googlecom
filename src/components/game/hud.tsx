@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
-import { WEAPONS, TEAM_INFO, type Team } from '@/game/shared'
+import { WEAPONS, TEAM_INFO, keyLabel, type Team } from '@/game/shared'
 import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi } from 'lucide-react'
 
 export function Hud() {
@@ -18,7 +18,10 @@ export function Hud() {
   const killfeed = useGame(s => s.killfeed)
   const announcements = useGame(s => s.announcements)
   const buyZone = useGame(s => s.buyZone)
+  const buyKey = keyLabel(useGame(s => s.settings.keybinds.buy))
   const phase = useGame(s => s.phase)
+  const cineActive = useGame(s => s.cineActive)
+  const smokes = useGame(s => s.smokes)
   const fps = useGame(s => s.fps)
   const mode = useGame(s => s.mode)
   const ping = useGame(s => s.ping)
@@ -26,6 +29,7 @@ export function Hud() {
   const w = WEAPONS[weapon]
 
   if (phase !== 'playing' && phase !== 'dead') return null
+  if (cineActive) return null
 
   return (
     <div className="fixed inset-0 z-30 pointer-events-none font-mono">
@@ -113,6 +117,12 @@ export function Hud() {
             <Zap className="w-4 h-4 text-lime-400" />
             <span className="text-lime-300 font-bold tabular-nums">×{frags}</span>
           </div>
+          <div className={`flex items-center gap-1.5 bg-stone-950/70 rounded px-3 py-1.5 border shadow-lg ${smokes > 0 ? 'border-slate-500/70' : 'border-stone-700/60 opacity-60'}`}>
+            <svg viewBox="0 0 24 24" className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="9" cy="9" r="2" /><circle cx="15" cy="12" r="2.6" /><circle cx="8.5" cy="15.5" r="2.2" />
+            </svg>
+            <span className="text-slate-300 font-bold tabular-nums">×{smokes}</span>
+          </div>
         </div>
       </div>
 
@@ -135,7 +145,7 @@ export function Hud() {
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-950/80 border border-amber-600/50 rounded-lg px-5 py-2 shadow-2xl">
           <MapPin className="w-4 h-4 text-amber-400" />
           <span className="text-amber-200 text-sm font-bold tracking-wide">
-            ZONA DE COMPRA — presiona <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-amber-300">B</kbd>
+            ZONA DE COMPRA — presiona <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-amber-300">{buyKey}</kbd>
           </span>
         </div>
       )}
