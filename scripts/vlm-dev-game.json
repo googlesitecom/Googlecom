@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the image provided, here are the answers to your questions:\n\n*   **Vegetation:** There is **no vegetation** visible in this screenshot. The image shows a dark blue loading screen with a grid pattern and text, not a 3D game environment. Therefore, there are no grass blades or small plants to describe.\n*   **First-person weapon:** There is **no weapon** visible. The screen is a UI/loading interface.\n*   **Wall texture:** There is **no wall** on the right or anywhere else in the image to evaluate for masonry textures.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788959460,
+  "id": "20260909211056be2ea8a20ec846d7",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909211056be2ea8a20ec846d7",
+  "usage": {
+    "completion_tokens": 120,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2535,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 2655
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the image provided, here are the answers to your questions:\n\n1.  **Vegetation:** **No**, there is no vegetation visible in this screenshot. The image shows a loading screen with a dark blue background and a grid pattern, not a 3D game environment.\n2.  **First-person weapon:** **Neither**. There is no weapon or first-person view present in the image.\n3.  **Soldier/Bot:** **No**, there are no soldiers or bots visible.\n4.  **Overall scene quality:** The image is a clean, high-contrast UI/loading screen for a game titled \"FRONTERA CERO - V3.0\". It features Spanish text (\"ESTABLECIENDO ENLACE TÁCTICO\" - Establishing Tactical Link) and a yellow loading spinner, but it does not depict actual gameplay or a 3D scene.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788960615,
+  "id": "20260909213009cad34a616b82412d",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909213009cad34a616b82412d",
+  "usage": {
+    "completion_tokens": 185,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2552,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 2737
+  }
+}

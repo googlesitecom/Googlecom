@@ -43,13 +43,16 @@ const HALF_PI = Math.PI / 2
 
 /** Por arma: qué archivo GLB usar. breacher/knife siguen siendo procedurales. */
 const WEAPON_FILES: Partial<Record<WeaponId, WeaponFileSpec>> = {
-  // Pistola: tumbada a lo largo de X con la boca en X− y el lomo hacia −Y
-  // (boca abajo) → media vuelta sobre Z y alineación a −Z (verificado con VLM)
-  p9:      { file: 'Pistola.glb', length: 0.24, gripFrac: 0.24, cal: { rz: Math.PI, ry: HALF_PI } },
-  aguila:  { file: 'Pistola.glb', length: 0.30, gripFrac: 0.24, cal: { rz: Math.PI, ry: HALF_PI } },
-  // Smg (P90): tumbada a lo largo de X (boca en X−)
-  mp9:     { file: 'Smg.glb',     length: 0.55, gripFrac: 0.30, cal: { ry: -HALF_PI } },
-  // Rifle (M16): ya apunta a −Z en espacio-mundo, boca en Z−
+  // CALIBRACIONES MEDIDAS sobre los vértices en espacio-mundo (scripts/
+  // verify-weapons-three.mjs + parts-world-bbox.mjs):
+  // Pistola: eje largo X, boca en X−, corredera arriba (+Y), empuñadura
+  // descendiendo en X+ → ry=−π/2 lleva la boca a −Z sin voltearla
+  p9:      { file: 'Pistola.glb', length: 0.24, gripFrac: 0.24, cal: { ry: -HALF_PI } },
+  aguila:  { file: 'Pistola.glb', length: 0.30, gripFrac: 0.24, cal: { ry: -HALF_PI } },
+  // Smg (P90): eje largo X, boca en X+ (el cañón fino sobresale por el
+  // máximo de X; la culata queda en X−) → ry=+π/2 lleva la boca a −Z
+  mp9:     { file: 'Smg.glb',     length: 0.55, gripFrac: 0.30, cal: { ry: HALF_PI } },
+  // Rifle (M16): ya apunta a −Z en espacio-mundo (cañón Z[−490,−111])
   ar47:    { file: 'Rifle.glb',   length: 0.97, gripFrac: 0.34, cal: {} },
   cr4:     { file: 'Rifle.glb',   length: 0.90, gripFrac: 0.31, cal: {} },
   // Sniper: apunta a +Z en espacio-mundo (boca en Z+) → media vuelta

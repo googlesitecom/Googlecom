@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "No hay soldados ni bots enemigos o aliados visibles en la escena. \n\nLa imagen muestra una perspectiva de primera persona (FPS) donde:\n- Solo se ve el arma del jugador (un P9 Compacto con 15/90 balas) en la parte inferior derecha\n- El entorno consiste en un área al aire libre con muros de piedra, vegetación baja (plantas tipo cactus), cajas de madera y un árbol\n- La interfaz muestra un mapa en la esquina superior izquierda, marcadores de equipo (Ámbar 7 vs Verde 1), temporizador y estado de salud\n\n**No hay personajes (bots/soldados) visibles en el campo de visión actual**, por lo que no se puede determinar qué armas sostienen, hacia dónde apuntan o sus posturas. La escena aparece desierta excepto por el propio jugador.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788965122,
+  "id": "202609092245133862bb1ed63b44ba",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609092245133862bb1ed63b44ba",
+  "usage": {
+    "completion_tokens": 186,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1149,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1335
+  }
+}

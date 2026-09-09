@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the visual evidence in the calibration test image, here is the status for each weapon row:\n\n**Row 1: P9 (Pistol)**\n1.  **Barrel Direction:** **Incorrect (Backwards).** In the side view (right), the barrel is pointing to the **LEFT**, while it should point RIGHT (-Z).\n2.  **Orientation:** The gun appears to be **rolled or upside-down**. In the side view, the grip/magazine area is pointing **UP** instead of down, and the slide/sights are on the bottom.\n3.  **Red Sphere (Muzzle):** **No.** The red sphere is floating at the very rear of the gun (near the hammer/beavertail), far from the barrel tip.\n4.  **Textures:** **Flat gray/plastic.** It looks like a basic untextured gray model.\n\n**Row 2: MP9 (SMG)**\n1.  **Barrel Direction:** **Correct.** In the side view, the barrel is pointing to the **RIGHT**.\n2.  **Orientation:** **Correct/Upright.** The sights/scope are on top, and the grip/magazine is pointing down.\n3.  **Red Sphere (Muzzle):** **Yes.** The red sphere is positioned exactly at the tip of the barrel.\n4.  **Textures:** **Real/Detailed.** The model has visible camouflage patterns and metallic details.\n\n**Row 3: AR47 (Rifle)**\n1.  **Barrel Direction:** **Correct.** In the side view, the barrel is pointing to the **RIGHT**.\n2.  **Orientation:** **Correct/Upright.** The carry handle/sights are on top, and the magazine/grip is pointing down.\n3.  **Red Sphere (Muzzle):** **Yes.** The red sphere is located at the muzzle end of the barrel.\n4.  **Textures:** **Real/Detailed.** The model shows distinct metal textures and black furniture (stock/grip).\n\n**Row 4: AWP338 (Sniper Rifle)**\n1.  **Barrel Direction:** **Correct.** In the side view, the long barrel is pointing to the **RIGHT**.\n2.  **Orientation:** **Correct/Upright.** The scope is mounted on top, and the grip/magazine is pointing down.\n3.  **Red Sphere (Muzzle):** **Yes.** The red sphere sits at the very tip of the long sniper barrel.\n4.  **Textures:** **Real/Detailed.** The model features a dark, detailed texture with a clear scope lens.\n\n**Summary:**\n*   **P9** fails calibration (backwards, upside-down, wrong anchor, no texture).\n*   **MP9, AR47,** and **AWP338** all pass calibration with correct orientation, correct anchors, and proper textures.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788958863,
+  "id": "20260909210042f6a65b0e34764fcb",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909210042f6a65b0e34764fcb",
+  "usage": {
+    "completion_tokens": 613,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2768,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 3381
+  }
+}

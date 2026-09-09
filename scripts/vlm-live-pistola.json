@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Basándome en la imagen proporcionada, **no se ve ningún arma**. La imagen muestra una **pantalla de carga** con un fondo azul oscuro y texto que dice \"ESTABLECIENDO ENLACE TÁCTICO\" (Estableciendo enlace táctico) junto a un icono de carga circular amarillo.\n\nSin embargo, para responder específicamente a tus preguntas sobre cómo se vería un arma en un FPS estándar si estuviera presente:\n\n*   **Dirección del cañón:** En un FPS normal, el cañón apuntaría **adelante hacia el centro/centro-derecha de la pantalla** (hacia el horizonte del juego), no hacia atrás, arriba o abajo.\n*   **Orientación:** La pistola estaría en **posición normal** (empuñadura abajo, cañón apuntando lejos de la cámara), no invertida.\n*   **Textura:** Tendría **texturas reales y detalladas** (metal, plástico, madera, etc.), no sería un modelo gris sin texturar.\n\n**Conclusión sobre esta imagen específica:** No hay arma visible; es solo una interfaz de usuario de carga.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788964960,
+  "id": "2026090922422288c55c9d3f5f4cbd",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026090922422288c55c9d3f5f4cbd",
+  "usage": {
+    "completion_tokens": 260,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1158,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1418
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the visual evidence from the screenshot of **FRONTERA CERO**:\n\n1)  **First-person weapon:** It is a **realistic pistol** (appears to be a P9/Compact model). It features a dark, metallic-looking slide and a textured grip. However, it is currently in a **lowered/idle position** (pointing down towards the ground), not actively pointing forward.\n2)  **Ground plants:** The ground is populated by **white sticks** (resembling white planks or stakes), along with some low-poly green bushes. There are no visible colored flowers.\n3)  **HUD:** The HUD is **complete and detailed**, including:\n    *   Health bar (bottom left).\n    *   Ammo count (bottom right: 15/90).\n    *   Minimap (top left: \"ESCUADRÓN ÁMBAR\").\n    *   Round score/timer (top center: \"ÁMBAR 8\", \"VERDE 1\", \"RONDA 1\").\n    *   Kill feed (top right).\n    *   Money and equipment status (bottom left).\n4)  **Walls:** Yes, the walls are **textured** with a stone/brick pattern.\n5)  **Soldiers/Bots:** **No**, there are no soldiers or bots visible in this specific view holding weapons.\n6)  **Overall verdict:** The game looks **correct and playable**. It appears to be a functional 3D FPS with a full UI suite, textured environment, and weapon models, though the environmental art (specifically the \"white sticks\") has a very stylized or placeholder appearance.\n\n**Summary:** Realistic pistol (lowered), white sticks, complete HUD, textured walls, no visible bots, game looks functional.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788961258,
+  "id": "20260909214040b519ede52fe04f0c",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909214040b519ede52fe04f0c",
+  "usage": {
+    "completion_tokens": 371,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2585,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 2956
+  }
+}

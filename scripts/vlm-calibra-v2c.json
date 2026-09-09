@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the visual evidence in the provided image, here is the calibration test for each weapon row:\n\n### **Row 1: P9 Pistol**\n*   **1) Barrel direction correct?** **Yes.** In the left view, the barrel points directly toward the viewer. In the right view, the barrel points to the right.\n*   **2) Upright or upside-down/rolled?** **Upright.** The slide (top of the gun) is facing up, and the grip is angled downward as expected.\n*   **3) Red sphere at barrel tip?** **Yes.** The red sphere (muzzle anchor) is positioned at the very end of the barrel in both views.\n*   **4) Textures real or flat gray?** **Real.** The model shows detailed textures, including a metallic slide and a black polymer grip.\n\n**Detailed Description of P9 Row:**\nIn the left column, the P9 pistol is shown from a direct front-on perspective, with the circular muzzle pointing straight at the camera. You can see the front sight centered on top of the slide. In the right column, the weapon is in a perfect side profile: the long barrel and slide extend to the right, the sights are clearly visible on the top surface, and the grip/handle angles downward toward the bottom-right. The green sphere is anchored near the center of the grip, while the red sphere sits precisely at the muzzle's exit point.\n\n---\n\n### **Row 2: MP9 SMG**\n*   **1) Barrel direction correct?** **Yes.**\n*   **2) Upright or upside-down/rolled?** **Upright.** The top rail and sights are on top; the magazine well/grip is on the bottom.\n*   **3) Red sphere at barrel tip?** **Yes.**\n*   **4) Textures real or flat gray?** **Real.** Features distinct textures for the metal receiver and handguard.\n\n### **Row 3: AR47 Rifle**\n*   **1) Barrel direction correct?** **Yes.**\n*   **2) Upright or upside-down/rolled?** **Upright.** The carry handle/sights are up, and the magazine/pistol grip are down.\n*   **3) Red sphere at barrel tip?** **Yes.**\n*   **4) Textures real or flat gray?** **Real.** Shows standard rifle texturing with visible details on the handguard and stock.\n\n### **Row 4: AWP338 Sniper**\n*   **1) Barrel direction correct?** **Yes.**\n*   **2) Upright or upside-down/rolled?** **Upright.** The scope and bolt handle are on top; the magazine and stock are below the barrel line.\n*   **3) Red sphere at barrel tip?** **Yes.**\n*   **4) Textures real or flat gray?** **Real.** Displays high-quality sniper rifle textures, including the scope and stock details.\n\n**Summary:** All four weapons appear to be correctly calibrated according to your specifications. They all point forward (-Z), are oriented upright, have proper anchor placement, and utilize real textures.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788958955,
+  "id": "20260909210214930c25898aa44ff5",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909210214930c25898aa44ff5",
+  "usage": {
+    "completion_tokens": 673,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2646,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 3319
+  }
+}

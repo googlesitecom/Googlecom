@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the image provided, here is the calibration report for each weapon:\n\n**Overall Status:** The image appears to be a **loading screen** or a completely black viewport. The text at the top reads \"Cargando GLB...\" (Loading GLB...), indicating that the 3D model files have not yet rendered. There are no visible weapons, spheres, or arrows to evaluate.\n\n**Per-Weapon Analysis:**\n\n1.  **P9 Pistol (Row 1):**\n    *   **Barrel Direction:** Cannot be determined (not visible).\n    *   **Orientation (Sights/Mag):** Cannot be determined (not visible).\n    *   **Muzzle Sphere Position:** Cannot be determined (not visible).\n    *   **Textures:** Cannot be determined (not visible).\n\n2.  **MP9 SMG (Row 2):**\n    *   **Barrel Direction:** Cannot be determined (not visible).\n    *   **Orientation (Sights/Mag):** Cannot be determined (not visible).\n    *   **Muzzle Sphere Position:** Cannot be determined (not visible).\n    *   **Textures:** Cannot be determined (not visible).\n\n3.  **AR47 Rifle (Row 3):**\n    *   **Barrel Direction:** Cannot be determined (not visible).\n    *   **Orientation (Sights/Mag):** Cannot be determined (not visible).\n    *   **Muzzle Sphere Position:** Cannot be determined (not visible).\n    *   **Textures:** Cannot be determined (not visible).\n\n4.  **AWP338 Sniper (Row 4):**\n    *   **Barrel Direction:** Cannot be determined (not visible).\n    *   **Orientation (Sights/Mag):** Cannot be determined (not visible).\n    *   **Muzzle Sphere Position:** Cannot be determined (not visible).\n    *   **Textures:** Cannot be determined (not visible).\n\n**Conclusion:** The test cannot be completed because the assets failed to load or the scene is in a pre-render state. You may need to check the console for errors or ensure the `.glb` file paths are correct.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788958822,
+  "id": "20260909210011d470c327f7b5432b",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909210011d470c327f7b5432b",
+  "usage": {
+    "completion_tokens": 440,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2749,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 3189
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the screenshot of the game **FRONTERA CERO**, here is a detailed description of the elements you requested:\n\n**1) Weapon Viewmodel (Bottom-Right):**\n*   **Shape & Orientation:** The weapon is a handgun, specifically identified by the HUD as the \"P9 COMPACTO\". It is held in a standard first-person view, with the barrel pointing forward into the screen. You can see the back of the slide, the grip, and part of the trigger guard.\n*   **Materials/Textures:** It is **not** a plain gray box. It features **realistic details and textures**. The weapon appears to have a dark, possibly black or dark blue polymer grip with textured patterns for grip. The metal slide has shading that suggests a metallic material. It looks like a low-poly but textured 3D model rather than a placeholder primitive.\n\n**2) Environment Quality:**\n*   **Building Walls:** The large wall dominating the right side of the screen is **textured**. It resembles a stone or brick wall with visible masonry lines and a sandy/tan color palette. It is not flat or untextured.\n*   **Ground:** The ground is also **textured**, looking like packed dirt, sand, or dry earth with variations in color and some darker patches.\n*   **Vegetation:** There is a green, leafy tree visible on the far left. In the middle ground, there are numerous white, rectangular objects sticking out of the ground that look like simple placeholders for grass, crops, or perhaps grave markers.\n\n**3) Crosshair:**\n*   **Yes**, a crosshair is visible at the center of the screen. It appears as a small, simple circle or dot reticle.\n\n**4) Bots/Soldiers:**\n*   **No**, there are no bots, soldiers, or enemy players visible in this specific view. The area in front of the player is clear of characters.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788959348,
+  "id": "20260909210851253132991a674004",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909210851253132991a674004",
+  "usage": {
+    "completion_tokens": 405,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2599,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 3004
+  }
+}

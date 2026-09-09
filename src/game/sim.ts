@@ -67,6 +67,8 @@ interface SimPlayer {
   lastKillAt: number
   multi: number
   lastShotAt: number
+  /** control de cadencia SOLO para validación de impactos (separado del visual) */
+  lastHitsAt: number
   protectUntil: number
   lastSeenEnemy: number
   lastDamageAt: number
@@ -283,7 +285,7 @@ export class GameSim {
       frags: 0, smokes: 0,
       kills: 0, deaths: 0, money: GAME.START_MONEY,
       streak: 0, lastKillAt: 0, multi: 0,
-      lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0, lastDamageAt: 0,
+      lastShotAt: 0, lastHitsAt: 0, protectUntil: 0, lastSeenEnemy: 0, lastDamageAt: 0,
       aiming: false, sprint: false, flag: null,
     }
     if (bot) {
@@ -924,15 +926,29 @@ export class GameSim {
       p.yaw += this.angleLerp(p.yaw, wantYaw, dt * skill.aimSpeed)
       p.pitch += (wantPitch - p.pitch) * Math.min(1, dt * skill.aimSpeed)
 
-      // strafe con cambios aleatorios
-      ai.strafePhase += dt
-      if (ai.strafePhase > rand(0.7, 1.6)) { ai.strafePhase = 0; ai.strafe *= -1 }
-      const perpX = Math.cos(p.yaw) * ai.strafe
-      const perpZ = -Math.sin(p.yaw) * ai.strafe
-      const combatSpeed = 3.9 * (p.crouch ? 0.5 : 1)
-      let vx = perpX * combatSpeed
-      let vz = perpZ * combatSpeed
+      // strafe COMBATIVO pero sereno (antes era frenético: 3,9 m/s con
+      // giros cada 0,7-1,6 s → "se mueven muchísimo de lado a lado"):
+      // - cambios de dirección cada 1,2-2,8 s
+      // - 30 % de las veces se detiene en firme (dispara plantado)
+      // - velocidad lateral 1,9 m/s (paso táctico)
+      // - el francotirador jamás baila: planta y dispara
+      // - a larga distancia apenas se desplaza: avanza
       const pref = w.id === 'awp338' ? 28 : w.id === 'breacher' ? 6 : 13
+      ai.strafePhase += dt
+      if (ai.strafePhase > rand(1.2, 2.8)) {
+        ai.strafePhase = 0
+        if (Math.random() < 0.3) ai.strafe = 0
+        else ai.strafe = Math.random() < 0.5 ? -1 : 1
+      }
+      const sniperStill = w.id === 'awp338'
+      const farRange = d > pref + 8
+      let strafeAmp = sniperStill ? 0 : ai.strafe * 1.9
+      if (farRange) strafeAmp *= 0.4
+      if (p.crouch) strafeAmp *= 0.3
+      const perpX = Math.cos(p.yaw) * strafeAmp
+      const perpZ = -Math.sin(p.yaw) * strafeAmp
+      let vx = perpX
+      let vz = perpZ
       const toX = (target.x - p.x) / (d || 1)
       const toZ = (target.z - p.z) / (d || 1)
       if (d > pref + 4) { vx += toX * MOVE * 0.7; vz += toZ * MOVE * 0.7 }
@@ -1211,9 +1227,13 @@ export class GameSim {
     const w = WEAPONS[data.weapon]
     if (!w) return
     const t = now()
+    // límite de cadencia para ACIERTOS (separado de lastShotAt: el mensaje
+    // visual 'playerShot' del mismo disparo actualiza lastShotAt un instante
+    // antes y, si se comparara contra él, TODOS los impactos del jugador
+    // se rechazarían por llegar "demasiado rápido")
     const minInterval = (60000 / w.rpm) * 0.55
-    if (t - p.lastShotAt < minInterval) return
-    p.lastShotAt = t
+    if (t - p.lastHitsAt < minInterval) return
+    p.lastHitsAt = t
     const maxHits = Math.max(1, w.pellets)
     for (const h of (data.hits || []).slice(0, maxHits)) {
       const victim = this.players.get(String(h.target))

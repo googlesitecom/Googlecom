@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Basándome en la captura de pantalla proporcionada, aquí está el análisis del arma y los elementos en pantalla:\n\n**Descripción del Arma:**\n*   **Tipo:** El jugador sostiene una **pistola** (específicamente un modelo que parece ser el P9 Compacto o similar).\n*   **Dirección del cañón:** Apunta **adelante**, hacia el centro-derecha de la pantalla (hacia donde mira el jugador).\n*   **Posición de la empuñadura:** Está **abajo**, en la posición normal de empuñadura. El arma no está invertida.\n*   **Textura/Color:** El arma tiene **texturas realistas** (o al menos sombreado detallado), con colores oscuros (negro/gris metálico) y detalles visibles en el cañón y la empuñadura, a diferencia de los objetos verdes de bajo polígono que se ven en primer plano.\n\n**Elementos adicionales en pantalla (HUD):**\n*   **Minimapa:** En la esquina superior izquierda, mostrando \"ESCUADRÓN ÁMBAR\" y posiciones de jugadores/enemigos.\n*   **Marcador (Scoreboard):** En la parte superior central, indicando el puntaje (ÁMBAR 2 - VERDE 0), tiempo restante (3:07) y ronda actual.\n*   **Lista de jugadores:** En la esquina superior derecha, mostrando nombres como \"Cóndor\", \"Jaguar\", \"Víbora\" y \"Oso\" con sus respectivos ping/KD.\n*   **Estado del jugador (abajo-izquierda):** Barra de vida verde (100), escudo (0), dinero ($1000), y contadores de habilidades (x1 granada, x0 habilidad especial).\n*   **Información de zona:** Un banner central inferior indica \"ZONA DE COMPRA – presiona B\".\n*   **Munición (abajo-derecha):** Muestra \"P9 COMPACTO\" con 15/90 balas (cargador/reserva).\n*   **FPS:** Contador de cuadros por segundo en la esquina inferior derecha (0 FPS en este instante congelado).\n\n**Entorno visible:**\nEl escenario es un área exterior con paredes de piedra/textura de ladrillo, suelo de tierra con grietas, vegetación baja (parecida a pastos o cactus simples de color verde claro), cajas de madera y árboles en el fondo. También se ven dos grandes formas geométricas verdes (posiblemente escudos o barreras temporales) en el primer plano, parcialmente bloqueando la vista.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788965018,
+  "id": "20260909224317a31c8ab257044128",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909224317a31c8ab257044128",
+  "usage": {
+    "completion_tokens": 582,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1163,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1745
+  }
+}

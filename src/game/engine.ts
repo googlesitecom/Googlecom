@@ -230,6 +230,11 @@ export class Game {
   private mapMeshes: THREE.Mesh[] = []
   private disposed = false
 
+  // pool de luces de farola (6 luces recolocables en las 18 farolas)
+  private lampLights: THREE.PointLight[] = []
+  private lampPos: [number, number][] = []
+  private lampLightNext = 0
+
   // ----------------------------------------------------------
   // Inicialización
   // ----------------------------------------------------------
@@ -416,20 +421,33 @@ export class Game {
     }
 
     // cajas del mapa (UVs escaladas por cara para densidad de texel constante)
+    // OPTIMIZACIÓN DE LAG (sin tocar el aspecto): las ~1100 cajas se hornean
+    // y se FUSIONAN por material → ~10 mallas en vez de ~1100 meshes. El
+    // número de draw calls (principal + pasada de sombras) pasa de ~2000
+    // por frame a ~20; los triángulos son los mismos, el GPU apenas nota
+    // la diferencia y el CPU se libera de enviar miles de comandos.
     const geoCache = new Map<string, THREE.BufferGeometry>()
     let barrelSeq = 0
+    const staticGeos = new Map<MatKey, THREE.BufferGeometry[]>()
     for (const b of MAP_BOXES) {
-      let mesh: THREE.Mesh
       if (b.mat === 'barrel' || b.mat === 'explosive') {
+        // los barriles siguen siendo meshes individuales (explotan/desaparecen)
         const key = `b${b.h}`
         let geo = geoCache.get(key)
         if (!geo) { geo = new THREE.CylinderGeometry(0.36, 0.36, b.h, 12); geoCache.set(key, geo) }
-        mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
+        const mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
         if (b.mat === 'explosive') {
           mesh.userData.barrelIdx = barrelSeq
           this.barrels.push({ mesh, x: b.x, z: b.z, alive: true, respawnAt: 0 })
           barrelSeq++
         }
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        mesh.position.set(b.x, b.y, b.z)
+        mesh.userData.matKey = b.mat
+        this.scene.add(mesh)
+        this.shootables.push(mesh)
+        this.mapMeshes.push(mesh)
       } else {
         const key = `${b.w}|${b.h}|${b.d}`
         let geo = geoCache.get(key)
@@ -438,12 +456,22 @@ export class Game {
           this.scaleBoxUVs(geo as THREE.BoxGeometry, b.w, b.h, b.d)
           geoCache.set(key, geo)
         }
-        mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
+        // clonar y hornear la posición (las cajas del mapa no rotan: AABB)
+        const g = geo.clone()
+        g.translate(b.x, b.y, b.z)
+        let arr = staticGeos.get(b.mat)
+        if (!arr) { arr = []; staticGeos.set(b.mat, arr) }
+        arr.push(g)
       }
+    }
+    // fusionar por material (cada material conserva su textura y su UV)
+    for (const [matKey, geos] of staticGeos) {
+      const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false)!
+      for (const g of geos) { if (g !== merged) g.dispose() }
+      const mesh = new THREE.Mesh(merged, mats.get(matKey)!)
       mesh.castShadow = true
       mesh.receiveShadow = true
-      mesh.position.set(b.x, b.y, b.z)
-      mesh.userData.matKey = b.mat
+      mesh.userData.matKey = matKey
       this.scene.add(mesh)
       this.shootables.push(mesh)
       this.mapMeshes.push(mesh)
@@ -545,9 +573,16 @@ export class Game {
     this.scene.add(this.procTrees)
 
     // --- farolas: cabezal + bombilla emisiva + luz puntual cálida ---
+    // OPTIMIZACIÓN DE LAG: 18 farolas con PointLight propio = 18 luces
+    // que el shader evalúa POR PÍXEL en todos los materiales (23 luces
+    // puntuales en total). Se usan 6 luces de pool que se recolocan en
+    // las farolas más cercanas al jugador (la bombilla emisiva + el
+    // resplandor de todas las farolas se siguen viendo igual; a >30 m la
+    // niebla oculta el charco de luz del suelo).
     const headMat = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.6, metalness: 0.7 })
     const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc26b, emissiveIntensity: 4, roughness: 0.4 })
     const sparkTex = makeSparkTexture()
+    this.lampPos = LAMPS.map(([lx, lz]) => [lx, lz] as [number, number])
     for (const [lx, lz] of LAMPS) {
       const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.22, 0.42), headMat)
       head.position.set(lx, 5.15, lz)
@@ -556,15 +591,19 @@ export class Game {
       const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.09, 0.3), bulbMat)
       bulb.position.set(lx, 5.02, lz)
       this.scene.add(bulb)
-      const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
-      light.position.set(lx, 4.85, lz)
-      this.scene.add(light)
       const glow = new THREE.Sprite(new THREE.SpriteMaterial({
         map: sparkTex, color: 0xffc98a, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false,
       }))
       glow.position.set(lx, 5.0, lz)
       glow.scale.setScalar(1.6)
       this.scene.add(glow)
+    }
+    const nLampLights = Math.min(6, LAMPS.length)
+    for (let i = 0; i < nLampLights; i++) {
+      const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
+      light.position.set(LAMPS[i][0], 4.85, LAMPS[i][1])
+      this.scene.add(light)
+      this.lampLights.push(light)
     }
 
     // --- letreros de neón ---
@@ -1580,6 +1619,13 @@ export class Game {
     this.sunLight.position.set(p.x + 52, 58, p.z - 40)
     this.sunLight.target.position.set(p.x, 0, p.z)
     this.sunLight.target.updateMatrixWorld()
+
+    // pool de luces de farola → recolocar en las más cercanas cada 0,5 s
+    const nowMs = performance.now()
+    if (nowMs >= this.lampLightNext) {
+      this.lampLightNext = nowMs + 500
+      this.updateLampLights(p)
+    }
 
     // pociones flotantes
     this.updatePickupViews(dt, t)

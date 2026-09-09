@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Basándome en la imagen proporcionada, aquí está la descripción **EXACTA** de la orientación de la pistola:\n\n*   **Ubicación de la empuñadura:** La empuñadura se encuentra **en la mano del soldado** (específicamente, es sostenida por la mano derecha del personaje, que aparece en la esquina inferior derecha de la pantalla). No está arriba ni abajo flotando; está firmemente agarrada.\n*   **Dirección del cañón:** El cañón apunta **hacia adelante/hacia el espectador (cámara)**, o más precisamente, en la misma dirección que la mirada del jugador hacia el centro del escenario (la calle y los contenedores). No apunta hacia la espalda, ni directamente al suelo ni al cielo.\n*   **Orientación de la pistola (¿Boca abajo?):** **Sí, la pistola está \"boca abajo\"** (o en posición invertida/inclinada) respecto a una postura de tiro estándar horizontal. La corredera y las miras están orientadas **hacia el suelo** (o hacia la parte inferior derecha de la pantalla), mientras que la parte inferior de la empuñadura/magazine queda más visible hacia arriba. Esto es típico de ciertas animaciones de \"idle\" o preparación en algunos FPS donde el arma descansa inclinada.\n*   **Posición de la mano:** El soldado tiene la mano en la empuñadura de forma **natural pero relajada**, sujetando el arma desde abajo/los lados en esta posición de reposo inclinada, no en una postura rígida de puntería a la altura del hombro.\n\n**Resumen visual:** Ves la parte trasera/lateral inferior de la pistola negra en la esquina derecha, con el cañón apuntando hacia el horizonte del juego pero con el arma rotada de modo que la parte superior (miras) mira hacia el piso.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788965726,
+  "id": "2026090922551547ef8feb0bc1400b",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026090922551547ef8feb0bc1400b",
+  "usage": {
+    "completion_tokens": 436,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 690,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1126
+  }
+}

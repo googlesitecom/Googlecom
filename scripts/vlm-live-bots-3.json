@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Sí, hay un arma visible (la del jugador en primera persona). Apunta hacia adelante. Es una pistola o subfusil compacto (P9 COMPACTO).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788965198,
+  "id": "202609092246351631fbce49384edb",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609092246351631fbce49384edb",
+  "usage": {
+    "completion_tokens": 39,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1116,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1155
+  }
+}

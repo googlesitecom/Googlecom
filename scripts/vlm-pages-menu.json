@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "This is the **main game menu** for **FRONTERA CERO**, a tactical multiplayer FPS (Season 3). It features a dark blue/cyan UI with yellow/gold accents, organized in a tabbed layout similar to Fortnite.\n\n## **Visible Elements:**\n\n### **Header**\n- **Title:** \"FRONTERA CERO\" (large, bold, white/yellow gradient)\n- **Subtitle:** \"FPS TÁCTICO MULTIJUGADOR · TEMPORADA 3\"\n\n### **Main Navigation Tabs (Top)**\n1. **▶ JUGAR** (Play) - *Currently active/selected (yellow highlight)*\n2. **🎮 CONTROLES** (Controls)\n3. **⚙️ AJUSTES** (Settings)\n4. **ℹ️ INFORMACIÓN** (Information)\n\n### **Left Panel - Match Setup:**\n- **NOMBRE DEL OPERADOR** (Operator Name): Input field \"Introduce tu nombre de combate\"\n- **Match Type Selection (3 options):**\n  - 🤖 **BOTS** (Selected/active): \"Escaramuza 4v4 contra IA\"\n  - 👥 **CREAR SALA**: \"1v1 con código P2P\"\n  - 🔗 **UNIRSE**: \"Entra con un código\"\n\n- **MODO DE JUEGO** (Game Mode):\n  - ⚔️ **COMBATE DE EQUIPOS** (Selected): \"4 vs 4...\"\n  - ⚡ **TODOS CONTRA TODOS**: Free-for-all\n  - 🏴 **CAPTURAR LA BANDERA**: Capture the flag\n  - 🎯 **DOMINACIÓN**: Domination mode\n\n- **DIFICULTAD DE LA IA** (AI Difficulty):\n  - FÁCIL | **NORMAL** (Selected) | DIFÍCIL | EXPERTO\n\n- **Big Action Button:** **▶ ¡A COMBATIR!** (Yellow, full-width)\n\n### **Right Panel - Season 3 News:**\n**⚡ NOVEDADES DE LA TEMPORADA 3** (What's New):\n- ✕ 4 MODOS DE JUEGO\n- 🏠 Ciudad nueva y ordenada\n- 💼 Armas y árbol reales (GLB)\n- 🎯 Apuntado afinado\n- 🎮 Controles 100% asignables\n- 🔔 Texturas del repositorio\n\n### **Footer**\nVersion info: \"FRONTERA CERO v4.0 • THREE.JS + WEBRTC (PEERJS) • 4 MODOS • MAPA 140x140 M\"\n\n---\n\n**Verdict:** This is a fully functional, polished main menu with the **JUGAR (Play)** tab currently open, showing all matchmaking options and season updates. Not an error or blank page—it's the complete game interface ready to launch a match.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788959112,
+  "id": "2026090921045126278dc3cb114824",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026090921045126278dc3cb114824",
+  "usage": {
+    "completion_tokens": 621,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2550,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 3171
+  }
+}
