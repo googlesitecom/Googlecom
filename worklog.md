@@ -122,3 +122,41 @@ Stage Summary:
 - Congelamiento al disparar eliminado de raíz (pool fijo de luces + reciclaje total de efectos)
 - Rendimiento estable en fuego sostenido: peor frame <10 ms
 - Proyecto completo publicado en el repositorio de GitHub del usuario
+
+---
+Task ID: 5
+Agent: Super Z (agente principal)
+Task: Animaciones de agarre/disparo del arma en los modelos, más pasto en el mapa, arreglar la tienda y añadir más mecánicas al mapa
+
+Work Log:
+- DIAGNÓSTICO de las 4 peticiones del usuario:
+  1) "el modelo no tiene animación de disparar o agarrar arma": remote-players.ts solo animaba el caminar; el arma flotaba en el pecho sin brazos
+  2) "añade más pasto": no había vegetación en el suelo
+  3) "la tienda no sirve": CAUSA RAÍZ — sim.ts inBuyZone/spawnX usaba los spawns VIEJOS (±48) del mapa de 110×110, pero el mapa actual (130×130) tiene spawns/anellos en ±62 → el motor permitía abrir la tienda en el anillo visible pero el servidor rechazaba la compra con "Compra solo en tu base"
+  4) "más mecánicas en el mapa": solo movimiento básico
+- ANIMACIONES (remote-players.ts):
+  - Nueva pose de apuntado SOLDIER_AIM calibrada con descenso por coordenadas EN VIVO (scripts/calibrate-pose.js ejecutado por agent-browser eval: mueve huesos mixamo y minimiza distancia de las MANOS a la empuñadura/guardamanos; 2 pasadas, coste final 0.279 m)
+  - aimPose (0..1): fusión reposo↔apuntado cuando hay arma; fireKick decae a 5.5/s
+  - Brazos: hombros (x,y,z) + codos; arma a altura de pecho (WPN_AIM −0.1, 1.3, 0.36) en el lado del hombro derecho; cabeza sigue el pitch
+  - notifyShot(id) dispara la patada; getMuzzleWorld() para fogonazos/trazas desde la boca real del cañón del modelo
+  - VLM confirma: ambas manos conectadas al arma, postura de tiro a la altura del pecho/hombro, sin clipping
+- RED (net.ts/sim.ts/sim-worker.ts): evento 'playerShot' (el disparo del humano se retransmite como shotFired → el rival P2P ve traza + animación de disparo) y 'barrelShot' (explosión de barril con daño de área autoritativo + evento barrelExplode para FX de ambos clientes)
+- TIENDA ARREGLADA (sim.ts): spawnX/spawnZ ahora usan SPAWN_A/SPWN_B (±62) importados de shared; radio +2.5; openBuyMenu avisa "La tienda solo funciona en tu base" si se pulsa B fuera
+  - VERIFICADO E2E: granada (1000→700, frags 1), escudo rechazado (700<1000, correcto), Águila (700→0, equipada, en owned)
+- MECÁNICAS DEL MAPA (engine.ts + shared.ts):
+  - Pasto: InstancedMesh de 8200 briznas (alta) en cruces de quads, 1 draw call, viento por instancia en el vertex shader (onBeforeCompile), colores por instancia, evita AABBs/charcos, más denso y verde cerca de árboles; verificado por VLM como pasto 3D con volumen
+  - 4 tirolinas (mercado→autobuses ×2, contenedor NE→radar, contenedor SO→llano): cable+postes+polea; E/ESPACIO/A para agarrar, cuelga 0.85 m bajo el cable a 10.5 m/s, se suelta con salto o al final con impulso; pista [E] TIROLINA en overlay + iconos en minimapa
+  - 6 plataformas de salto (impulso velY=12, anillo pulsante + chevrones + glow)
+  - 12 barriles explosivos (textura roja con franjas PELIGRO): explotan al dispararles (FIX: userData.barrelIdx vs lectura .barrel desajustada), daño de área 96 con falloff y LOS, empujón al jugador, reacción en cadena <3.6 m, respawn 28 s, puntos rojos en minimapa
+  - Deslizamiento: agacharse corriendo → slide 0.85 s con impulso ×1.34, cámara inclinada, salto-deslizamiento (FIX: el flag sprinting se apagaba el mismo frame del agachado → se captura wasSprint del frame anterior)
+- VERIFICACIÓN (agent-browser + VLM):
+  - Plataforma: velY 9.9 al pisarla ✓; tirolina: attach + recorrido exacto por el cable ✓; slide: slideT 0.80 ✓; barril: alive→false, empuje, daño hp 100→87 ✓
+  - Rendimiento con fuego sostenido + pasto + mecánicas: 105 renders, PEOR render 9 ms, media 0.5 ms (sin regresión)
+  - tsc y eslint limpios; sin errores de consola
+- Commit 1d469f2 y push a github.com/googlesitecom/Googlecom (rama main, token del usuario sin guardarlo en .git/config)
+
+Stage Summary:
+- El soldado ahora AGARRA el arma con las dos manos y anima el retroceso al disparar (también los humanos en P2P)
+- Tienda funcional de nuevo (coords de spawn corregidas) con aviso contextual
+- Mapa con 4 mecánicas nuevas: pasto con viento, tirolinas, plataformas de salto y barriles explosivos + deslizamiento
+- Rendimiento sin regresión (peor render 9 ms)

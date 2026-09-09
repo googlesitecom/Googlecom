@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Aquí está la verificación de la captura de pantalla del juego **FRONTERA CERO**:\n\n1.  **¿Soldado(s) con arma sujetada con manos?**\n    *   **Sí.** Se observa al menos un personaje (con la etiqueta \"Cobalto\") en el fondo que parece llevar un arma. Además, en primer plano se ven las manos del jugador sosteniendo un arma tipo P9.\n\n2.  **¿Pasto 3D visible?**\n    *   **No.** El entorno es un mapa desértico o de arena. El suelo es una textura plana de tierra/arena, no hay pasto 3D ni vegetación de ese tipo visible en la escena (solo algunos árboles estilizados y cajas).\n\n3.  **¿HUD completo (vida, minimapa, munición)?**\n    *   **Sí.** La interfaz está completa:\n        *   **Vida:** Barra verde con \"100\" en la esquina inferior izquierda.\n        *   **Minimapa:** Visible en la esquina superior izquierda.\n        *   **Munición:** Visible en la esquina inferior derecha (\"15 / 90\" para el arma P9 Compacto).\n        *   También muestra el marcador de equipos (Ámbar vs Verde), el temporizador y la zona de compra.\n\n4.  **¿Efectos de disparo (trazadoras/fogonazo)?**\n    *   **No.** En este instante específico de la captura no se están produciendo disparos activos desde la cámara del jugador, por lo que no se aprecian trazadoras, fogonazos (muzzle flash) ni impactos en pantalla.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788915352,
+  "id": "20260909085544292150638c0e4866",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909085544292150638c0e4866",
+  "usage": {
+    "completion_tokens": 372,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1143,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1515
+  }
+}

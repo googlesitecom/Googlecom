@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Sí, en la imagen se puede observar **pasto/hierba de color amarillo-verdoso** (briznas) sobresaliendo del suelo de arena.\n\nEn cuanto a las zonas y su apariencia:\n\n*   **¿Cuántas zonas se distinguen?** Se distinguen **4 zonas o grupos principales** con pasto. Están dispuestos formando una cruz alrededor del centro de la pantalla (el punto de mira), con briznas hacia arriba, abajo, izquierda y derecha.\n*   **¿Se ve plano o con volumen?** El pasto se ve **con volumen (3D)**. Son modelos tridimensionales que sobresalen verticalmente del suelo plano, no son texturas planas pintadas sobre la arena.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788913692,
+  "id": "20260909082803e4fd285887d2483b",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909082803e4fd285887d2483b",
+  "usage": {
+    "completion_tokens": 164,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1122,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1286
+  }
+}
