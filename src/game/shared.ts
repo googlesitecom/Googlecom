@@ -40,11 +40,14 @@ export const BOT_SKILL: Record<BotDifficulty, {
   burstPause: [number, number]
   seeDist: number
   dmg: number             // multiplicador de daño que infligen los bots
+  settle: number           // ms que tarda en "asentar" la puntería tras reaccionar
 }> = {
-  facil:   { react: [650, 1050], aimSpeed: 5.0, hitBase: 0.50, aimErr: 0.22, burstPause: [450, 850], seeDist: 52, dmg: 0.45 },
-  normal:  { react: [420, 720],  aimSpeed: 7.5, hitBase: 0.62, aimErr: 0.14, burstPause: [300, 600], seeDist: 58, dmg: 0.52 },
-  dificil: { react: [280, 480],  aimSpeed: 9.5, hitBase: 0.72, aimErr: 0.09, burstPause: [220, 420], seeDist: 64, dmg: 0.58 },
-  experto: { react: [180, 320],  aimSpeed: 12.0, hitBase: 0.80, aimErr: 0.055, burstPause: [150, 300], seeDist: 70, dmg: 0.66 },
+  // Rebalanceo: en FÁCIL los bots fallan mucho (hitBase bajo, error de apuntado
+  // grande, reacción lenta y tardan ~2.6 s en asentar la mira)
+  facil:   { react: [900, 1600], aimSpeed: 3.2, hitBase: 0.24, aimErr: 0.40, burstPause: [750, 1400], seeDist: 38, dmg: 0.38, settle: 2600 },
+  normal:  { react: [550, 950],  aimSpeed: 6.0, hitBase: 0.42, aimErr: 0.24, burstPause: [420, 850],  seeDist: 50, dmg: 0.48, settle: 1500 },
+  dificil: { react: [300, 520],  aimSpeed: 9.0, hitBase: 0.58, aimErr: 0.12, burstPause: [240, 450],  seeDist: 62, dmg: 0.56, settle: 850 },
+  experto: { react: [190, 330],  aimSpeed: 12.0, hitBase: 0.72, aimErr: 0.06, burstPause: [160, 310],  seeDist: 70, dmg: 0.64, settle: 500 },
 }
 
 export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
@@ -170,7 +173,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
   },
 }
 
-export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag'; name: string; price: number; desc: string; cat: string }[] = [
+export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke'; name: string; price: number; desc: string; cat: string }[] = [
   { id: 'w:aguila', weapon: 'aguila', name: 'Águila .50', price: 700, desc: 'Pistola de alto calibre', cat: 'Pistolas' },
   { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'SMG rápida y ágil', cat: 'SMG' },
   { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Escopeta de caño corto', cat: 'Escopetas' },
@@ -179,7 +182,77 @@ export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'fra
   { id: 'w:awp338', weapon: 'awp338', name: 'FR-338 Tirador', price: 4750, desc: 'Francotirador letal', cat: 'Francotirador' },
   { id: 'e:shield', equip: 'shield', name: 'Escudo Completo', price: 1000, desc: 'Sube el escudo a 100', cat: 'Equipamiento' },
   { id: 'e:frag', equip: 'frag', name: 'Granada MOLO', price: 300, desc: 'Máx. 2 unidades', cat: 'Equipamiento' },
+  { id: 'e:smoke', equip: 'smoke', name: 'Granada de Humo', price: 200, desc: 'Cortina de humo 12 s · máx. 2', cat: 'Equipamiento' },
 ]
+
+// ------------------------------------------------------------
+// TECLAS CONFIGURABLES (rebindable en el menú)
+// ------------------------------------------------------------
+export type ActionId =
+  | 'fwd' | 'back' | 'left' | 'right'
+  | 'sprint' | 'crouch' | 'jump'
+  | 'reload' | 'grenadeFrag' | 'grenadeSmoke'
+  | 'buy' | 'lastWeapon' | 'zipline'
+  | 'slot1' | 'slot2' | 'slot3'
+
+export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
+  fwd: 'KeyW',
+  back: 'KeyS',
+  left: 'KeyA',
+  right: 'KeyD',
+  sprint: 'ShiftLeft',
+  crouch: 'ControlLeft',
+  jump: 'Space',
+  reload: 'KeyR',
+  grenadeFrag: 'KeyG',
+  grenadeSmoke: 'KeyH',
+  buy: 'KeyB',
+  lastWeapon: 'KeyQ',
+  zipline: 'KeyE',
+  slot1: 'Digit1',
+  slot2: 'Digit2',
+  slot3: 'Digit3',
+}
+
+export const ACTION_LABELS: Record<ActionId, string> = {
+  fwd: 'Avanzar',
+  back: 'Retroceder',
+  left: 'Izquierda',
+  right: 'Derecha',
+  sprint: 'Esprintar',
+  crouch: 'Agacharse',
+  jump: 'Saltar',
+  reload: 'Recargar',
+  grenadeFrag: 'Granada MOLO',
+  grenadeSmoke: 'Granada de humo',
+  buy: 'Tienda',
+  lastWeapon: 'Arma anterior',
+  zipline: 'Interactuar / Tirolina',
+  slot1: 'Arma principal',
+  slot2: 'Arma secundaria',
+  slot3: 'Cuchillo',
+}
+
+/** Convierte un KeyboardEvent.code a etiqueta legible (KeyW → W, Digit1 → 1…) */
+export function keyLabel(code: string): string {
+  if (!code) return '—'
+  if (code.startsWith('Key')) return code.slice(3)
+  if (code.startsWith('Digit')) return code.slice(5)
+  if (code.startsWith('Numpad')) return 'NUM ' + code.slice(6)
+  if (code.startsWith('Arrow')) {
+    const names: Record<string, string> = { Up: '↑', Down: '↓', Left: '←', Right: '→' }
+    return names[code.slice(5)] ?? code
+  }
+  const names: Record<string, string> = {
+    Space: 'ESPACIO', ShiftLeft: 'MAYÚS IZQ', ShiftRight: 'MAYÚS DER',
+    ControlLeft: 'CTRL IZQ', ControlRight: 'CTRL DER',
+    AltLeft: 'ALT', AltRight: 'ALT GR', Enter: 'ENTER', Tab: 'TAB',
+    CapsLock: 'BLOQ MAYÚS', Backquote: '`', Minus: '-', Equal: '=',
+    BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+    Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+  }
+  return names[code] ?? code.toUpperCase()
+}
 
 export const WEAPON_LIST = Object.values(WEAPONS)
 
@@ -723,9 +796,12 @@ export interface NetPlayerState {
   deaths: number
   money: number
   streak: number
+  aiming: boolean        // apuntando/disparando (pose de tiro)
+  sprint: boolean        // esprintando (animación de correr estilo Fortnite)
 }
 
-export interface NetGrenade { id: string; x: number; y: number; z: number; team: Team }
+export type GrenadeKind = 'frag' | 'smoke'
+export interface NetGrenade { id: string; x: number; y: number; z: number; team: Team; kind: GrenadeKind }
 
 export interface NetRoundState {
   phase: 'live' | 'ended' | 'matchend'

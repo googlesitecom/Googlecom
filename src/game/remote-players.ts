@@ -26,8 +26,10 @@ export interface RemotePlayer {
   root: THREE.Group
   bodyGroup: THREE.Group
   legs: [THREE.Object3D, THREE.Object3D]
+  knees: [THREE.Object3D, THREE.Object3D]
   arms: [THREE.Object3D, THREE.Object3D]
   forearms: [THREE.Object3D, THREE.Object3D]
+  hands: [THREE.Object3D, THREE.Object3D]
   head: THREE.Object3D
   torso: THREE.Object3D
   weaponHolder: THREE.Group
@@ -49,6 +51,12 @@ export interface RemotePlayer {
   fireKick: number
   /** balanceo de caminar suavizado */
   walkSwing: number
+  /** 0..1 — agachado (pose, no escalado) */
+  crouchAmt: number
+  /** 0..1 — esprintando (animación estilo Fortnite) */
+  sprintAmt: number
+  /** fase aleatoria para la respiración en reposo */
+  breathPhase: number
 }
 
 const TEAM_COLORS: Record<Team, number> = { A: 0xd99a2b, B: 0x35b04a }
@@ -87,6 +95,15 @@ const HUM_AIM = {
 // posición del arma en reposo vs. apuntando (lado −X, hombro derecho)
 const WPN_REST = { x: -0.16, y: 1.28, z: 0.32 }
 const WPN_AIM = { x: -0.1, y: 1.3, z: 0.36 }
+
+// vectores reutilizables (evitar asignaciones por frame)
+const _v1 = new THREE.Vector3()
+const _v2 = new THREE.Vector3()
+const _dir = new THREE.Vector3()
+const _Z = new THREE.Vector3(0, 0, 1)
+const _q = new THREE.Quaternion()
+const _q2 = new THREE.Quaternion()
+const _X_AXIS = new THREE.Vector3(1, 0, 0)
 
 // ----------------------------------------------------------
 // Humanoide low-poly (fallback si no hay GLB)
@@ -300,14 +317,20 @@ export class RemotePlayers {
     // huesos para la animación procedural
     const legL = findBone(rig, /^mixamorigLeftUpLeg_/)
     const legR = findBone(rig, /^mixamorigRightUpLeg_/)
+    const kneeL = findBone(rig, /^mixamorigLeftLeg_/)
+    const kneeR = findBone(rig, /^mixamorigRightLeg_/)
     const armL = findBone(rig, /^mixamorigLeftArm_/)
     const armR = findBone(rig, /^mixamorigRightArm_/)
     const foreL = findBone(rig, /^mixamorigLeftForeArm_/)
     const foreR = findBone(rig, /^mixamorigRightForeArm_/)
+    const handL = findBone(rig, /^mixamorigLeftHand_/)
+    const handR = findBone(rig, /^mixamorigRightHand_/)
     const rest = new THREE.Object3D()
     rp.legs = [legL ?? rest, legR ?? rest]
+    rp.knees = [kneeL ?? rest, kneeR ?? rest]
     rp.arms = [armL ?? rest, armR ?? rest]
     rp.forearms = [foreL ?? rest, foreR ?? rest]
+    rp.hands = [handL ?? rest, handR ?? rest]
     rp.head = findBone(rig, /^mixamorigHead_/) ?? rest
     rp.torso = findBone(rig, /^mixamorigSpine1_/) ?? rest
     rp.usingSoldier = true
@@ -317,15 +340,17 @@ export class RemotePlayers {
     let rp = this.map.get(state.id)
     if (!rp) {
       const h = buildHumanoid(state.team)
+      const rest = new THREE.Object3D()
       rp = {
         id: state.id, name: state.name, team: state.team, bot: state.bot,
-        root: h.root, bodyGroup: h.bodyGroup, legs: h.legs, arms: h.arms,
-        forearms: [new THREE.Object3D(), new THREE.Object3D()],
+        root: h.root, bodyGroup: h.bodyGroup, legs: h.legs, knees: [rest, rest],
+        arms: h.arms, forearms: [rest, rest], hands: [rest, rest],
         head: h.head, torso: h.torso, weaponHolder: h.weaponHolder, tag: h.tag, tagBg: h.tagBg,
         weaponId: null, weaponMuzzle: null,
         buffer: [], lastDead: state.dead, deathTime: 0, walkPhase: Math.random() * 10,
         hp: state.hp, state, lastFootstep: 0, usingSoldier: false,
         aimPose: 0, fireKick: 0, walkSwing: 0,
+        crouchAmt: 0, sprintAmt: 0, breathPhase: Math.random() * Math.PI * 2,
       }
       const { tex } = makeNameTag(state.name, state.team, state.team === 'A' ? '#f59e0b' : '#22c55e')
       ;(rp.tag.material as THREE.SpriteMaterial).map = tex
@@ -354,7 +379,8 @@ export class RemotePlayers {
         const { group, muzzle } = buildWeaponModel(state.weapon)
         group.scale.setScalar(0.9)
         group.rotation.y = Math.PI
-        group.position.set(0, -0.05, -0.1)
+        // el origen del grupo queda en la EMPUÑADURA (para el IK de manos)
+        group.position.set(0, 0.06, 0.05)
         rp.weaponHolder.add(group)
         rp.weaponMuzzle = muzzle
       }
@@ -432,47 +458,75 @@ export class RemotePlayers {
       rp.bodyGroup.position.y = 0
       rp.tag.visible = true
 
-      // agacharse
-      const targetH = crouch ? 0.72 : 1
-      rp.bodyGroup.scale.y += (targetH - rp.bodyGroup.scale.y) * Math.min(1, dt * 10)
-
-      // ---- pose de apuntado + animación de disparo ----
-      const hasWeapon = !!(state.weapon && state.weapon !== 'knife')
-      rp.aimPose += ((hasWeapon ? 1 : 0) - rp.aimPose) * Math.min(1, dt * 7)
-      rp.fireKick = Math.max(0, rp.fireKick - dt * 5.5)
-      const aim = rp.aimPose
-      const kick = rp.fireKick
-
-      // caminar (piernas y balanceo suavizado)
+      // ============ ESTADOS DE ANIMACIÓN ============
+      // caminar = arma en las manos · esprintar = estilo Fortnite
+      // apuntar/disparar = pose de tiro · agacharse = pose real
       const speed = state.speed
-      const targetSwing = speed > 0.5 ? Math.min(0.65, speed * 0.13) : 0
+      const hasWeapon = !!(state.weapon && state.weapon !== 'knife')
+      const wantSprint = !!state.sprint && !crouch && !state.aiming && speed > 4.2
+      rp.sprintAmt += ((wantSprint ? 1 : 0) - rp.sprintAmt) * Math.min(1, dt * 5)
+      const sprint = rp.sprintAmt
+      const aimTarget = !hasWeapon ? 0 : (state.aiming ? 1 : 0.42)
+      rp.aimPose += (aimTarget - rp.aimPose) * Math.min(1, dt * (state.aiming ? 10 : 6))
+      const aim = rp.aimPose
+      rp.fireKick = Math.max(0, rp.fireKick - dt * 5.5)
+      const kick = rp.fireKick
+      rp.crouchAmt += ((crouch ? 1 : 0) - rp.crouchAmt) * Math.min(1, dt * 9)
+      const crouchA = rp.crouchAmt
+      const breath = Math.sin(renderT / 1000 * 1.6 + rp.breathPhase) * 0.022
+
+      // ============ CAMINAR / CORRER ============
+      // cadencia natural: caminar ~2 pasos/s · sprint ~3.2 pasos/s (estilo Fortnite)
+      const stepRate = sprint > 0.4 ? 2.05 : 1.6
+      const targetSwing = speed > 0.5 ? Math.min(0.72, speed * 0.135) * (1 + sprint * 0.6) : 0
       rp.walkSwing += (targetSwing - rp.walkSwing) * Math.min(1, dt * 8)
       const swing = rp.walkSwing
-      if (speed > 0.5) rp.walkPhase += dt * speed * 2.4
+      if (speed > 0.5) rp.walkPhase += dt * speed * stepRate
       const sPh = Math.sin(rp.walkPhase) * swing
-      rp.legs[0].rotation.x = sPh
-      rp.legs[1].rotation.x = -sPh
+      // botecito vertical al esprintar
+      const runBounce = Math.abs(Math.sin(rp.walkPhase)) * 0.045 * sprint
 
       if (rp.usingSoldier) {
+        // ---- agacharse: pose de sentadilla (muslos al frente + rodillas dobladas) ----
+        const legSwing0 = sPh * (1 - crouchA * 0.45)
+        const legSwing1 = -sPh * (1 - crouchA * 0.45)
+        rp.legs[0].rotation.x = legSwing0 + crouchA * -1.08
+        rp.legs[1].rotation.x = legSwing1 + crouchA * -0.82
+        // rodillas: dobladas al agacharse y al bombear las piernas al correr
+        rp.knees[0].rotation.x = Math.max(0, -legSwing0) * (0.55 + sprint * 0.75) + crouchA * 1.72
+        rp.knees[1].rotation.x = Math.max(0, -legSwing1) * (0.55 + sprint * 0.75) + crouchA * 1.38
+        // el cuerpo baja (sin aplastar la escala) + inclinación al esprintar
+        rp.bodyGroup.position.y = -0.4 * crouchA + runBounce
+        rp.bodyGroup.rotation.x = sprint * 0.26 + crouchA * 0.06
+        // el torso acompaña y la cabeza compensa mirando al frente
+        rp.torso.rotation.x = sprint * 0.12 + breath * 0.4
+
+        // ---- brazos: reposo ↔ porteo (0.42) ↔ apuntado (1) ----
         // soldado mixamo: gatillo = arms[1] (RightArm, −X) · apoyo = arms[0] (LeftArm, +X)
-        const sRestX = ARM_REST_X - sPh * 0.45
-        const tRestX = ARM_REST_X + sPh * 0.45
+        const armSprint = sprint * (1 - aim)          // al correr: brazos más abajo
+        const effAim = aim * (1 - armSprint * 0.62)
+        const sRestX = ARM_REST_X - sPh * 0.45 * (1 - effAim)
+        const tRestX = ARM_REST_X + sPh * 0.45 * (1 - effAim)
         const sAimX = SOLDIER_AIM.sArm.x + sPh * 0.10
         const tAimX = SOLDIER_AIM.tArm.x - sPh * 0.06
-        rp.arms[0].rotation.x = sRestX + (sAimX - sRestX) * aim
-        rp.arms[0].rotation.y = SOLDIER_AIM.sArm.y * aim
-        rp.arms[0].rotation.z = SOLDIER_AIM.sArm.z * aim
-        rp.arms[1].rotation.x = tRestX + (tAimX - tRestX) * aim + kick * 0.14
-        rp.arms[1].rotation.y = SOLDIER_AIM.tArm.y * aim
-        rp.arms[1].rotation.z = SOLDIER_AIM.tArm.z * aim - kick * 0.1
-        rp.forearms[0].rotation.x = FORE_BEND_X + (SOLDIER_AIM.sFore.x - FORE_BEND_X) * aim
-        rp.forearms[0].rotation.z = SOLDIER_AIM.sFore.z * aim
-        rp.forearms[1].rotation.x = FORE_BEND_X + (SOLDIER_AIM.tFore.x - FORE_BEND_X) * aim - kick * 0.2
-        rp.forearms[1].rotation.z = SOLDIER_AIM.tFore.z * aim
-        // la cabeza mira donde apunta (pitch)
-        rp.head.rotation.x = -state.pitch * 0.5 * (0.4 + 0.6 * aim)
+        // bombeo de brazos al esprintar sin arma / con arma baja
+        const pump = Math.sin(rp.walkPhase) * swing * 0.5 * armSprint
+        rp.arms[0].rotation.x = sRestX + (sAimX - sRestX) * effAim - pump + breath
+        rp.arms[0].rotation.y = SOLDIER_AIM.sArm.y * effAim
+        rp.arms[0].rotation.z = SOLDIER_AIM.sArm.z * effAim
+        rp.arms[1].rotation.x = tRestX + (tAimX - tRestX) * effAim + pump + breath + kick * 0.14
+        rp.arms[1].rotation.y = SOLDIER_AIM.tArm.y * effAim
+        rp.arms[1].rotation.z = SOLDIER_AIM.tArm.z * effAim - kick * 0.1
+        rp.forearms[0].rotation.x = FORE_BEND_X + (SOLDIER_AIM.sFore.x - FORE_BEND_X) * effAim
+        rp.forearms[0].rotation.z = SOLDIER_AIM.sFore.z * effAim
+        rp.forearms[1].rotation.x = FORE_BEND_X + (SOLDIER_AIM.tFore.x - FORE_BEND_X) * effAim - kick * 0.2 + armSprint * 0.35
+        rp.forearms[1].rotation.z = SOLDIER_AIM.tFore.z * effAim
+        // la cabeza mira donde apunta (pitch) y compensa la inclinación
+        rp.head.rotation.x = -state.pitch * 0.5 * (0.4 + 0.6 * aim) - sprint * 0.18
       } else {
-        // humanoide: gatillo = arms[0] (x −0.3) · apoyo = arms[1] (x +0.3)
+        // ---- humanoide low-poly (fallback): agacharse por escala ----
+        const targetH = crouchA ? 0.72 : 1
+        rp.bodyGroup.scale.y += (targetH - rp.bodyGroup.scale.y) * Math.min(1, dt * 10)
         const tRestX = -sPh * 0.5
         const sRestX = sPh * 0.3
         const tAimX = HUM_AIM.tArm.x - sPh * 0.08
@@ -484,12 +538,38 @@ export class RemotePlayers {
         rp.head.rotation.x = -state.pitch * 0.35 * aim
       }
 
-      // arma: subirla/centrarla al apuntar, apuntar con pitch, patada al disparar
-      const hx = WPN_REST.x + (WPN_AIM.x - WPN_REST.x) * aim
-      const hy = WPN_REST.y + (WPN_AIM.y - WPN_REST.y) * aim
-      const hz = WPN_REST.z + (WPN_AIM.z - WPN_REST.z) * aim
-      rp.weaponHolder.position.set(hx, hy, hz - kick * 0.07)
-      rp.weaponHolder.rotation.x = -state.pitch + kick * 0.16
+      // ============ ARMA SUJETA A LAS MANOS (IK 2 puntos) ============
+      if (hasWeapon && rp.usingSoldier && rp.hands[0].name) {
+        // actualizar la cadena de matrices de ambos brazos y leer las manos
+        rp.hands[1].updateWorldMatrix(true, false)   // mano derecha (gatillo)
+        rp.hands[0].updateWorldMatrix(true, false)   // mano izquierda (apoyo)
+        _v1.setFromMatrixPosition(rp.hands[1].matrixWorld)  // gatillo
+        _v2.setFromMatrixPosition(rp.hands[0].matrixWorld)  // apoyo
+        rp.bodyGroup.worldToLocal(_v1)
+        rp.bodyGroup.worldToLocal(_v2)
+        // dirección del arma: de la mano gatillo a la de apoyo + sesgo al frente (+Z)
+        // el pitch del jugador inclina el cañón al apuntar arriba/abajo
+        _dir.copy(_v2).sub(_v1).multiplyScalar(0.8)
+        _dir.y -= 0.06
+        _dir.z += 0.85
+        _dir.y += -state.pitch * 0.9 * aim
+        _dir.normalize()
+        // el origen del arma (empuñadura) se coloca en la mano del gatillo
+        rp.weaponHolder.position.copy(_v1)
+        rp.weaponHolder.position.y += 0.02
+        // orientar el +Z del soporte (cañón) según la dirección calculada
+        _q.setFromUnitVectors(_Z, _dir)
+        // patada de retroceso: pequeña rotación hacia arriba
+        _q2.setFromAxisAngle(_X_AXIS, kick * 0.13)
+        rp.weaponHolder.quaternion.copy(_q).multiply(_q2)
+      } else if (hasWeapon) {
+        // fallback humanoide: posición fija entre reposo y apuntado
+        const hx = WPN_REST.x + (WPN_AIM.x - WPN_REST.x) * aim
+        const hy = WPN_REST.y + (WPN_AIM.y - WPN_REST.y) * aim
+        const hz = WPN_REST.z + (WPN_AIM.z - WPN_REST.z) * aim
+        rp.weaponHolder.position.set(hx, hy, hz - kick * 0.07)
+        rp.weaponHolder.rotation.set(-state.pitch + kick * 0.16, 0, 0)
+      }
 
       // etiqueta: teammates siempre, enemigos a < 22 m
       const d = cameraPos.distanceTo(rp.root.position)
@@ -505,7 +585,8 @@ export class RemotePlayers {
     const rp = this.map.get(id)
     if (!rp || !rp.root.visible || rp.lastDead) return null
     const p = rp.root.position
-    const crouch = rp.bodyGroup.scale.y
+    // factor de altura: agachado con pose (soldado) o por escala (fallback)
+    const crouch = rp.usingSoldier ? (1 - 0.34 * rp.crouchAmt) : rp.bodyGroup.scale.y
     const hScale = crouch
     const yaw = rp.root.rotation.y
     const cos = Math.abs(Math.cos(yaw))
@@ -513,7 +594,7 @@ export class RemotePlayers {
     // dimensiones rotadas (yaw)
     const wHalf = (0.30 * cos + 0.16 * sin)
     const dHalf = (0.30 * sin + 0.16 * cos)
-    const headY = 1.62 * hScale
+    const headY = 1.55 * hScale
     return {
       head: new THREE.Box3(
         new THREE.Vector3(p.x - 0.16, p.y + headY - 0.15, p.z - 0.16),

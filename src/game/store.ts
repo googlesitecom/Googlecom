@@ -3,7 +3,8 @@
 // Puente entre el motor 3D y la interfaz React
 // ============================================================
 import { create } from 'zustand'
-import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty } from './shared'
+import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty, ActionId } from './shared'
+import { DEFAULT_KEYBINDS } from './shared'
 import type { NetMode } from './net'
 
 export interface KillFeedEntry {
@@ -46,6 +47,7 @@ interface GameState {
   armor: number
   money: number
   frags: number
+  smokes: number
 
   weapon: WeaponId
   mag: number
@@ -69,6 +71,7 @@ interface GameState {
     padSens: number
     volume: number
     quality: 'baja' | 'media' | 'alta'
+    keybinds: Record<ActionId, string>
   }
 
   fps: number
@@ -83,6 +86,8 @@ interface GameState {
   addKill: (e: Omit<KillFeedEntry, 'id' | 't'>) => void
   addAnnouncement: (text: string, kind: Announcement['kind'], team?: Team) => void
   setSettings: (s: Partial<GameState['settings']>) => void
+  setKeybind: (action: ActionId, code: string) => void
+  resetKeybinds: () => void
 }
 
 let feedId = 0
@@ -106,6 +111,7 @@ export const useGame = create<GameState>((set) => ({
   armor: 0,
   money: 1000,
   frags: 0,
+  smokes: 0,
 
   weapon: 'p9',
   mag: 15,
@@ -129,6 +135,7 @@ export const useGame = create<GameState>((set) => ({
     padSens: 1.0,
     volume: 0.7,
     quality: 'alta',
+    keybinds: { ...DEFAULT_KEYBINDS },
   },
 
   fps: 0,
@@ -158,20 +165,34 @@ export const useGame = create<GameState>((set) => ({
     set({ settings: next })
     try { localStorage.setItem('fzc-settings', JSON.stringify(next)) } catch { /* sin almacenamiento */ }
   },
+  setKeybind: (action, code) => {
+    const cur = useGame.getState().settings
+    const keybinds = { ...cur.keybinds }
+    // si la tecla ya está usada por otra acción, liberar esa acción
+    for (const k of Object.keys(keybinds) as ActionId[]) {
+      if (keybinds[k] === code && k !== action) keybinds[k] = ''
+    }
+    keybinds[action] = code
+    useGame.getState().setSettings({ keybinds })
+  },
+  resetKeybinds: () => {
+    useGame.getState().setSettings({ keybinds: { ...DEFAULT_KEYBINDS } })
+  },
 }))
 
-// restaurar ajustes persistidos (calidad/sensibilidad/volumen)
+// restaurar ajustes persistidos (calidad/sensibilidad/volumen/teclas)
 try {
   const saved = typeof window !== 'undefined' ? localStorage.getItem('fzc-settings') : null
   if (saved) {
     const parsed = JSON.parse(saved) as Partial<GameState['settings']>
-    if (parsed && (parsed.quality || parsed.sens || parsed.volume || parsed.padSens)) {
+    if (parsed && (parsed.quality || parsed.sens || parsed.volume || parsed.padSens || parsed.keybinds)) {
       const cur = useGame.getState().settings
       useGame.getState().setSettings({
         quality: parsed.quality ?? cur.quality,
         sens: parsed.sens ?? cur.sens,
         padSens: parsed.padSens ?? cur.padSens,
         volume: parsed.volume ?? cur.volume,
+        keybinds: { ...cur.keybinds, ...(parsed.keybinds ?? {}) },
       })
     }
   }

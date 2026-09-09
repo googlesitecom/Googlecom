@@ -197,8 +197,32 @@ export function weaponPose(id: WeaponId): { hip: THREE.Vector3; ads: THREE.Vecto
 }
 
 /** Modelo de granada en mano / en vuelo */
-export function buildGrenadeModel(): THREE.Group {
+export function buildGrenadeModel(kind: 'frag' | 'smoke' = 'frag'): THREE.Group {
   const g = new THREE.Group()
+  if (kind === 'smoke') {
+    // bote de humo: cilindro metálico gris con franjas azules
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.045, 0.045, 0.13, 12),
+      new THREE.MeshLambertMaterial({ color: 0x5a6a72 }),
+    )
+    g.add(body)
+    const stripe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.047, 0.047, 0.028, 12),
+      new THREE.MeshLambertMaterial({ color: 0x2a6ac8 }),
+    )
+    stripe.position.y = 0.02
+    g.add(stripe)
+    const stripe2 = stripe.clone()
+    stripe2.position.y = -0.03
+    g.add(stripe2)
+    const top = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.03, 0.02, 10),
+      new THREE.MeshLambertMaterial({ color: 0x8a2020 }),
+    )
+    top.position.y = 0.075
+    g.add(top)
+    return g
+  }
   const body = new THREE.Mesh(
     new THREE.CylinderGeometry(0.05, 0.05, 0.11, 10),
     new THREE.MeshLambertMaterial({ color: 0x2a3a2a }),

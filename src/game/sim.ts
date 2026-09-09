@@ -6,7 +6,7 @@
 import {
   GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, PICKUP_SPOTS, computeDamage, spawnPoint, segmentBlocked,
   WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL, SPAWN_A, SPAWN_B,
-  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind,
+  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind, type GrenadeKind,
   type NetPlayerState, type NetGrenade, type NetPickup, type NetRoundState, type NetKillEvent, type NetSnapshot,
 } from './shared'
 
@@ -51,6 +51,7 @@ interface SimPlayer {
   weapon: WeaponId
   owned: WeaponId[]
   frags: number
+  smokes: number
   kills: number
   deaths: number
   money: number
@@ -61,6 +62,8 @@ interface SimPlayer {
   protectUntil: number
   lastSeenEnemy: number
   lastDamageAt: number
+  aiming: boolean          // en pose de apuntado (para la animación)
+  sprint: boolean          // corriendo (animación estilo Fortnite)
   ai?: BotAI
 }
 
@@ -68,9 +71,17 @@ interface SimGrenade {
   id: string
   owner: string
   team: Team
+  kind: GrenadeKind
   x: number; y: number; z: number
   vx: number; vy: number; vz: number
   fuse: number
+}
+
+interface SimSmoke {
+  id: string
+  x: number; y: number; z: number
+  radius: number
+  until: number
 }
 
 interface SimPickup {
@@ -91,6 +102,17 @@ function round2(v: number): number { return Math.round(Number(v) * 100) / 100 }
 
 function eye(p: SimPlayer): [number, number, number] { return [p.x, p.y + 1.55, p.z] }
 
+/** intersección segmento-esfera: ¿el humo bloquea esta línea de visión? */
+function segSphereHit(ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number, r: number): boolean {
+  const dx = bx - ax, dy = by - ay, dz = bz - az
+  const fx = ax - cx, fy = ay - cy, fz = az - cz
+  const len2 = dx * dx + dy * dy + dz * dz
+  let tt = len2 > 0 ? -(fx * dx + fy * dy + fz * dz) / len2 : 0
+  tt = Math.max(0, Math.min(1, tt))
+  const px = ax + dx * tt - cx, py = ay + dy * tt - cy, pz = az + dz * tt - cz
+  return px * px + py * py + pz * pz < r * r
+}
+
 function nearestWaypoint(x: number, z: number): number {
   let best = 0, bestD = Infinity
   for (let i = 0; i < WAYPOINTS.length; i++) {
@@ -103,6 +125,7 @@ function nearestWaypoint(x: number, z: number): number {
 export class GameSim {
   private players = new Map<string, SimPlayer>()
   private grenades = new Map<string, SimGrenade>()
+  private smokes: SimSmoke[] = []
   private pickups: SimPickup[] = []
   private grenadeSeq = 0
   private botSeq = 0
@@ -210,10 +233,11 @@ export class GameSim {
       hp: 100, shield: 0, dead: false, respawnAt: 0,
       weapon: 'p9',
       owned: ['knife', 'p9'],
-      frags: 0,
+      frags: 0, smokes: 0,
       kills: 0, deaths: 0, money: GAME.START_MONEY,
       streak: 0, lastKillAt: 0, multi: 0,
       lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0, lastDamageAt: 0,
+      aiming: false, sprint: false,
     }
     if (bot) {
       p.ai = {
@@ -242,7 +266,11 @@ export class GameSim {
     p.protectUntil = now() + GAME.SPAWN_PROTECT * 1000
     p.owned = ['knife', 'p9']
     p.weapon = 'p9'
-    p.frags = Math.min(p.frags, 0)
+    // granadas de cortesía al reaparecer (mín. 1 de cada una, máx. 2)
+    p.frags = clamp(p.frags, 1, 2)
+    p.smokes = clamp(p.smokes, 1, 2)
+    p.aiming = false
+    p.sprint = false
     if (p.ai) {
       p.ai.state = 'patrol'
       p.ai.wp = nearestWaypoint(x, z)
@@ -257,6 +285,7 @@ export class GameSim {
       weapons: p.owned,
       weapon: p.weapon,
       frags: p.frags,
+      smokes: p.smokes,
       money: p.money,
       protect: GAME.SPAWN_PROTECT,
     }, p.id)
@@ -314,9 +343,15 @@ export class GameSim {
       }
       p.money -= item.price
       p.frags++
+    } else if (item.equip === 'smoke') {
+      if (p.smokes >= 2) {
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Máximo 2 granadas de humo' }, p.id)
+      }
+      p.money -= item.price
+      p.smokes++
     }
     this.emit('buyResult', { ok: true, itemId, money: p.money }, p.id)
-    this.emit('econ', { money: p.money, frags: p.frags }, p.id)
+    this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
   }
 
   // ------------------------------------------------------------
@@ -369,6 +404,7 @@ export class GameSim {
     victim.streak = 0
     victim.respawnAt = now() + GAME.RESPAWN_TIME * 1000
     victim.frags = 0
+    victim.smokes = 0
 
     if (killer.id !== victim.id) {
       killer.kills++
@@ -421,7 +457,7 @@ export class GameSim {
 
     for (const p of this.players.values()) {
       p.money = Math.min(GAME.MAX_MONEY, p.money + (p.team === winner ? GAME.WIN_REWARD : GAME.LOSE_REWARD))
-      this.emit('econ', { money: p.money, frags: p.frags }, p.id)
+      this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
     }
   }
 
@@ -472,7 +508,14 @@ export class GameSim {
     const bx = b.x, by = b.y + (b.crouch ? 0.9 : 1.2), bz = b.z
     const d = dist3(ax, ay, az, bx, by, bz)
     if (d > skill.seeDist) return false
-    return !segmentBlocked(ax, ay, az, bx, by, bz, MAP_AABBS)
+    if (segmentBlocked(ax, ay, az, bx, by, bz, MAP_AABBS)) return false
+    // cortina de humo: bloquea la línea de visión de los bots
+    const t = now()
+    for (const s of this.smokes) {
+      if (t > s.until) continue
+      if (segSphereHit(ax, ay, az, bx, by, bz, s.x, s.y + 1, s.z, s.radius)) return false
+    }
+    return true
   }
 
   private botFindTarget(p: SimPlayer): SimPlayer | null {
@@ -492,6 +535,8 @@ export class GameSim {
     const ai = p.ai!
     const skill = BOT_SKILL[this.difficulty]
     if (p.dead) return
+    p.aiming = false
+    p.sprint = false
 
     // --- búsqueda de objetivo (cada 200 ms) ---
     if (t - ai.lastScan > 200) {
@@ -583,11 +628,12 @@ export class GameSim {
       }
       p.crouch = t < ai.crouchUntil
 
-      // error de puntería con deriva (más estable cuanto más tiempo apuntando)
+      // error de puntería con deriva (más estable cuanto más tiempo apuntando;
+      // en fácil tarda mucho más en asentarse → falla bastante)
       if (t > ai.aimErrNext) {
         ai.aimErrNext = t + rand(350, 800)
-        const aimT = clamp((t - ai.reactAt) / 1100, 0, 1)
-        const base = skill.aimErr * (1 - aimT * 0.75) * (0.7 + Math.random() * 0.6)
+        const aimT = clamp((t - ai.reactAt) / skill.settle, 0, 1)
+        const base = skill.aimErr * (1 - aimT * 0.72) * (0.7 + Math.random() * 0.6)
         ai.aimErr = base * (Math.random() < 0.5 ? -1 : 1)
       }
 
@@ -621,6 +667,7 @@ export class GameSim {
       else if (!this.posBlocked(p.x + vx * dt, p.z)) { p.x += vx * dt }
       else if (!this.posBlocked(p.x, p.z + vz * dt)) { p.z += vz * dt }
       p.speed = Math.hypot(vx, vz)
+      p.aiming = true
 
       // --- disparo ---
       if (t > ai.reactAt && t > ai.nextShotAt && this.canSee(p, target)) {
@@ -659,7 +706,7 @@ export class GameSim {
         p.pitch += (0 - p.pitch) * Math.min(1, dt * 4)
         const nx = p.x + (dx / d) * MOVE * dt
         const nz = p.z + (dz / d) * MOVE * dt
-        if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz; p.speed = MOVE }
+        if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz; p.speed = MOVE; p.sprint = MOVE > 4.6 }
         else { ai.wp = nearestWaypoint(p.x, p.z); p.speed = 0 }
       }
     }
@@ -709,14 +756,20 @@ export class GameSim {
 
     p.lastShotAt = t
 
-    // precisión
-    let hitChance = skill.hitBase - clamp((d - 10) / 70, 0, 0.5)
-    if (target.speed > 3.5) hitChance -= 0.12
+    // precisión — ahora ligada también al ERROR VISUAL de apuntado:
+    // si el cañón apunta lejos del objetivo (aimErr grande), falla casi seguro
+    const angErr = Math.abs(ai.aimErr)
+    const angTarget = Math.atan2(0.38, Math.max(2, d)) // radio angular del torso
+    let hitChance = skill.hitBase - clamp((d - 10) / 55, 0, 0.42)
+    if (angErr > angTarget * 1.6) hitChance *= 0.25         // apuntando lejos → falla
+    else if (angErr > angTarget) hitChance *= 0.6
+    if (target.speed > 3.5) hitChance -= 0.14
     if (target.crouch) hitChance += 0.04
     if (p.crouch) hitChance += 0.06
-    if (w.id === 'awp338') hitChance = d < 45 ? Math.max(0.85, skill.hitBase) : skill.hitBase - 0.1
+    if (w.id === 'awp338') hitChance = d < 45 ? Math.min(0.92, skill.hitBase + 0.18) : Math.max(0.05, skill.hitBase - 0.14)
     if (w.id === 'breacher') hitChance = d < 8 ? 0.9 : 0.45
     if (w.id === 'mp9' && d > 25) hitChance -= 0.1
+    hitChance = clamp(hitChance, 0.03, 0.95)
 
     const hit = Math.random() < hitChance
     const aimY = target.y + 1.2
@@ -745,20 +798,26 @@ export class GameSim {
   // ------------------------------------------------------------
   // Granadas
   // ------------------------------------------------------------
-  handleGrenadeThrow(p: SimPlayer, pos: [number, number, number], vel: [number, number, number]): void {
-    if (p.dead || p.frags <= 0) return
-    p.frags--
+  handleGrenadeThrow(p: SimPlayer, pos: [number, number, number], vel: [number, number, number], kind: GrenadeKind = 'frag'): void {
+    if (p.dead) return
+    if (kind === 'smoke') {
+      if (p.smokes <= 0) return
+      p.smokes--
+    } else {
+      if (p.frags <= 0) return
+      p.frags--
+    }
     const id = `g${this.grenadeSeq++}`
     const lim = GAME.MAP_HALF - 0.5
     const g: SimGrenade = {
-      id, owner: p.id, team: p.team,
+      id, owner: p.id, team: p.team, kind,
       x: clamp(pos[0], -lim, lim), y: clamp(pos[1], 0.2, 30), z: clamp(pos[2], -lim, lim),
       vx: vel[0], vy: vel[1], vz: vel[2],
-      fuse: 2.4,
+      fuse: kind === 'smoke' ? 1.6 : 2.4,
     }
     this.grenades.set(id, g)
-    this.emit('grenadeSpawn', { id, owner: p.id, pos, vel })
-    this.emit('econ', { money: p.money, frags: p.frags }, p.id)
+    this.emit('grenadeSpawn', { id, owner: p.id, kind, pos, vel })
+    this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
   }
 
   private updateGrenades(dt: number): void {
@@ -796,6 +855,13 @@ export class GameSim {
 
   private explodeGrenade(g: SimGrenade): void {
     this.grenades.delete(g.id)
+    if (g.kind === 'smoke') {
+      // cortina de humo: bloquea visión 12 s
+      const sid = `s${this.grenadeSeq++}`
+      this.smokes.push({ id: sid, x: g.x, y: g.y, z: g.z, radius: 3.6, until: now() + 12000 })
+      this.emit('smokeSpawn', { id: sid, pos: [g.x, g.y, g.z], duration: 12000 })
+      return
+    }
     this.emit('grenadeExplode', { id: g.id, pos: [g.x, g.y, g.z] })
     const owner = this.players.get(g.owner)
     const RADIUS = 6.5
@@ -820,6 +886,7 @@ export class GameSim {
   handleInput(p: SimPlayer, data: {
     pos: [number, number, number]; yaw: number; pitch: number
     crouch: boolean; speed: number; weapon: string
+    aiming?: boolean; sprint?: boolean
   }): void {
     if (p.dead) return
     const lim = GAME.MAP_HALF - 0.5
@@ -830,6 +897,8 @@ export class GameSim {
     p.pitch = clamp(Number(data.pitch) || 0, -1.4, 1.4)
     p.crouch = !!data.crouch
     p.speed = clamp(Number(data.speed) || 0, 0, 12)
+    p.aiming = !!data.aiming
+    p.sprint = !!data.sprint && !p.crouch
     const wid = data.weapon as WeaponId
     if (wid && WEAPONS[wid] && p.owned.includes(wid)) p.weapon = wid
   }
@@ -897,7 +966,7 @@ export class GameSim {
       team: p.team,
       players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
       round: this.netRound(),
-      econ: { money: p.money, frags: p.frags },
+      econ: { money: p.money, frags: p.frags, smokes: p.smokes },
     }
   }
 
@@ -933,6 +1002,11 @@ export class GameSim {
 
     this.updateGrenades(dt)
 
+    // limpiar humos expirados
+    if (this.smokes.length && t > this.smokes[0].until) {
+      this.smokes = this.smokes.filter(s => t < s.until)
+    }
+
     if (this.round.phase === 'live' && t > this.round.endsAt) {
       const winner = this.round.scoresA === this.round.scoresB
         ? (this.teamCounts().A <= this.teamCounts().B ? 'A' : 'B')
@@ -959,11 +1033,12 @@ export class GameSim {
       weapon: p.weapon, dead: p.dead, crouch: p.crouch,
       speed: Math.round(p.speed * 10) / 10,
       kills: p.kills, deaths: p.deaths, money: p.money, streak: p.streak,
+      aiming: p.aiming, sprint: p.sprint && !p.crouch && p.speed > 4.2,
     }
   }
 
   private netGrenade(g: SimGrenade): NetGrenade {
-    return { id: g.id, x: Math.round(g.x * 100) / 100, y: Math.round(g.y * 100) / 100, z: Math.round(g.z * 100) / 100, team: g.team }
+    return { id: g.id, x: Math.round(g.x * 100) / 100, y: Math.round(g.y * 100) / 100, z: Math.round(g.z * 100) / 100, team: g.team, kind: g.kind }
   }
 
   private netPickup(p: SimPickup): NetPickup {

@@ -11,13 +11,13 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
   PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS,
-  type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey,
+  type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
 } from './shared'
 import { AudioEngine } from './audio'
 import { Effects } from './effects'
 import { RemotePlayers } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
-import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, makeSparkTexture } from './textures'
+import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture } from './textures'
 import { useGame } from './store'
 import { NetClient } from './net'
 
@@ -116,6 +116,7 @@ export class Game {
   weapon: WeaponId = 'p9'
   private lastWeapon: WeaponId = 'knife'
   frags = 0
+  smokes = 0
 
   // runtime de armas
   private nextShotAt = 0
@@ -166,6 +167,20 @@ export class Game {
 
   // granadas visibles
   private grenadeViews = new Map<string, { group: THREE.Group; last: THREE.Vector3; trailT: number }>()
+  // cortinas de humo visibles
+  private smokeViews = new Map<string, { group: THREE.Group; sprites: THREE.Sprite[]; born: number; life: number }>()
+  private smokeTex: THREE.Texture | null = null
+
+  // cinemática de entrada
+  private cine = {
+    active: false,
+    played: false,
+    t0: 0,
+    dur: 9.5,
+    curve: null as THREE.CatmullRomCurve3 | null,
+    look: null as THREE.CatmullRomCurve3 | null,
+  }
+  private cineTitleFade = 0
 
   // pociones visibles
   private pickupViews = new Map<string, PickupView>()
@@ -801,6 +816,11 @@ export class Game {
 
   private onCtxMenu = (e: Event): void => { e.preventDefault() }
 
+  /** Tecla asignada a una acción (configurable en el menú CONTROLES) */
+  private kb(action: ActionId): string {
+    return useGame.getState().settings.keybinds[action] || ''
+  }
+
   private get locked(): boolean {
     return document.pointerLockElement === this.canvas3d
   }
@@ -825,13 +845,14 @@ export class Game {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     const s = useGame.getState()
+    if (this.cine.active) { this.endCinematic(); return }
     if (e.code === 'Tab') {
       e.preventDefault()
       s.setHud({ scoreboardOpen: true })
       return
     }
     if (s.buyOpen) {
-      if (e.code === 'KeyB' || e.code === 'Escape') {
+      if (e.code === 'KeyB' || e.code === 'Escape' || e.code === this.kb('buy')) {
         e.preventDefault()
         this.closeBuyMenu()
       }
@@ -839,24 +860,20 @@ export class Game {
     }
     if (s.phase !== 'playing') return
     this.keys.add(e.code)
-    switch (e.code) {
-      case 'KeyB': this.openBuyMenu(); break
-      case 'KeyR': this.startReload(); break
-      case 'KeyG': this.throwGrenade(); break
-      case 'KeyQ': this.switchTo(this.lastWeapon); break
-      case 'KeyE': this.tryAttachZipline(); break
-      case 'Digit1': {
-        const p = PRIMARY_PREF.find(w => this.owned.includes(w))
-        if (p) this.switchTo(p)
-        break
-      }
-      case 'Digit2': {
-        const p = SECONDARY_PREF.find(w => this.owned.includes(w))
-        if (p) this.switchTo(p)
-        break
-      }
-      case 'Digit3': this.switchTo('knife'); break
-    }
+    const code = e.code
+    if (code === this.kb('buy')) this.openBuyMenu()
+    else if (code === this.kb('reload')) this.startReload()
+    else if (code === this.kb('grenadeFrag')) this.throwGrenade('frag')
+    else if (code === this.kb('grenadeSmoke')) this.throwGrenade('smoke')
+    else if (code === this.kb('lastWeapon')) this.switchTo(this.lastWeapon)
+    else if (code === this.kb('zipline')) this.tryAttachZipline()
+    else if (code === this.kb('slot1')) {
+      const p = PRIMARY_PREF.find(w => this.owned.includes(w))
+      if (p) this.switchTo(p)
+    } else if (code === this.kb('slot2')) {
+      const p = SECONDARY_PREF.find(w => this.owned.includes(w))
+      if (p) this.switchTo(p)
+    } else if (code === this.kb('slot3')) this.switchTo('knife')
   }
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -870,6 +887,7 @@ export class Game {
   private shooting = false
 
   private onMouseDown = (e: MouseEvent): void => {
+    if (this.cine.active) { this.endCinematic(); return }
     const s = useGame.getState()
     if (s.phase === 'paused') { this.requestLock(); return }
     if (s.phase !== 'playing') return
@@ -967,9 +985,9 @@ export class Game {
       if (pressed(1)) this.padCrouch = !this.padCrouch          // B/Círculo: agacharse (conmutar)
       if (pressed(2)) this.startReload()                        // X/Cuadrado: recargar
       if (pressed(3)) this.cycleWeapon(1)                       // Y/Triángulo: cambiar arma
-      if (pressed(4)) this.throwGrenade()                       // LB: granada
+      if (pressed(4)) this.throwGrenade('frag')                   // LB: granada MOLO
       if (pressed(5)) this.openBuyMenu()                        // RB: comprar
-      if (pressed(13)) this.throwGrenade()                      // cruceta abajo: granada
+      if (pressed(13)) this.throwGrenade('smoke')                // cruceta abajo: granada de humo
       if (pressed(12)) this.openBuyMenu()                       // cruceta arriba: comprar
       if (pressed(14)) this.cycleWeapon(-1)                     // cruceta izq.
       if (pressed(15)) this.cycleWeapon(1)                      // cruceta der.
@@ -1147,13 +1165,13 @@ export class Game {
     const wasSprint = this.sprinting
 
     const w = WEAPONS[this.weapon]
-    const wantCrouch = inputActive && (this.keys.has('ControlLeft') || this.keys.has('KeyC') || this.padCrouch)
+    const wantCrouch = inputActive && (this.keys.has(this.kb('crouch')) || this.padCrouch)
     const canStand = !this.collides(this.pos.x, this.pos.y, this.pos.z, 1.8)
     const sliding = this.slideT > 0
     this.crouching = wantCrouch || sliding || (!canStand && this.pos.y < 3)
 
-    const wantSprint = inputActive && (this.keys.has('ShiftLeft') || this.padSprint) && !this.crouching && !this.ads
-    const movingFwd = this.keys.has('KeyW') || this.padIz > 0.5
+    const wantSprint = inputActive && (this.keys.has(this.kb('sprint')) || this.padSprint) && !this.crouching && !this.ads
+    const movingFwd = this.keys.has(this.kb('fwd')) || this.padIz > 0.5
 
     let speed = 4.6 * w.moveMult
     this.sprinting = false
@@ -1177,10 +1195,10 @@ export class Game {
     // dirección de input (teclado + mando)
     let ix = 0, iz = 0
     if (inputActive) {
-      if (this.keys.has('KeyW')) iz += 1
-      if (this.keys.has('KeyS')) iz -= 1
-      if (this.keys.has('KeyA')) ix -= 1
-      if (this.keys.has('KeyD')) ix += 1
+      if (this.keys.has(this.kb('fwd'))) iz += 1
+      if (this.keys.has(this.kb('back'))) iz -= 1
+      if (this.keys.has(this.kb('left'))) ix -= 1
+      if (this.keys.has(this.kb('right'))) ix += 1
       ix += this.padIx
       iz += this.padIz
     }
@@ -1204,7 +1222,7 @@ export class Game {
     }
 
     // salto / gravedad (con salto-agarre de tirolina y salto-deslizamiento)
-    const wantJump = inputActive && (this.keys.has('Space') || this.consumePadJump())
+    const wantJump = inputActive && (this.keys.has(this.kb('jump')) || this.consumePadJump())
     if (wantJump && this.onGround && (!this.crouching || sliding)) {
       if (this.tryAttachZipline()) {
         // agarrado a la tirolina
@@ -1366,7 +1384,7 @@ export class Game {
     const z = this.ziplines[this.ziplineIdx]
     if (!z) { this.ziplineIdx = -1; return }
     // soltar con salto
-    const wantOff = this.keys.has('Space') || this.consumePadJump()
+    const wantOff = this.keys.has(this.kb('jump')) || this.consumePadJump()
     if (wantOff && this.ziplineT > 0.06) {
       this.detachZipline(false)
       return
