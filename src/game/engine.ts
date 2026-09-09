@@ -691,10 +691,12 @@ export class Game {
         mesh.setMatrixAt(placed, m)
         // tonos de pasto seco del desierto (más verde cerca de árboles)
         const t = Math.random()
+        // verde oliva más marcado (tonos pajizos claros se leían como palos
+        // pálidos en la distancia; el usuario pidió pasto más verde)
         col.setRGB(
-          0.42 + t * 0.13 + nearTree * 0.05,
-          0.48 + t * 0.15 + nearTree * 0.14,
-          0.24 + t * 0.09,
+          0.30 + t * 0.11 + nearTree * 0.04,
+          0.44 + t * 0.16 + nearTree * 0.16,
+          0.18 + t * 0.07,
         )
         mesh.setColorAt(placed, col)
         placed++
@@ -710,7 +712,7 @@ export class Game {
       sc.set(1, 0.6 + Math.random() * 0.6, 1)
       m.compose(pos, q, sc)
       mesh.setMatrixAt(placed, m)
-      col.setRGB(0.44 + Math.random() * 0.1, 0.46 + Math.random() * 0.12, 0.25 + Math.random() * 0.07)
+      col.setRGB(0.30 + Math.random() * 0.08, 0.44 + Math.random() * 0.14, 0.18 + Math.random() * 0.06)
       mesh.setColorAt(placed, col)
       placed++
     }
