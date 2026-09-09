@@ -9,11 +9,11 @@ import { Slider } from '@/components/ui/slider'
 import {
   Crosshair, Play, Settings, Volume2, Mouse, Swords, Trophy, Zap,
   Shield, Bomb, Eye, Gauge, LogOut, Loader2, Coins, Gamepad2, Users, Link2, Bot,
-  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind,
+  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target,
 } from 'lucide-react'
 import {
-  DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel,
-  type BotDifficulty, type ActionId,
+  DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
+  type BotDifficulty, type ActionId, type GameMode, type PadAction,
 } from '@/game/shared'
 
 // ============================================================
@@ -83,7 +83,7 @@ function TabButton({ icon: Icon, label, active, onClick }: {
 // Panel de CONTROLES (rebindable) — compartido menú/pausa
 // ============================================================
 const MOVIMIENTO: ActionId[] = ['fwd', 'back', 'left', 'right', 'sprint', 'crouch', 'jump', 'zipline']
-const COMBATE: ActionId[] = ['reload', 'grenadeFrag', 'grenadeSmoke', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
+const COMBATE: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
 
 function useKeyCapture() {
   const [capture, setCapture] = useState<ActionId | null>(null)
@@ -96,10 +96,50 @@ function useKeyCapture() {
       if (e.code !== 'Escape') useGame.getState().setKeybind(capture, e.code)
       setCapture(null)
     }
+    // los botones del RATÓN también se pueden asignar (disparar/apuntar)
+    const onMouse = (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      useGame.getState().setKeybind(capture, `Mouse${e.button}`)
+      setCapture(null)
+    }
+    const onCtx = (e: Event): void => { e.preventDefault() }
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
+    window.addEventListener('mousedown', onMouse, true)
+    window.addEventListener('contextmenu', onCtx, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('mousedown', onMouse, true)
+      window.removeEventListener('contextmenu', onCtx, true)
+    }
   }, [capture])
   return { capture, setCapture }
+}
+
+/** captura de botones del MANDO (sondeo de gamepads) */
+function usePadCapture() {
+  const [padCapture, setPadCapture] = useState<PadAction | null>(null)
+  useEffect(() => {
+    if (!padCapture) return
+    let raf = 0
+    const poll = (): void => {
+      const pads = navigator.getGamepads?.() ?? []
+      for (const p of pads) {
+        if (!p) continue
+        for (let i = 0; i < p.buttons.length; i++) {
+          if (p.buttons[i]?.pressed) {
+            useGame.getState().setPadBind(padCapture, i)
+            setPadCapture(null)
+            return
+          }
+        }
+      }
+      raf = requestAnimationFrame(poll)
+    }
+    raf = requestAnimationFrame(poll)
+    return () => cancelAnimationFrame(raf)
+  }, [padCapture])
+  return { padCapture, setPadCapture }
 }
 
 function KeybindRow({ action, capture, onCapture }: {
@@ -122,7 +162,33 @@ function KeybindRow({ action, capture, onCapture }: {
               : 'bg-red-950/60 border-red-700/60 text-red-300'
         }`}
       >
-        {capturing ? 'PULSA UNA TECLA' : keyLabel(code)}
+        {capturing ? 'TECLA O CLIC' : keyLabel(code)}
+      </button>
+    </div>
+  )
+}
+
+function PadRow({ action, capture, onCapture }: {
+  action: PadAction
+  capture: PadAction | null
+  onCapture: (a: PadAction) => void
+}) {
+  const btn = useGame(s => s.settings.padBinds[action])
+  const capturing = capture === action
+  return (
+    <div className="flex items-center justify-between gap-3 bg-slate-900/70 rounded-lg px-3.5 py-2 border border-slate-700/70">
+      <span className="text-slate-300 text-xs font-bold tracking-wide">{PAD_ACTION_LABELS[action]}</span>
+      <button
+        onClick={() => onCapture(action)}
+        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-black text-xs tracking-wider border transition-all ${
+          capturing
+            ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 animate-pulse'
+            : btn >= 0
+              ? 'bg-slate-800 border-slate-600 text-cyan-200 hover:border-cyan-400/70 hover:text-white'
+              : 'bg-red-950/60 border-red-700/60 text-red-300'
+        }`}
+      >
+        {capturing ? 'PULSA UN BOTÓN' : btn >= 0 ? padButtonLabel(btn) : '—'}
       </button>
     </div>
   )
@@ -130,13 +196,15 @@ function KeybindRow({ action, capture, onCapture }: {
 
 export function KeybindsPanel() {
   const { capture, setCapture } = useKeyCapture()
+  const { padCapture, setPadCapture } = usePadCapture()
   const reset = useGame(s => s.resetKeybinds)
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-slate-400 text-xs leading-relaxed max-w-md">
-          Haz clic en una tecla y pulsa la nueva asignación. Si la tecla ya está en uso,
-          la otra acción se libera automáticamente. <b className="text-slate-300">ESC</b> cancela.
+          Haz clic en una tecla y pulsa la nueva asignación — <b className="text-slate-300">teclado o botón del
+          ratón</b> (disparar y apuntar ya se pueden cambiar). Si ya está en uso, la otra acción se libera
+          automáticamente. <b className="text-slate-300">ESC</b> cancela.
         </p>
         <Button
           onClick={reset}
@@ -158,7 +226,7 @@ export function KeybindsPanel() {
         </div>
         <div className="space-y-2">
           <h4 className="text-amber-300 font-black italic tracking-widest text-xs flex items-center gap-2">
-            <Crosshair className="w-4 h-4" /> COMBATE
+            <Crosshair className="w-4 h-4" /> COMBATE (RATÓN Y TECLADO)
           </h4>
           {COMBATE.map(a => (
             <KeybindRow key={a} action={a} capture={capture} onCapture={setCapture} />
@@ -166,50 +234,25 @@ export function KeybindsPanel() {
         </div>
       </div>
 
-      {/* fijos del ratón */}
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          ['CLIC IZQ.', 'Disparar'],
-          ['CLIC DER.', 'Apuntar (ADS)'],
-          ['RUEDA', 'Cambiar arma'],
-        ].map(([k, v]) => (
-          <div key={k} className="bg-slate-900/50 rounded-lg px-3 py-2 border border-slate-800 flex items-center justify-between gap-2">
-            <span className="text-slate-500 text-xs font-bold">{v}</span>
-            <kbd className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-black text-[10px] tracking-wider">{k}</kbd>
-          </div>
-        ))}
-      </div>
-
-      {/* mando */}
+      {/* mando (rebindable) */}
       <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
         <h4 className="text-slate-300 font-black italic tracking-widest text-xs mb-3 flex items-center gap-2">
-          <Gamepad2 className="w-4 h-4 text-cyan-300" /> MANDO (XBOX · PLAYSTATION · GENÉRICO)
+          <Gamepad2 className="w-4 h-4 text-cyan-300" /> MANDO — BOTONES REASIGNABLES (XBOX · PS · GENÉRICO)
         </h4>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-1.5 text-[11px]">
-          {PAD_CONTROLS.map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-2 border-b border-slate-800/60 pb-1">
-              <span className="text-slate-500">{v}</span>
-              <span className="text-cyan-200/90 font-bold">{k}</span>
-            </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {(Object.keys(PAD_ACTION_LABELS) as PadAction[]).map(a => (
+            <PadRow key={a} action={a} capture={padCapture} onCapture={setPadCapture} />
           ))}
         </div>
         <p className="text-slate-600 text-[10px] mt-2.5 leading-relaxed">
-          Conecta el mando por USB o Bluetooth y pulsa cualquier botón para activarlo.
-          La sensibilidad del stick se ajusta en AJUSTES.
+          Haz clic en una acción y pulsa el botón del mando que quieras. Correr va en <b>L3</b> (pulsar el
+          stick izquierdo) por defecto; también corre empujando el stick a fondo. La sensibilidad se ajusta
+          en AJUSTES.
         </p>
       </div>
     </div>
   )
 }
-
-const PAD_CONTROLS: [string, string][] = [
-  ['Stick izq.', 'Moverse'], ['Stick der.', 'Apuntar'],
-  ['RT', 'Disparar'], ['LT', 'Apuntar (ADS)'],
-  ['A / Cruz', 'Saltar'], ['B / Círc.', 'Agacharse'],
-  ['X / Cuadr.', 'Recargar'], ['Y / Triáng.', 'Cambiar arma'],
-  ['LB', 'Granada MOLO'], ['RB / ↑', 'Tienda'],
-  ['↓', 'Granada de humo'], ['Start', 'Pausa'],
-]
 
 // ============================================================
 // Panel de AJUSTES — compartido menú/pausa
@@ -225,6 +268,13 @@ export function SettingsPanel() {
         value={settings.sens} min={0.2} max={3} step={0.05}
         format={v => v.toFixed(2)}
         onChange={v => setSettings({ sens: v })}
+      />
+      <SliderRow
+        icon={<Crosshair className="w-4 h-4" />}
+        label="SENSIBILIDAD AL APUNTAR (ADS)"
+        value={settings.adsSens} min={0.3} max={1.5} step={0.05}
+        format={v => `${Math.round(v * 100)}%`}
+        onChange={v => setSettings({ adsSens: v })}
       />
       <SliderRow
         icon={<Gamepad2 className="w-4 h-4" />}
@@ -293,17 +343,17 @@ function SliderRow({ icon, label, value, min, max, step, format, onChange }: {
 // Panel de INFORMACIÓN — mecánicas y ayuda
 // ============================================================
 const MECHANICS = [
-  { icon: Gauge, title: 'Retroceso realista', desc: 'Patrones de dispersión estilo CS2: controla el spray' },
+  { icon: Swords, title: '4 modos de juego', desc: 'FFA · equipos · capturar la bandera · dominación' },
   { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, caída por distancia, cajas y piernas' },
   { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, compra en tu base' },
-  { icon: Swords, title: '8 armas + cuchillo', desc: 'Pistolas, SMG, escopeta, rifles y francotirador' },
+  { icon: Bot, title: 'Armas GLB reales', desc: 'Pistola, SMG, rifle y francotirador del repositorio' },
   { icon: Shield, title: 'Vida estilo Fortnite', desc: '100 HP + 100 escudo; el escudo absorbe primero' },
   { icon: Bomb, title: 'MOLO y humo', desc: 'Granadas incendiarias y cortinas de humo de 12 s' },
-  { icon: Wind, title: 'Tirolinas y saltadores', desc: 'Vuela por cables y catapúltate a los contenedores' },
-  { icon: TreePine, title: 'Mapa vivo', desc: 'Pasto con viento, arbustos, flores y barriles explosivos' },
+  { icon: Wind, title: 'Tirolinas y saltadores', desc: 'Vuela por cables y catapúltate a los edificios' },
+  { icon: TreePine, title: 'Mapa vivo', desc: 'Pasto con viento, árboles GLB, arbustos y barriles' },
   { icon: Zap, title: 'Rachas y multimuertes', desc: 'Doble, triple, dominación… anuncios de combate' },
   { icon: Users, title: 'Salas P2P 1 vs 1', desc: 'Multijugador real por WebRTC (PeerJS) sin servidor propio' },
-  { icon: Home, title: '13 edificios con interior', desc: 'Casas de dos plantas, mercado, almacenes y cuarteles' },
+  { icon: Home, title: 'Ciudad con interiores', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes, casas' },
   { icon: Video, title: 'Cinemática de entrada', desc: 'Sobrevuelo del mapa al desplegarte por primera vez' },
 ]
 
@@ -351,6 +401,7 @@ export function MainMenu() {
   const [code, setCode] = useState('')
   const [difficulty, setDifficulty] = useState<BotDifficulty>('normal')
   const [fillBots, setFillBots] = useState(0)
+  const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
   const [error, setError] = useState('')
 
   if (phase !== 'menu') return null
@@ -365,6 +416,7 @@ export function MainMenu() {
       roomCode,
       botDifficulty: difficulty,
       fillBots,
+      gameMode,
       netStatus: 'connecting',
       netError: '',
     })
@@ -441,6 +493,39 @@ export function MainMenu() {
                     </button>
                   ))}
                 </div>
+
+                {/* selector de modo de juego (solo/anfitrión; el invitado juega el del anfitrión) */}
+                {mode !== 'guest' && (
+                  <div>
+                    <p className="text-slate-400 text-[11px] font-black tracking-widest mb-2 flex items-center gap-2">
+                      <Swords className="w-3.5 h-3.5" /> MODO DE JUEGO
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {MODE_LIST.map(id => {
+                        const m = MODES[id]
+                        const active = gameMode === id
+                        const Icon = id === 'bandera' ? Flag : id === 'dominacion' ? Target : id === 'ffa' ? Zap : Swords
+                        return (
+                          <button
+                            key={id}
+                            onClick={() => setGameMode(id)}
+                            className={`rounded-xl border p-2.5 text-left transition-all ${
+                              active
+                                ? 'border-yellow-400/80 bg-amber-500/10 shadow-[0_0_18px_rgba(255,200,40,0.15)]'
+                                : 'border-slate-700/70 bg-slate-950/50 hover:border-slate-500'
+                            }`}
+                          >
+                            <Icon className={`w-4 h-4 mb-1 ${active ? 'text-yellow-300' : 'text-slate-400'}`} />
+                            <div className={`text-[11px] font-black italic tracking-wider ${active ? 'text-white' : 'text-slate-300'}`}>
+                              {m.name}
+                            </div>
+                            <div className="text-[9px] text-slate-500 leading-snug mt-0.5">{m.desc}</div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* configuración según modo */}
                 {mode === 'solo' && (
@@ -542,7 +627,7 @@ export function MainMenu() {
         </div>
 
         <p className="text-slate-600 text-[10px] mt-6 tracking-widest font-bold">
-          FRONTERA CERO v3.0 · THREE.JS + WEBRTC (PEERJS) · 100% PROCEDURAL · MAPA 140×140 M
+          FRONTERA CERO v4.0 · THREE.JS + WEBRTC (PEERJS) · 4 MODOS · MAPA 140×140 M
         </p>
       </div>
     </div>
@@ -590,12 +675,12 @@ function DifficultyPicker({ difficulty, setDifficulty, label }: {
 }
 
 const NEWS = [
-  { icon: Home, title: 'Ciudad ordenada, 13 edificios', desc: 'Colonias con casas de dos plantas, calles limpias y depósitos alineados' },
-  { icon: Keyboard, title: 'Menú estilo Fortnite', desc: 'Pestañas JUGAR · CONTROLES · AJUSTES · INFO con teclas reasignables' },
-  { icon: Bomb, title: 'Granadas de humo', desc: 'Cortinas tácticas de 12 s que bloquean la visión de los bots' },
-  { icon: TreePine, title: 'Más vegetación', desc: '14.000 briznas de pasto con viento, arbustos y flores silvestres' },
-  { icon: Video, title: 'Cinemática de entrada', desc: 'Sobrevuelo del mapa al desplegarte — clic para omitir' },
-  { icon: Shield, title: 'IA rebalanceada', desc: 'Cuatro dificultades con reacción, puntería y error escalados' },
+  { icon: Swords, title: '4 MODOS DE JUEGO', desc: 'Todos contra todos · Combate de equipos · Capturar la bandera · Dominación' },
+  { icon: Home, title: 'Ciudad nueva y ordenada', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes y calles con asfalto' },
+  { icon: Bot, title: 'Armas y árbol reales (GLB)', desc: 'Modelos del repositorio integrados: pistola, SMG, rifle, francotirador y árboles' },
+  { icon: Crosshair, title: 'Apuntado afinado', desc: 'Retícula compacta, retroceso reducido y ADS configurable' },
+  { icon: Gamepad2, title: 'Controles 100% asignables', desc: 'Disparar/apuntar con tecla o ratón · mando con correr en L3' },
+  { icon: TreePine, title: 'Texturas del repositorio', desc: 'Cielo, paredes y suelo con las fotos subidas por la comunidad' },
 ]
 
 // ============================================================

@@ -9,6 +9,7 @@ import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { makeNameTag } from './textures'
 import { type Team, type WeaponId, type NetPlayerState } from './shared'
 import { buildWeaponModel } from './viewmodel'
+import { buildGLBWeapon } from './assets'
 
 interface BufferEntry {
   t: number
@@ -57,6 +58,8 @@ export interface RemotePlayer {
   sprintAmt: number
   /** fase aleatoria para la respiración en reposo */
   breathPhase: number
+  /** baliza de bandera (CTF) */
+  flagMesh: THREE.Mesh | null
 }
 
 const TEAM_COLORS: Record<Team, number> = { A: 0xd99a2b, B: 0x35b04a }
@@ -351,6 +354,7 @@ export class RemotePlayers {
         hp: state.hp, state, lastFootstep: 0, usingSoldier: false,
         aimPose: 0, fireKick: 0, walkSwing: 0,
         crouchAmt: 0, sprintAmt: 0, breathPhase: Math.random() * Math.PI * 2,
+        flagMesh: null,
       }
       const { tex } = makeNameTag(state.name, state.team, state.team === 'A' ? '#f59e0b' : '#22c55e')
       ;(rp.tag.material as THREE.SpriteMaterial).map = tex
@@ -370,22 +374,33 @@ export class RemotePlayers {
     rp.name = state.name
     rp.hp = state.hp
     rp.state = state
-    // cambio de arma → regenerar modelo
+    // cambio de arma → regenerar modelo (GLB del usuario si está cargado)
     if (rp.weaponId !== state.weapon) {
       rp.weaponId = state.weapon
       rp.weaponHolder.clear()
       rp.weaponMuzzle = null
       if (state.weapon && state.weapon !== 'knife') {
-        const { group, muzzle } = buildWeaponModel(state.weapon)
-        group.scale.setScalar(0.9)
+        const built = buildGLBWeapon(state.weapon) ?? buildWeaponModel(state.weapon)
+        const group = built.group
+        group.scale.setScalar(0.95)
         group.rotation.y = Math.PI
         // el origen del grupo queda en la EMPUÑADURA (para el IK de manos)
         group.position.set(0, 0.06, 0.05)
         rp.weaponHolder.add(group)
-        rp.weaponMuzzle = muzzle
+        rp.weaponMuzzle = built.muzzle
       }
     }
     return rp
+  }
+
+  /** Regenera los modelos de arma de todos los remotos (p.ej. al cargar los GLB) */
+  refreshWeapons(): void {
+    for (const rp of this.map.values()) {
+      if (rp.weaponId && rp.state) {
+        rp.weaponId = null
+        this.upsert(rp.state, performance.now())
+      }
+    }
   }
 
   remove(id: string): void {
@@ -576,6 +591,26 @@ export class RemotePlayers {
       const isTeam = rp.team === localTeam
       rp.tag.visible = (isTeam && d < 60) || (!isTeam && d < 22)
       rp.tag.material.rotation = 0
+
+      // bandera a la espalda (CTF): baliza del color de la bandera que porta
+      if (state.flag && !rp.flagMesh) {
+        const color = state.flag === 'A' ? 0xf59e0b : 0x22c55e
+        const flag = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.55, 0.35),
+          new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6, side: THREE.DoubleSide }),
+        )
+        flag.position.set(0, 1.85, -0.28)
+        rp.bodyGroup.add(flag)
+        rp.flagMesh = flag
+      } else if (!state.flag && rp.flagMesh) {
+        rp.bodyGroup.remove(rp.flagMesh)
+        rp.flagMesh.geometry.dispose()
+        ;(rp.flagMesh.material as THREE.Material).dispose()
+        rp.flagMesh = null
+      }
+      if (rp.flagMesh) {
+        rp.flagMesh.rotation.y = Math.sin(renderT / 300) * 0.25
+      }
     }
     return result
   }

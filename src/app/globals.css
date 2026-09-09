@@ -1,5 +1,14 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "tw-animate-css";
+
+/* Fuentes explícitas (la detección automática escanea public/ y los GLB
+   binarios explotan la memoria del scanner → OOM). Mantener sincronizado
+   con los directorios de código del proyecto. */
+@source "../app/**/*.{js,ts,jsx,tsx,mdx}";
+@source "../components/**/*.{js,ts,jsx,tsx,mdx}";
+@source "../game/**/*.{js,ts}";
+@source "../hooks/**/*.{js,ts}";
+@source "../lib/**/*.{js,ts}";
 
 @custom-variant dark (&:is(.dark *));
 

@@ -5,7 +5,7 @@
 // ocultas o sin foco (los workers no se estrangulan).
 // ============================================================
 import { GameSim } from './sim'
-import type { BotDifficulty, Team, WeaponId } from './shared'
+import type { BotDifficulty, Team, WeaponId, GameMode } from './shared'
 
 interface JoinCmd { id: string; name: string; team: Team; announce?: boolean }
 interface InputCmd {
@@ -36,9 +36,9 @@ self.onmessage = (ev: MessageEvent) => {
 
   switch (msg.e) {
     case 'init': {
-      const cfg = d as { difficulty: BotDifficulty; bots: number }
+      const cfg = d as { difficulty: BotDifficulty; bots: number; mode?: GameMode }
       sim?.stop()
-      sim = new GameSim(cfg.difficulty)
+      sim = new GameSim(cfg.difficulty, cfg.mode ?? 'escaramuza')
       sim.onRoute((e, data, to) => post(e, data, to))
       if (cfg.bots > 0) sim.addBots(cfg.bots)
       sim.start()

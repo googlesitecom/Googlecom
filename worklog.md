@@ -206,3 +206,29 @@ Stage Summary:
 - Granadas de humo operativas de principio a fin; cinemática de entrada de 11 s omitible
 - 3 bugs críticos corregidos: compilación rota del commit anterior, shader del pasto (no se renderizaba), duración de la cinemática
 - Proyecto publicado en GitHub (8093fe8)
+
+---
+Task ID: 7
+Agent: Super Z (agente principal)
+Task: Apuntado estable (retícula y retroceso), gráficos Warzone, mapa nuevo urbano ordenado, 4 modos de juego, reasignación de disparar/apuntar (ratón+mando), botón de correr en Xbox (L3) e integración de los modelos GLB y texturas subidos por el usuario al repositorio
+
+Work Log:
+- FETCH del repositorio: el usuario subió Pistola.glb, Smg.glb, Rifle.glb, sniper.glb, Arbol.glb, Pared.jpg, Piso.jpg y Cielo.jpg → movidos a public/models y public/textures
+- FIX CRÍTICO DEL ENTORNO: Turbopack petaba (panic) al compilar el CSS → causa raíz: el scanner de Tailwind v4 intentaba leer los GLB binarios de public/ y el proceso moría por OOM (kernel: oom-kill). Arreglado con `@import "tailwindcss" source(none)` + fuentes @source explícitas en globals.css
+- NUEVO src/game/assets.ts: carga y normalización automática de los GLB del usuario (auto-orientación por perfil de grosor: detecta la boca del cañón y la alinea a -Z, escala a longitud real, empuñadura en el origen, fusión de mallas por material); keying de alfa para la textura de hojas (exportada opaca: los píxeles blancos→transparentes); carga de Pared/Piso/Cielo.jpg; fallback procedural en todo
+- Calibración visual con página /calibra + VLM: armas bien orientadas (4/4), árbol limpio tras el keying
+- ARREGLADO EL APUNTADO (petición #1): retícula 4 líneas cortas + punto (gap 6+spread*46 → 4+spread*7, ADS la contrae), retroceso de TODAS las armas reducido ~45 %, sacudida de cámara al 45 %, recuperación más rápida, sensibilidad ADS ajustable nueva (AJUSTES)
+- MAPA v4 "SECTOR MERIDIANO" (mismo 140×140): cuadrícula de calles con asfalto+líneas+aceras (nuevas buildStreets con alturas escalonadas anti z-fighting), rotonda central con fuente, HOTEL de 3 plantas (escaleras interiores de 2 tramos + escalera de incendios), TORRE de oficinas de 4 plantas con azotea, MERCADO, 2 ALMACENES grandes, 2 TIENDAS, 5 casas, gasolinera, radar, depósito de contenedores, planta de tanques, parques y coches/autobuses abandonados — 1110 cajas y 191 waypoints 100 % alcanzables (map-check SIN ERRORES)
+- MODOS DE JUEGO (shared/sim/engine/menus/hud): COMBATE DE EQUIPOS (como antes), TODOS CONTRA TODOS (isEnemy ignora equipos, HUD con líder), CAPTURAR LA BANDERA (robo/caída/devolución/captura, bots atacantes y defensores, balizas en la espalda, HUD de estado de banderas, anuncios), DOMINACIÓN (3 zonas ALFA/BRAVO/CHARLIE con progreso, puntos cada 5 s, anillos y letras en 3D, HUD de zonas) — verificados con script de simulación pura (scripts/sim-modes-test.ts): FFA 22 bajas en 45 s, CTF capturas del jugador Y de los bots, DOM zonas capturadas y 45 puntos
+- CONTROLES (petición #5/#6): "Disparar" y "Apuntar" ahora son reasignables a CUALQUIER tecla o botón del ratón (captura de clic en el menú, binds Mouse0-5); mando: 12 acciones reasignables pulsando el botón físico (sondeo de gamepad), CORRER por defecto en L3 (petición Xbox) + stick a fondo; sensibilidad ADS nueva
+- GRÁFICOS: GLB de armas en primera persona y en manos de bots/soldados (refreshWeapons al cargar), árboles Arbol.glb horneados en geometría fusionada por material (4 draw calls; count según calidad), Pared.jpg en muros, Piso.jpg en el suelo, Cielo.jpg en el cielo+entorno PBR (solo calidad alta), material gunmetal para la pistola sin textura (KHR glossiness no soportado)
+- Diagnóstico profundo de un cuelgue aparente del navegador: resultó ser la lentitud extrema de SwiftShader (software rendering) — la pantalla siempre renderizó bien; los árboles se convirtieron a malla fusionada sin instancing+alphaTest por robustez
+- VERIFICACIÓN: menú con selector de 4 modos (VLM), partida completa con HUD/bots/minimapa/capturas, CTF en navegador (bandera robada por el jugador, indicador ¡LLEVAS LA BANDERA!, bots capturando), disparo y retroceso medidos (4,76° tras 8 tiros vs el doble antes), tsc y eslint limpios, map-check SIN ERRORES
+- Commit y push a github.com/googlesitecom/Googlecom (rama main)
+
+Stage Summary:
+- Apuntado mucho más estable y retícula compacta; retroceso −45 %
+- Mapa urbano nuevo ordenado y variado (hotel 3P, torre 4P, mercado, almacenes, tiendas, casas) con calles de asfalto y rotonda
+- 4 modos de juego completos y verificados (equipos · FFA · bandera · dominación)
+- Disparar/apuntar reasignables (teclado+ratón) y mando 100 % reasignable con correr en L3
+- Modelos GLB (armas+árbol) y texturas (pared/piso/cielo) del repositorio integrados con normalización automática y fallback procedural

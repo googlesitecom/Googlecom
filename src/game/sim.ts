@@ -6,8 +6,10 @@
 import {
   GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, PICKUP_SPOTS, computeDamage, spawnPoint, segmentBlocked,
   WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL, SPAWN_A, SPAWN_B,
-  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind, type GrenadeKind,
+  MODES, FLAG_A, FLAG_B, DOM_ZONES,
+  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind, type GrenadeKind, type GameMode,
   type NetPlayerState, type NetGrenade, type NetPickup, type NetRoundState, type NetKillEvent, type NetSnapshot,
+  type NetFlagState, type NetZoneState,
 } from './shared'
 
 export type RouteFn = (ev: string, data: unknown, to?: string) => void
@@ -33,6 +35,12 @@ interface BotAI {
   lastX: number
   lastZ: number
   speedMult: number             // variación individual de velocidad
+  /** CTF/DOM: papel del bot */
+  role: 'attack' | 'defend'
+  /** objetivo táctico (bandera/zona) en coords. mundo */
+  objX: number
+  objZ: number
+  objUntil: number
 }
 
 interface SimPlayer {
@@ -64,6 +72,7 @@ interface SimPlayer {
   lastDamageAt: number
   aiming: boolean          // en pose de apuntado (para la animación)
   sprint: boolean          // corriendo (animación estilo Fortnite)
+  flag: 'A' | 'B' | null   // bandera enemiga que lleva puesta (CTF)
   ai?: BotAI
 }
 
@@ -90,6 +99,25 @@ interface SimPickup {
   x: number; z: number
   active: boolean
   respawnAt: number
+}
+
+/** estado de una bandera de CTF */
+interface SimFlag {
+  team: Team                    // equipo DUEÑO de la bandera
+  status: 'home' | 'carried' | 'drop'
+  x: number; z: number
+  carrier: string | null
+  returnAt: number
+}
+
+/** estado de una zona de dominación */
+interface SimZone {
+  id: 'A' | 'B' | 'C'
+  name: string
+  x: number; z: number
+  owner: Team | null
+  prog: number
+  by: Team | null
 }
 
 function now(): number { return Date.now() }
@@ -133,6 +161,16 @@ export class GameSim {
   private lastTick = now()
   private tickCount = 0
   private route: RouteFn | null = null
+  private mode: GameMode
+
+  // CTF
+  private flags: Record<'a' | 'b', SimFlag> = {
+    a: { team: 'A', status: 'home', x: FLAG_A[0], z: FLAG_A[1], carrier: null, returnAt: 0 },
+    b: { team: 'B', status: 'home', x: FLAG_B[0], z: FLAG_B[1], carrier: null, returnAt: 0 },
+  }
+  // dominación
+  private zones: SimZone[] = DOM_ZONES.map(z => ({ id: z.id, name: z.name, x: z.x, z: z.z, owner: null, prog: 0, by: null }))
+  private domTickAt = 0
 
   private round = {
     phase: 'live' as 'live' | 'ended' | 'matchend',
@@ -145,7 +183,9 @@ export class GameSim {
     roundWinsB: 0,
   }
 
-  constructor(private difficulty: BotDifficulty = 'normal') {
+  constructor(private difficulty: BotDifficulty = 'normal', mode: GameMode = 'escaramuza') {
+    this.mode = mode
+    this.round.endsAt = now() + MODES[mode].time * 1000
     // pociones repartidas por el mapa (respawn escalonado)
     let pk = 0
     for (const s of PICKUP_SPOTS) {
@@ -154,6 +194,13 @@ export class GameSim {
         active: true, respawnAt: 0,
       })
     }
+  }
+
+  /** ¿son enemigos? (en TODOS CONTRA TODOS cualquier otro jugador lo es) */
+  private isEnemy(a: SimPlayer, b: SimPlayer): boolean {
+    if (a.id === b.id) return false
+    if (this.mode === 'ffa') return true
+    return a.team !== b.team
   }
 
   onRoute(fn: RouteFn): void { this.route = fn }
@@ -237,7 +284,7 @@ export class GameSim {
       kills: 0, deaths: 0, money: GAME.START_MONEY,
       streak: 0, lastKillAt: 0, multi: 0,
       lastShotAt: 0, protectUntil: 0, lastSeenEnemy: 0, lastDamageAt: 0,
-      aiming: false, sprint: false,
+      aiming: false, sprint: false, flag: null,
     }
     if (bot) {
       p.ai = {
@@ -248,6 +295,8 @@ export class GameSim {
         aimErr: 0, aimErrNext: 0,
         stuckCheck: now(), lastX: 0, lastZ: 0,
         speedMult: 0.88 + Math.random() * 0.26,
+        role: Math.random() < 0.62 ? 'attack' : 'defend',
+        objX: 0, objZ: 0, objUntil: 0,
       }
     }
     this.respawnPlayer(p, true)
@@ -271,6 +320,7 @@ export class GameSim {
     p.smokes = clamp(p.smokes, 1, 2)
     p.aiming = false
     p.sprint = false
+    p.flag = null
     if (p.ai) {
       p.ai.state = 'patrol'
       p.ai.wp = nearestWaypoint(x, z)
@@ -364,7 +414,7 @@ export class GameSim {
   private applyDamage(attacker: SimPlayer, victim: SimPlayer, dmg: number, part: BodyPart, weapon: WeaponId, dirHint: [number, number]): void {
     if (victim.dead) return
     if (now() < victim.protectUntil) return
-    if (attacker.team === victim.team && attacker.id !== victim.id) return
+    if (attacker.id !== victim.id && !this.isEnemy(attacker, victim)) return
 
     // escudo primero (estilo Fortnite): absorbe todo el daño hasta agotarse
     const total = dmg
@@ -398,6 +448,20 @@ export class GameSim {
   }
 
   private killPlayer(killer: SimPlayer, victim: SimPlayer, weapon: WeaponId, headshot: boolean): void {
+    // si el caído llevaba la bandera, se suelta donde murió
+    if (victim.flag) {
+      const f = victim.flag === 'A' ? this.flags.a : this.flags.b
+      if (f.carrier === victim.id) {
+        f.status = 'drop'
+        f.carrier = null
+        f.x = victim.x
+        f.z = victim.z
+        f.returnAt = now() + GAME.FLAG_RETURN_TIME * 1000
+        this.emit('flagEvent', { flag: victim.flag, type: 'drop', x: f.x, z: f.z })
+        this.announce(`¡LA BANDERA ${victim.flag === 'A' ? 'ÁMBAR' : 'VERDE'} HA CAÍDO!`, 'round')
+      }
+      victim.flag = null
+    }
     victim.dead = true
     victim.hp = 0
     victim.deaths++
@@ -413,7 +477,9 @@ export class GameSim {
       killer.multi = (t - killer.lastKillAt < 4000) ? killer.multi + 1 : 1
       killer.lastKillAt = t
       killer.money = Math.min(GAME.MAX_MONEY, killer.money + GAME.KILL_REWARD + (headshot ? GAME.HS_REWARD : 0))
-      if (killer.team === 'A') this.round.scoresA++; else this.round.scoresB++
+      if (this.mode !== 'ffa') {
+        if (killer.team === 'A') this.round.scoresA++; else this.round.scoresB++
+      }
     }
 
     const ev: NetKillEvent = {
@@ -443,8 +509,20 @@ export class GameSim {
 
   private checkRoundEnd(): void {
     if (this.round.phase !== 'live') return
-    if (this.round.scoresA >= GAME.ROUND_KILLS || this.round.scoresB >= GAME.ROUND_KILLS) {
-      this.endRound(this.round.scoresA > this.round.scoresB ? 'A' : 'B')
+    const target = MODES[this.mode].target
+    if (this.mode === 'escaramuza') {
+      if (this.round.scoresA >= target || this.round.scoresB >= target) {
+        this.endRound(this.round.scoresA > this.round.scoresB ? 'A' : 'B')
+      }
+    } else if (this.mode === 'ffa') {
+      for (const p of this.players.values()) {
+        if (p.kills >= target) { this.endRound(p.team); break }
+      }
+    } else {
+      // bandera / dominación: puntuación de equipo
+      if (this.round.scoresA >= target || this.round.scoresB >= target) {
+        this.endRound(this.round.scoresA > this.round.scoresB ? 'A' : 'B')
+      }
     }
   }
 
@@ -464,15 +542,26 @@ export class GameSim {
   private startRound(): void {
     this.round.roundNumber++
     this.round.phase = 'live'
-    this.round.endsAt = now() + GAME.ROUND_TIME * 1000
+    this.round.endsAt = now() + MODES[this.mode].time * 1000
     this.round.scoresA = 0
     this.round.scoresB = 0
+    this.resetObjectives()
     this.announce(`RONDA ${this.round.roundNumber} — ¡EN COMBATE!`, 'round')
     for (const p of this.players.values()) {
       p.respawnAt = now() + rand(200, 900)
       p.multi = 0
+      p.flag = null
     }
     this.emit('roundStart', { roundNumber: this.round.roundNumber })
+  }
+
+  /** banderas y zonas vuelven a su estado inicial */
+  private resetObjectives(): void {
+    this.flags.a = { team: 'A', status: 'home', x: FLAG_A[0], z: FLAG_A[1], carrier: null, returnAt: 0 }
+    this.flags.b = { team: 'B', status: 'home', x: FLAG_B[0], z: FLAG_B[1], carrier: null, returnAt: 0 }
+    for (const z of this.zones) { z.owner = null; z.prog = 0; z.by = null }
+    this.emit('flagEvent', { flag: 'a', type: 'home' })
+    this.emit('flagEvent', { flag: 'b', type: 'home' })
   }
 
   private endMatch(winner: Team): void {
@@ -500,6 +589,149 @@ export class GameSim {
   }
 
   // ------------------------------------------------------------
+  // CAPTURAR LA BANDERA
+  // ------------------------------------------------------------
+  /** bandera del equipo contrario a `team` */
+  private enemyFlag(team: Team): SimFlag {
+    return team === 'A' ? this.flags.b : this.flags.a
+  }
+
+  private updateFlags(): void {
+    if (this.mode !== 'bandera' || this.round.phase !== 'live') return
+    const t = now()
+    for (const key of ['a', 'b'] as const) {
+      const f = this.flags[key]
+      const enemyTeam: Team = f.team === 'A' ? 'B' : 'A'
+      if (f.status === 'home') {
+        // ¿un enemigo la roba?
+        for (const p of this.players.values()) {
+          if (p.dead || p.team !== enemyTeam || p.flag) continue
+          if (Math.hypot(p.x - f.x, p.z - f.z) < 2.1) {
+            f.status = 'carried'
+            f.carrier = p.id
+            p.flag = f.team
+            this.emit('flagEvent', { flag: key, type: 'carried', carrier: p.id, x: p.x, z: p.z })
+            this.announce(`¡${p.name} ROBÓ LA BANDERA ${f.team === 'A' ? 'ÁMBAR' : 'VERDE'}!`, 'round', enemyTeam)
+            break
+          }
+        }
+      } else if (f.status === 'carried') {
+        const c = f.carrier ? this.players.get(f.carrier) : undefined
+        if (!c || c.dead) {
+          // seguridad: el portador se fue — soltar en el sitio
+          f.status = 'drop'
+          f.carrier = null
+          f.returnAt = t + GAME.FLAG_RETURN_TIME * 1000
+        } else {
+          f.x = c.x
+          f.z = c.z
+          // ¿captura? llega a SU base con la bandera propia en casa
+          const home = f.team === 'A' ? FLAG_A : FLAG_B
+          const own = f.team === 'A' ? this.flags.b : this.flags.a   // la bandera del equipo del portador
+          const ownHome = c.team === 'A' ? FLAG_A : FLAG_B
+          void home
+          if (Math.hypot(c.x - ownHome[0], c.z - ownHome[1]) < 3.2 && own.status === 'home') {
+            // ¡captura!
+            if (c.team === 'A') this.round.scoresA++
+            else this.round.scoresB++
+            c.flag = null
+            c.money = Math.min(GAME.MAX_MONEY, c.money + 1000)
+            this.emit('econ', { money: c.money, frags: c.frags, smokes: c.smokes }, c.id)
+            f.status = 'home'
+            f.carrier = null
+            f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
+            f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
+            this.emit('flagEvent', { flag: key, type: 'home' })
+            this.announce(`¡${c.name} CAPTURA LA BANDERA! (${this.round.scoresA}–${this.round.scoresB})`, 'round', c.team)
+            this.emit('captureFX', { x: c.x, z: c.z, team: c.team })
+            this.checkRoundEnd()
+          }
+        }
+      } else if (f.status === 'drop') {
+        // devolución automática o recogida
+        for (const p of this.players.values()) {
+          if (p.dead || p.flag) continue
+          if (Math.hypot(p.x - f.x, p.z - f.z) > 2.1) continue
+          if (p.team === enemyTeam) {
+            // el enemigo la vuelve a coger
+            f.status = 'carried'
+            f.carrier = p.id
+            p.flag = f.team
+            this.emit('flagEvent', { flag: key, type: 'carried', carrier: p.id, x: p.x, z: p.z })
+            this.announce(`¡${p.name} RECOGIÓ LA BANDERA!`, 'round', enemyTeam)
+          } else {
+            // el dueño la devuelve a casa
+            f.status = 'home'
+            f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
+            f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
+            this.emit('flagEvent', { flag: key, type: 'home' })
+            this.announce('BANDERA DEVUELTA A SU BASE', 'info')
+          }
+          break
+        }
+        if (f.status === 'drop' && t > f.returnAt) {
+          f.status = 'home'
+          f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
+          f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
+          this.emit('flagEvent', { flag: key, type: 'home' })
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------
+  // DOMINACIÓN
+  // ------------------------------------------------------------
+  private updateZones(dt: number): void {
+    if (this.mode !== 'dominacion' || this.round.phase !== 'live') return
+    const t = now()
+    for (const z of this.zones) {
+      let a = 0, b = 0
+      for (const p of this.players.values()) {
+        if (p.dead) continue
+        if (Math.hypot(p.x - z.x, p.z - z.z) > GAME.DOM_ZONE_RADIUS) continue
+        if (p.team === 'A') a++; else b++
+      }
+      if (a > 0 && b === 0 && z.owner !== 'A') {
+        z.by = 'A'
+        z.prog += dt / GAME.DOM_CAP_TIME
+        if (z.prog >= 1) {
+          z.owner = 'A'; z.prog = 0; z.by = null
+          this.announce(`ZONA ${z.name} CAPTURADA POR ÁMBAR`, 'round', 'A')
+          this.emit('zoneEvent', { zone: z.id, owner: 'A' })
+        }
+      } else if (b > 0 && a === 0 && z.owner !== 'B') {
+        z.by = 'B'
+        z.prog += dt / GAME.DOM_CAP_TIME
+        if (z.prog >= 1) {
+          z.owner = 'B'; z.prog = 0; z.by = null
+          this.announce(`ZONA ${z.name} CAPTURADA POR VERDE`, 'round', 'B')
+          this.emit('zoneEvent', { zone: z.id, owner: 'B' })
+        }
+      } else if (a === 0 && b === 0) {
+        // sin nadie: el progreso decae despacio
+        z.by = null
+        z.prog = Math.max(0, z.prog - dt * 0.12)
+      } else {
+        // disputada: congelada
+        z.by = null
+      }
+    }
+    // puntos por zonas en propiedad (cada 5 s)
+    if (t > this.domTickAt) {
+      this.domTickAt = t + 5000
+      let a = 0, b = 0
+      for (const z of this.zones) {
+        if (z.owner === 'A') a++
+        else if (z.owner === 'B') b++
+      }
+      if (a) { this.round.scoresA += a * GAME.DOM_TICK_POINTS }
+      if (b) { this.round.scoresB += b * GAME.DOM_TICK_POINTS }
+      if (a || b) this.checkRoundEnd()
+    }
+  }
+
+  // ------------------------------------------------------------
   // BOTS — IA con dificultad
   // ------------------------------------------------------------
   private canSee(a: SimPlayer, b: SimPlayer): boolean {
@@ -523,12 +755,56 @@ export class GameSim {
     let bestD = Infinity
     const [ex, ey, ez] = eye(p)
     for (const q of this.players.values()) {
-      if (q.dead || q.team === p.team) continue
+      if (q.dead || !this.isEnemy(p, q)) continue
       if (now() < q.protectUntil) continue
       const d = dist3(ex, ey, ez, q.x, q.y + 1.2, q.z)
       if (d < bestD && this.canSee(p, q)) { bestD = d; best = q }
     }
     return best
+  }
+
+  /** objetivo táctico del bot según el modo (null = patrulla clásica) */
+  private botObjective(p: SimPlayer): [number, number] | null {
+    if (this.mode === 'bandera') {
+      if (p.flag) {
+        // lleva la bandera: correr a su base
+        const home = p.team === 'A' ? FLAG_A : FLAG_B
+        return [home[0], home[1]]
+      }
+      const enemy = this.enemyFlag(p.team)
+      const own = p.team === 'A' ? this.flags.a : this.flags.b
+      if (p.ai!.role === 'attack') {
+        if (enemy.status === 'carried') {
+          // un compañero la lleva: escoltar (ir a la base propia para despejar camino)
+          const home = p.team === 'A' ? FLAG_A : FLAG_B
+          return [home[0] + rand(-6, 6), home[1] + rand(-6, 6)]
+        }
+        return [enemy.x, enemy.z]
+      }
+      // defensa: rondar la bandera propia
+      if (own.status === 'drop') return [own.x, own.z]
+      return [own.x + rand(-7, 7), own.z + rand(-7, 7)]
+    }
+    if (this.mode === 'dominacion') {
+      // zona más cercana que no sea nuestra
+      let best: SimZone | null = null
+      let bestD = Infinity
+      for (const z of this.zones) {
+        if (z.owner === p.team) continue
+        const d = Math.hypot(z.x - p.x, z.z - p.z)
+        if (d < bestD) { bestD = d; best = z }
+      }
+      if (best) return [best.x + rand(-3, 3), best.z + rand(-3, 3)]
+      // todas nuestras: quedarse en la más cercana
+      let own: SimZone | null = null
+      let ownD = Infinity
+      for (const z of this.zones) {
+        const d = Math.hypot(z.x - p.x, z.z - p.z)
+        if (d < ownD) { ownD = d; own = z }
+      }
+      return own ? [own.x, own.z] : null
+    }
+    return null
   }
 
   private botUpdate(p: SimPlayer, dt: number, t: number): void {
@@ -674,7 +950,7 @@ export class GameSim {
         this.botShoot(p, target, d, t)
       }
     } else {
-      // --- patrulla con sesgo hacia el territorio enemigo ---
+      // --- patrulla: con objetivo táctico (bandera/zona) o sesgo territorial ---
       p.crouch = false
       const [wx, wz] = WAYPOINTS[ai.wp]
       const dx = wx - p.x, dz = wz - p.z
@@ -682,20 +958,44 @@ export class GameSim {
       if (d < 1.4) {
         const edges = WAYPOINT_EDGES[ai.wp]
         if (edges.length) {
-          // lejos del enemigo → avanzar con más sesgo; cerca → exploración táctica
-          const exX = this.spawnX(p.team === 'A' ? 'B' : 'A')
-          const exZ = this.spawnZ(p.team === 'A' ? 'B' : 'A')
-          const distEnemy = Math.hypot(p.x - exX, p.z - exZ)
-          const bias = distEnemy > 38 ? 0.72 : 0.35
-          if (Math.random() < bias) {
+          const obj = this.botObjective(p)
+          if (obj) {
+            // ir hacia el objetivo por el grafo
             let bestW = edges[0], bestD = Infinity
             for (const e of edges) {
-              const dd = Math.hypot(WAYPOINTS[e][0] - exX, WAYPOINTS[e][1] - exZ)
+              const dd = Math.hypot(WAYPOINTS[e][0] - obj[0], WAYPOINTS[e][1] - obj[1])
               if (dd < bestD) { bestD = dd; bestW = e }
             }
             ai.wp = bestW
+          } else if (this.mode === 'ffa') {
+            // todos contra todos: exploración mixta
+            if (Math.random() < 0.5) {
+              // sesgo al centro (acción)
+              let bestW = edges[0], bestD = Infinity
+              for (const e of edges) {
+                const dd = Math.hypot(WAYPOINTS[e][0], WAYPOINTS[e][1])
+                if (dd < bestD) { bestD = dd; bestW = e }
+              }
+              ai.wp = bestW
+            } else {
+              ai.wp = edges[Math.floor(Math.random() * edges.length)]
+            }
           } else {
-            ai.wp = edges[Math.floor(Math.random() * edges.length)]
+            // escaramuza: sesgo hacia el territorio enemigo
+            const exX = this.spawnX(p.team === 'A' ? 'B' : 'A')
+            const exZ = this.spawnZ(p.team === 'A' ? 'B' : 'A')
+            const distEnemy = Math.hypot(p.x - exX, p.z - exZ)
+            const bias = distEnemy > 38 ? 0.72 : 0.35
+            if (Math.random() < bias) {
+              let bestW = edges[0], bestD = Infinity
+              for (const e of edges) {
+                const dd = Math.hypot(WAYPOINTS[e][0] - exX, WAYPOINTS[e][1] - exZ)
+                if (dd < bestD) { bestD = dd; bestW = e }
+              }
+              ai.wp = bestW
+            } else {
+              ai.wp = edges[Math.floor(Math.random() * edges.length)]
+            }
           }
         } else {
           ai.wp = nearestWaypoint(p.x, p.z)
@@ -1000,6 +1300,10 @@ export class GameSim {
       if (p.bot) this.botUpdate(p, dt, t)
     }
 
+    // objetivos de los modos de juego
+    this.updateFlags()
+    this.updateZones(dt)
+
     this.updateGrenades(dt)
 
     // limpiar humos expirados
@@ -1034,6 +1338,7 @@ export class GameSim {
       speed: Math.round(p.speed * 10) / 10,
       kills: p.kills, deaths: p.deaths, money: p.money, streak: p.streak,
       aiming: p.aiming, sprint: p.sprint && !p.crouch && p.speed > 4.2,
+      flag: p.flag,
     }
   }
 
@@ -1046,13 +1351,35 @@ export class GameSim {
   }
 
   private netRound(): NetRoundState {
-    return {
+    const r: NetRoundState = {
       phase: this.round.phase,
       timeLeft: Math.max(0, Math.round((this.round.endsAt - now()) / 1000)),
       roundNumber: this.round.roundNumber,
       scoresA: this.round.scoresA, scoresB: this.round.scoresB,
       roundWinsA: this.round.roundWinsA, roundWinsB: this.round.roundWinsB,
+      mode: this.mode,
+      scoreTarget: MODES[this.mode].target,
     }
+    if (this.mode === 'bandera') {
+      const mk = (f: SimFlag): NetFlagState => ({
+        status: f.status, x: Math.round(f.x), z: Math.round(f.z), carrier: f.carrier ?? undefined,
+      })
+      r.flags = { a: mk(this.flags.a), b: mk(this.flags.b) }
+    }
+    if (this.mode === 'dominacion') {
+      r.zones = this.zones.map(z => ({
+        id: z.id, owner: z.owner,
+        prog: Math.round(z.prog * 100) / 100, by: z.by,
+      }))
+    }
+    if (this.mode === 'ffa') {
+      let lead: SimPlayer | null = null
+      for (const p of this.players.values()) {
+        if (!lead || p.kills > lead.kills) lead = p
+      }
+      r.leader = lead ? { name: lead.name, kills: lead.kills, team: lead.team } : null
+    }
+    return r
   }
 
   private broadcastSnapshot(): void {

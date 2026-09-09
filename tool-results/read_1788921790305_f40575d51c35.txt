@@ -1,0 +1,702 @@
+     1→// ============================================================
+     2→// FRONTERA CERO — Motor del juego (Three.js)
+     3→// Movimiento, colisiones, cámara, armas, efectos, minimapa
+     4→// ============================================================
+     5→import * as THREE from 'three'
+     6→import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+     7→import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+     8→import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+     9→import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+    10→import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+    11→import {
+    12→  GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
+    13→  PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS,
+    14→  type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
+    15→} from './shared'
+    16→import { AudioEngine } from './audio'
+    17→import { Effects } from './effects'
+    18→import { RemotePlayers } from './remote-players'
+    19→import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
+    20→import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture } from './textures'
+    21→import { useGame } from './store'
+    22→import { NetClient } from './net'
+    23→
+    24→interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
+    25→interface HitMarker { t: number; headshot: boolean }
+    26→interface DamageDir { angle: number; t: number }
+    27→interface Ping { x: number; z: number; t: number }
+    28→interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
+    29→
+    30→interface WeaponRuntime { mag: number; reserve: number }
+    31→
+    32→interface BarrelView {
+    33→  mesh: THREE.Mesh
+    34→  x: number; z: number
+    35→  alive: boolean
+    36→  respawnAt: number
+    37→}
+    38→
+    39→interface ZiplineView {
+    40→  from: THREE.Vector3
+    41→  to: THREE.Vector3
+    42→  dir: THREE.Vector3
+    43→  len: number
+    44→}
+    45→
+    46→interface JumpPadView {
+    47→  x: number; z: number
+    48→  ring: THREE.Mesh
+    49→  glow: THREE.Sprite
+    50→  phase: number
+    51→}
+    52→
+    53→const PRIMARY_PREF: WeaponId[] = ['awp338', 'cr4', 'ar47', 'breacher', 'mp9']
+    54→const SECONDARY_PREF: WeaponId[] = ['aguila', 'p9']
+    55→const HALF_W = 0.36
+    56→const UP_AXIS = new THREE.Vector3(0, 1, 0)
+    57→const EYE_STAND = 1.62
+    58→const EYE_CROUCH = 1.14
+    59→const BASE_FOV = 75
+    60→
+    61→/** Parámetros PBR por material del mapa */
+    62→const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
+    63→  sand: { roughness: 0.95, metalness: 0.0 },
+    64→  concrete: { roughness: 0.9, metalness: 0.0 },
+    65→  wood: { roughness: 0.85, metalness: 0.0 },
+    66→  metalRed: { roughness: 0.5, metalness: 0.55 },
+    67→  metalBlue: { roughness: 0.5, metalness: 0.55 },
+    68→  metalGreen: { roughness: 0.5, metalness: 0.55 },
+    69→  metalOrange: { roughness: 0.5, metalness: 0.55 },
+    70→  metalGrey: { roughness: 0.45, metalness: 0.65 },
+    71→  sandbag: { roughness: 1.0, metalness: 0.0 },
+    72→  crate: { roughness: 0.8, metalness: 0.0 },
+    73→  barrel: { roughness: 0.45, metalness: 0.5 },
+    74→  roof: { roughness: 0.65, metalness: 0.3 },
+    75→  explosive: { roughness: 0.42, metalness: 0.45 },
+    76→}
+    77→
+    78→export class Game {
+    79→  // three
+    80→  private renderer!: THREE.WebGLRenderer
+    81→  private scene!: THREE.Scene
+    82→  private camera!: THREE.PerspectiveCamera
+    83→  private sunLight!: THREE.DirectionalLight
+    84→  private composer: EffectComposer | null = null
+    85→
+    86→  // canvas
+    87→  private canvas3d!: HTMLCanvasElement
+    88→  private overlay!: HTMLCanvasElement
+    89→  private octx!: CanvasRenderingContext2D
+    90→  private minimap!: HTMLCanvasElement
+    91→  private mctx!: CanvasRenderingContext2D
+    92→  private mapStatic!: HTMLCanvasElement
+    93→
+    94→  // módulos
+    95→  audio = new AudioEngine()
+    96→  private effects!: Effects
+    97→  private remotes!: RemotePlayers
+    98→  net!: NetClient
+    99→
+   100→  // estado del jugador local
+   101→  pos = new THREE.Vector3(SPAWN_A[0], 0.02, SPAWN_A[2])
+   102→  private vel = new THREE.Vector3()
+   103→  yaw = Math.PI * 0.25
+   104→  pitch = 0
+   105→  private keys = new Set<string>()
+   106→  private onGround = true
+   107→  private crouching = false
+   108→  private sprinting = false
+   109→  dead = false
+   110→  hp = 100
+   111→  shield = 0
+   112→  money = 1000
+   113→  team: Team = 'A'
+   114→  private owned: WeaponId[] = ['knife', 'p9']
+   115→  private ammo: Partial<Record<WeaponId, WeaponRuntime>> = {}
+   116→  weapon: WeaponId = 'p9'
+   117→  private lastWeapon: WeaponId = 'knife'
+   118→  frags = 0
+   119→  smokes = 0
+   120→
+   121→  // runtime de armas
+   122→  private nextShotAt = 0
+   123→  private sprayIdx = 0
+   124→  private lastShotTime = 0
+   125→  private reloading = false
+   126→  private reloadEndAt = 0
+   127→  private reloadStage = 0
+   128→  private ads = false
+   129→  private adsAmt = 0
+   130→  private recoilP = 0
+   131→  private recoilY = 0
+   132→  private trauma = 0
+   133→  private sprintAmt = 0
+   134→  private bobT = 0
+   135→  private stepT = 0
+   136→  private throwCooldown = 0
+   137→  private lastInputSent = 0
+   138→
+   139→  // viewmodel
+   140→  private vmHolder!: THREE.Group
+   141→  private vmGroup: THREE.Group | null = null
+   142→  private vmMuzzle: THREE.Object3D | null = null
+   143→  private drawT = 1
+   144→  private swayX = 0
+   145→  private swayY = 0
+   146→  private vmKick = 0
+   147→
+   148→  // overlay 2D
+   149→  private dmgNumbers: DamageNumber[] = []
+   150→  private hitMarkers: HitMarker[] = []
+   151→  private dmgDirs: DamageDir[] = []
+   152→  private pings: Ping[] = []
+   153→  private deathT = 0
+   154→  private hurtFlash = 0
+   155→
+   156→  // mando (gamepad)
+   157→  private padConnected = false
+   158→  private padIx = 0
+   159→  private padIz = 0
+   160→  private padSprint = false
+   161→  private padCrouch = false
+   162→  private padJump = false
+   163→  private padShootPrev = false
+   164→  private padAdsPrev = false
+   165→  private padSelectPrev = false
+   166→  private prevPadButtons: boolean[] = []
+   167→
+   168→  // granadas visibles
+   169→  private grenadeViews = new Map<string, { group: THREE.Group; last: THREE.Vector3; trailT: number }>()
+   170→  // cortinas de humo visibles
+   171→  private smokeViews = new Map<string, { group: THREE.Group; sprites: THREE.Sprite[]; born: number; life: number }>()
+   172→  private smokeTex: THREE.Texture | null = null
+   173→
+   174→  // cinemática de entrada
+   175→  private cine = {
+   176→    active: false,
+   177→    played: false,
+   178→    t0: 0,
+   179→    dur: 9.5,
+   180→    curve: null as THREE.CatmullRomCurve3 | null,
+   181→    look: null as THREE.CatmullRomCurve3 | null,
+   182→  }
+   183→  private cineTitleFade = 0
+   184→
+   185→  // pociones visibles
+   186→  private pickupViews = new Map<string, PickupView>()
+   187→
+   188→  // ---- mecánicas del mapa ----
+   189→  private barrels: BarrelView[] = []
+   190→  private ziplines: ZiplineView[] = []
+   191→  private jumpPads: JumpPadView[] = []
+   192→  /** tirolina en uso (índice) o null */
+   193→  private ziplineIdx = -1
+   194→  private ziplineT = 0
+   195→  /** deslizamiento (slide) */
+   196→  private slideT = 0
+   197→  private slideDir = new THREE.Vector3()
+   198→  /** aviso contextual ([E] tirolina) */
+   199→  interactHint = ''
+   200→  // pasto instanciado (viento)
+   201→  private grassUniform = { value: 0 }
+   202→  private grassMesh: THREE.InstancedMesh | null = null
+   203→
+   204→  // minimapa / mundo
+   205→  private shootables: THREE.Object3D[] = []
+   206→  private raycaster = new THREE.Raycaster()
+   207→  // reutilizados en cada raycast de bala (sin asignaciones por perdigón)
+   208→  private bulletRay = new THREE.Ray()
+   209→  private bulletPoint = new THREE.Vector3()
+   210→  private clock = new THREE.Clock()
+   211→  private raf = 0
+   212→  private fpsFrames = 0
+   213→  private fpsT = 0
+   214→  private minimapT = 0
+   215→  private scoreboardT = 0
+   216→  private mapMeshes: THREE.Mesh[] = []
+   217→  private disposed = false
+   218→
+   219→  // ----------------------------------------------------------
+   220→  // Inicialización
+   221→  // ----------------------------------------------------------
+   222→  init(canvas3d: HTMLCanvasElement, overlay: HTMLCanvasElement, minimap: HTMLCanvasElement): void {
+   223→    this.canvas3d = canvas3d
+   224→    this.overlay = overlay
+   225→    this.minimap = minimap
+   226→    this.octx = overlay.getContext('2d')!
+   227→    this.mctx = minimap.getContext('2d')!
+   228→
+   229→    const quality = useGame.getState().settings.quality
+   230→
+   231→    this.renderer = new THREE.WebGLRenderer({
+   232→      canvas: canvas3d,
+   233→      antialias: quality !== 'baja',
+   234→      powerPreference: 'high-performance',
+   235→    })
+   236→    this.renderer.setPixelRatio(quality === 'alta' ? Math.min(devicePixelRatio, 2) : quality === 'media' ? Math.min(devicePixelRatio, 1.5) : 1)
+   237→    this.renderer.setSize(innerWidth, innerHeight)
+   238→    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+   239→    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+   240→    this.renderer.toneMappingExposure = 1.12
+   241→    this.renderer.shadowMap.enabled = quality !== 'baja'
+   242→    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+   243→
+   244→    this.scene = new THREE.Scene()
+   245→    this.scene.fog = new THREE.FogExp2(0xd9ab7c, 0.0062)
+   246→
+   247→    this.camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.05, 560)
+   248→    this.scene.add(this.camera)
+   249→
+   250→    this.buildSky()
+   251→    this.buildEnvironment()
+   252→    this.buildLights(quality)
+   253→    this.buildMap(quality)
+   254→    this.buildMinimapStatic()
+   255→
+   256→    this.effects = new Effects(this.scene)
+   257→    this.remotes = new RemotePlayers(this.scene)
+   258→
+   259→    // viewmodel holder
+   260→    this.vmHolder = new THREE.Group()
+   261→    this.camera.add(this.vmHolder)
+   262→    this.setWeapon('p9', true)
+   263→
+   264→    // post-proceso: bloom de neones y fogonazos (solo en calidad alta)
+   265→    if (quality === 'alta') {
+   266→      this.composer = new EffectComposer(this.renderer)
+   267→      this.composer.addPass(new RenderPass(this.scene, this.camera))
+   268→      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.42, 0.7, 0.88)
+   269→      this.composer.addPass(bloom)
+   270→      this.composer.addPass(new OutputPass())
+   271→    }
+   272→
+   273→    // eventos
+   274→    this.bindEvents()
+   275→
+   276→    this.net = new NetClient(this)
+   277→
+   278→    // gancho de depuración (tests automatizados)
+   279→    ;(window as unknown as Record<string, unknown>).__game = this
+   280→
+   281→    this.clock.start()
+   282→    this.loop()
+   283→  }
+   284→
+   285→  private buildSky(): void {
+   286→    const skyTex = makeSkyTexture()
+   287→    const sky = new THREE.Mesh(
+   288→      new THREE.SphereGeometry(340, 32, 20),
+   289→      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
+   290→    )
+   291→    this.scene.add(sky)
+   292→    // halo del sol bajo (atardecer)
+   293→    const sunDir = new THREE.Vector3(0.62, 0.42, -0.52).normalize()
+   294→    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+   295→      map: makeSkyTexture(), color: 0xffd9a0, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, fog: false,
+   296→    }))
+   297→    glow.position.copy(sunDir.clone().multiplyScalar(300))
+   298→    glow.scale.setScalar(150)
+   299→    this.scene.add(glow)
+   300→    const core = new THREE.Sprite(new THREE.SpriteMaterial({
+   301→      map: makeSkyTexture(), color: 0xfff2cc, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, fog: false,
+   302→    }))
+   303→    core.position.copy(sunDir.clone().multiplyScalar(298))
+   304→    core.scale.setScalar(46)
+   305→    this.scene.add(core)
+   306→  }
+   307→
+   308→  /** Mapa de entorno para reflexiones PBR (PMREM del cielo de atardecer) */
+   309→  private buildEnvironment(): void {
+   310→    const pmrem = new THREE.PMREMGenerator(this.renderer)
+   311→    const envScene = new THREE.Scene()
+   312→    const envSky = new THREE.Mesh(
+   313→      new THREE.SphereGeometry(60, 24, 16),
+   314→      new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide }),
+   315→    )
+   316→    envScene.add(envSky)
+   317→    const sunBall = new THREE.Mesh(
+   318→      new THREE.SphereGeometry(5, 12, 12),
+   319→      new THREE.MeshBasicMaterial({ color: 0xfff0c8 }),
+   320→    )
+   321→    sunBall.position.set(30, 20, -25)
+   322→    envScene.add(sunBall)
+   323→    const ground = new THREE.Mesh(
+   324→      new THREE.PlaneGeometry(120, 120),
+   325→      new THREE.MeshBasicMaterial({ color: 0x93714e }),
+   326→    )
+   327→    ground.rotation.x = -Math.PI / 2
+   328→    ground.position.y = -3
+   329→    envScene.add(ground)
+   330→    const envRT = pmrem.fromScene(envScene, 0.05)
+   331→    this.scene.environment = envRT.texture
+   332→    envRT.texture.needsUpdate = true
+   333→    pmrem.dispose()
+   334→  }
+   335→
+   336→  private buildLights(quality: 'baja' | 'media' | 'alta'): void {
+   337→    const sun = new THREE.DirectionalLight(0xffdcae, 2.6)
+   338→    sun.position.set(52, 58, -40)
+   339→    if (quality !== 'baja') {
+   340→      sun.castShadow = true
+   341→      sun.shadow.mapSize.set(quality === 'alta' ? 4096 : 2048, quality === 'alta' ? 4096 : 2048)
+   342→      // la cámara de sombras sigue al jugador → sombras detalladas donde importa
+   343→      sun.shadow.camera.left = -48
+   344→      sun.shadow.camera.right = 48
+   345→      sun.shadow.camera.top = 48
+   346→      sun.shadow.camera.bottom = -48
+   347→      sun.shadow.camera.near = 4
+   348→      sun.shadow.camera.far = 260
+   349→      sun.shadow.bias = -0.00035
+   350→      sun.shadow.normalBias = 0.035
+   351→    }
+   352→    this.scene.add(sun)
+   353→    this.scene.add(sun.target)
+   354→    this.sunLight = sun
+   355→
+   356→    const hemi = new THREE.HemisphereLight(0x9db4d0, 0x8a6a4a, 0.5)
+   357→    this.scene.add(hemi)
+   358→
+   359→    // relleno cálido del atardecer desde el oeste
+   360→    const fill = new THREE.DirectionalLight(0xc7a17a, 0.5)
+   361→    fill.position.set(-40, 30, 30)
+   362→    this.scene.add(fill)
+   363→  }
+   364→
+   365→  private buildMap(quality: 'baja' | 'media' | 'alta'): void {
+   366→    const texs = makeWorldTextures()
+   367→
+   368→    // suelo (ligeramente satinado para reflejar el cielo del atardecer)
+   369→    const groundMat = new THREE.MeshStandardMaterial({ map: texs.sand, roughness: 0.88, metalness: 0.05 })
+   370→    groundMat.map!.repeat.set(46, 46)
+   371→    const ground = new THREE.Mesh(new THREE.PlaneGeometry(230, 230), groundMat)
+   372→    ground.rotation.x = -Math.PI / 2
+   373→    ground.receiveShadow = true
+   374→    this.scene.add(ground)
+   375→    this.shootables.push(ground)
+   376→
+   377→    // materiales PBR compartidos (uno por tipo)
+   378→    const mats = new Map<MatKey, THREE.MeshStandardMaterial>()
+   379→    for (const key of Object.keys(MAT_PBR) as MatKey[]) {
+   380→      const p = MAT_PBR[key]
+   381→      mats.set(key, new THREE.MeshStandardMaterial({ map: texs[key], roughness: p.roughness, metalness: p.metalness }))
+   382→    }
+   383→
+   384→    // cajas del mapa (UVs escaladas por cara para densidad de texel constante)
+   385→    const geoCache = new Map<string, THREE.BufferGeometry>()
+   386→    let barrelSeq = 0
+   387→    for (const b of MAP_BOXES) {
+   388→      let mesh: THREE.Mesh
+   389→      if (b.mat === 'barrel' || b.mat === 'explosive') {
+   390→        const key = `b${b.h}`
+   391→        let geo = geoCache.get(key)
+   392→        if (!geo) { geo = new THREE.CylinderGeometry(0.36, 0.36, b.h, 12); geoCache.set(key, geo) }
+   393→        mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
+   394→        if (b.mat === 'explosive') {
+   395→          mesh.userData.barrelIdx = barrelSeq
+   396→          this.barrels.push({ mesh, x: b.x, z: b.z, alive: true, respawnAt: 0 })
+   397→          barrelSeq++
+   398→        }
+   399→      } else {
+   400→        const key = `${b.w}|${b.h}|${b.d}`
+   401→        let geo = geoCache.get(key)
+   402→        if (!geo) {
+   403→          geo = new THREE.BoxGeometry(b.w, b.h, b.d)
+   404→          this.scaleBoxUVs(geo as THREE.BoxGeometry, b.w, b.h, b.d)
+   405→          geoCache.set(key, geo)
+   406→        }
+   407→        mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
+   408→      }
+   409→      mesh.castShadow = true
+   410→      mesh.receiveShadow = true
+   411→      mesh.position.set(b.x, b.y, b.z)
+   412→      this.scene.add(mesh)
+   413→      this.shootables.push(mesh)
+   414→      this.mapMeshes.push(mesh)
+   415→    }
+   416→
+   417→    // ---- oclusión de contacto fusionada (sombra suave bajo los objetos) ----
+   418→    this.buildContactShadows()
+   419→
+   420→    // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
+   421→    this.buildDecor(texs)
+   422→
+   423→    // ---- mecánicas del mapa: pasto, arbustos, flores, tirolinas, plataformas ----
+   424→    this.buildGrass(quality)
+   425→    this.buildBushes(quality)
+   426→    this.buildFlowers(quality)
+   427→    this.buildZiplines()
+   428→    this.buildJumpPads()
+   429→
+   430→    // marcas de spawn (zonas de compra)
+   431→    for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
+   432→      const ring = new THREE.Mesh(
+   433→        new THREE.RingGeometry(GAME.BUY_RADIUS - 0.15, GAME.BUY_RADIUS, 40),
+   434→        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+   435→      )
+   436→      ring.rotation.x = -Math.PI / 2
+   437→      ring.position.set(sp[0], 0.03, sp[2])
+   438→      this.scene.add(ring)
+   439→    }
+   440→  }
+   441→
+   442→  /** Escala las UVs de cada cara de una caja para texel uniforme con material compartido */
+   443→  private scaleBoxUVs(geo: THREE.BoxGeometry, w: number, h: number, d: number): void {
+   444→    const uv = geo.attributes.uv as THREE.BufferAttribute
+   445→    const dims: [number, number][] = [
+   446→      [d, h], [d, h],  // +x, -x
+   447→      [w, d], [w, d],  // +y, -y
+   448→      [w, h], [w, h],  // +z, -z
+   449→    ]
+   450→    for (let f = 0; f < 6; f++) {
+   451→      const [du, dv] = dims[f]
+   452→      const su = Math.max(1, Math.round(Math.max(du, 0.6) / 2.4))
+   453→      const sv = Math.max(1, Math.round(Math.max(dv, 0.6) / 2.4))
+   454→      for (let v = 0; v < 4; v++) {
+   455→        const i = f * 4 + v
+   456→        uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv)
+   457→      }
+   458→    }
+   459→    uv.needsUpdate = true
+   460→  }
+   461→
+   462→  /** Quads de sombra suave fusionados en una sola malla (1 draw call) */
+   463→  private buildContactShadows(): void {
+   464→    const pos: number[] = []
+   465→    const uvs: number[] = []
+   466→    for (const b of MAP_BOXES) {
+   467→      if (b.h < 1.0) continue                       // solo objetos altos
+   468→      if (b.y - b.h / 2 > 0.6) continue             // apoyados en el suelo
+   469→      if (b.w > 26 || b.d > 26) continue            // sin muros de perímetro
+   470→      if (b.w < 1.4 && b.d < 1.4) continue
+   471→      const ex = b.w * 0.68, ez = b.d * 0.68
+   472→      const y = 0.021
+   473→      const x0 = b.x - ex, x1 = b.x + ex, z0 = b.z - ez, z1 = b.z + ez
+   474→      pos.push(x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z0, x1, y, z1, x0, y, z1)
+   475→      uvs.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1)
+   476→    }
+   477→    if (!pos.length) return
+   478→    const geo = new THREE.BufferGeometry()
+   479→    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+   480→    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+   481→    const mat = new THREE.MeshBasicMaterial({
+   482→      map: makeAOBlobTexture(), transparent: true, depthWrite: false,
+   483→      polygonOffset: true, polygonOffsetFactor: -2,
+   484→    })
+   485→    const mesh = new THREE.Mesh(geo, mat)
+   486→    mesh.renderOrder = 1
+   487→    this.scene.add(mesh)
+   488→  }
+   489→
+   490→  /** Decoración sin colisión: árboles, farolas con luz, neones, charcos reflectantes */
+   491→  private buildDecor(texs: Record<MatKey, THREE.Texture>): void {
+   492→    // --- árboles (tronco con colisión ya está en el mapa) ---
+   493→    const leafMatA = new THREE.MeshStandardMaterial({ color: 0x55683d, roughness: 0.95, flatShading: true })
+   494→    const leafMatB = new THREE.MeshStandardMaterial({ color: 0x47592f, roughness: 0.95, flatShading: true })
+   495→    const leafGeo = new THREE.SphereGeometry(1, 8, 7)
+   496→    for (const [tx, tz] of TREES) {
+   497→      for (const [ox, oy, oz, s, m] of [
+   498→        [0, 4.6, 0, 2.1, leafMatA], [0.9, 3.8, 0.4, 1.5, leafMatB], [-0.8, 3.9, -0.3, 1.4, leafMatB],
+   499→      ] as [number, number, number, number, THREE.MeshStandardMaterial][]) {
+   500→        const leaf = new THREE.Mesh(leafGeo, m)
+   501→        leaf.position.set(tx + ox, oy, tz + oz)
+   502→        leaf.scale.setScalar(s)
+   503→        leaf.castShadow = true
+   504→        this.scene.add(leaf)
+   505→        this.shootables.push(leaf)
+   506→      }
+   507→    }
+   508→
+   509→    // --- farolas: cabezal + bombilla emisiva + luz puntual cálida ---
+   510→    const headMat = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.6, metalness: 0.7 })
+   511→    const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc26b, emissiveIntensity: 4, roughness: 0.4 })
+   512→    const sparkTex = makeSparkTexture()
+   513→    for (const [lx, lz] of LAMPS) {
+   514→      const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.22, 0.42), headMat)
+   515→      head.position.set(lx, 5.15, lz)
+   516→      head.castShadow = true
+   517→      this.scene.add(head)
+   518→      const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.09, 0.3), bulbMat)
+   519→      bulb.position.set(lx, 5.02, lz)
+   520→      this.scene.add(bulb)
+   521→      const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
+   522→      light.position.set(lx, 4.85, lz)
+   523→      this.scene.add(light)
+   524→      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+   525→        map: sparkTex, color: 0xffc98a, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false,
+   526→      }))
+   527→      glow.position.set(lx, 5.0, lz)
+   528→      glow.scale.setScalar(1.6)
+   529→      this.scene.add(glow)
+   530→    }
+   531→
+   532→    // --- letreros de neón ---
+   533→    for (const n of NEONS) {
+   534→      const tex = makeNeonTexture(n.text, n.color)
+   535→      const aspect = tex.image ? (tex.image as HTMLCanvasElement).width / (tex.image as HTMLCanvasElement).height : 4
+   536→      const h = n.w / aspect
+   537→      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, fog: true })
+   538→      const plane = new THREE.Mesh(new THREE.PlaneGeometry(n.w, h), mat)
+   539→      plane.position.set(n.x, n.y, n.z)
+   540→      plane.rotation.y = n.ry
+   541→      this.scene.add(plane)
+   542→      // marco trasero discreto
+   543→      const frame = new THREE.Mesh(
+   544→        new THREE.PlaneGeometry(n.w + 0.3, h + 0.25),
+   545→        new THREE.MeshStandardMaterial({ color: 0x1b1d22, roughness: 0.8 }),
+   546→      )
+   547→      frame.position.set(n.x - Math.sin(n.ry) * 0.08, n.y, n.z - Math.cos(n.ry) * 0.08)
+   548→      frame.rotation.y = n.ry
+   549→      this.scene.add(frame)
+   550→    }
+   551→
+   552→    // --- charcos reflectantes (reflejan el cielo del atardecer) ---
+   553→    const puddleMat = new THREE.MeshStandardMaterial({
+   554→      color: 0x2a3038, roughness: 0.12, metalness: 0.85, envMapIntensity: 1.8,
+   555→    })
+   556→    for (const p of PUDDLES) {
+   557→      const puddle = new THREE.Mesh(new THREE.CircleGeometry(p.r, 20), puddleMat)
+   558→      puddle.rotation.x = -Math.PI / 2
+   559→      puddle.position.set(p.x, 0.024, p.z)
+   560→      puddle.scale.set(1, 0.75, 1)
+   561→      this.scene.add(puddle)
+   562→    }
+   563→
+   564→    // --- neumáticos apilados (barrio y gasolinera) ---
+   565→    const tireMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95 })
+   566→    const tireGeo = new THREE.TorusGeometry(0.46, 0.2, 8, 16)
+   567→    for (const [tx, tz, count] of [
+   568→      [-46.5, -9.6, 3], [33.5, -25.5, 2], [-33.5, 25.5, 2], [41.5, -26.5, 3],
+   569→    ] as [number, number, number][]) {
+   570→      for (let i = 0; i < count; i++) {
+   571→        const tire = new THREE.Mesh(tireGeo, tireMat)
+   572→        tire.rotation.x = -Math.PI / 2
+   573→        tire.rotation.z = Math.random() * Math.PI
+   574→        tire.position.set(tx + (Math.random() - 0.5) * 0.15, 0.2 + i * 0.38, tz + (Math.random() - 0.5) * 0.15)
+   575→        tire.castShadow = true
+   576→        tire.receiveShadow = true
+   577→        this.scene.add(tire)
+   578→      }
+   579→    }
+   580→    void texs
+   581→  }
+   582→
+   583→  // ----------------------------------------------------------
+   584→  // Pasto instanciado (1 draw call, viento en el vertex shader)
+   585→  // ----------------------------------------------------------
+   586→  private buildGrass(quality: 'baja' | 'media' | 'alta'): void {
+   587→    const bladeH = 0.55
+   588→    // dos quads cruzados por brizna
+   589→    const plane = new THREE.PlaneGeometry(0.095, bladeH)
+   590→    plane.translate(0, bladeH / 2, 0)
+   591→    const plane2 = plane.clone()
+   592→    plane2.rotateY(Math.PI / 2)
+   593→    const geo = mergeGeometries([plane, plane2])!
+   594→    const mat = new THREE.MeshLambertMaterial({
+   595→      color: 0xffffff, side: THREE.DoubleSide, fog: true,
+   596→    })
+   597→    // viento: balanceo en el vertex shader usando la fase por instancia
+   598→    mat.onBeforeCompile = shader => {
+   599→      shader.uniforms.uTime = this.grassUniform
+   600→      // declarar el uniform en el GLSL (sin esto el programa no compila)
+   601→      shader.vertexShader = shader.vertexShader.replace(
+   602→        '#include <common>',
+   603→        '#include <common>\nuniform float uTime;',
+   604→      )
+   605→      shader.vertexShader = shader.vertexShader.replace(
+   606→        '#include <begin_vertex>',
+   607→        `#include <begin_vertex>
+   608→        #ifdef USE_INSTANCING
+   609→          float gwx = instanceMatrix[3][0];
+   610→          float gwz = instanceMatrix[3][2];
+   611→          float gph = gwx * 0.35 + gwz * 0.41;
+   612→          float gsway = sin(uTime * 1.7 + gph) * 0.5 + sin(uTime * 2.6 + gph * 1.7) * 0.5;
+   613→          float ghFac = max(0.0, position.y) / ${bladeH.toFixed(2)};
+   614→          transformed.x += gsway * 0.085 * ghFac;
+   615→          transformed.z += cos(uTime * 1.3 + gph) * 0.045 * ghFac;
+   616→        #endif`,
+   617→      )
+   618→    }
+   619→
+   620→    const count = quality === 'alta' ? 14000 : quality === 'media' ? 9000 : 3200
+   621→    const mesh = new THREE.InstancedMesh(geo, mat, count)
+   622→    mesh.frustumCulled = false
+   623→    const m = new THREE.Matrix4()
+   624→    const q = new THREE.Quaternion()
+   625→    const sc = new THREE.Vector3()
+   626→    const pos = new THREE.Vector3()
+   627→    const col = new THREE.Color()
+   628→    let placed = 0
+   629→    // matones alrededor de puntos abiertos (evitando AABBs y charcos)
+   630→    const clumps = Math.floor(count / 78)
+   631→    for (let c = 0; c < clumps && placed < count; c++) {
+   632→      const cx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+   633→      const cz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+   634→      // cerca de árboles: matones más densos y verdes
+   635→      let nearTree = 0
+   636→      for (const [tx, tz] of TREES) {
+   637→        const d = Math.hypot(tx - cx, tz - cz)
+   638→        if (d < 18) { nearTree = Math.max(nearTree, 1 - d / 18); break }
+   639→      }
+   640→      if (this.grassBlocked(cx, cz, 1.4)) continue
+   641→      const per = 58 + Math.floor(Math.random() * 34) + Math.floor(nearTree * 34)
+   642→      for (let i = 0; i < per && placed < count; i++) {
+   643→        const a = Math.random() * Math.PI * 2
+   644→        const r = Math.pow(Math.random(), 0.6) * 1.5
+   645→        const gx = cx + Math.cos(a) * r
+   646→        const gz = cz + Math.sin(a) * r
+   647→        if (this.grassBlocked(gx, gz, 0.45)) continue
+   648→        pos.set(gx, 0, gz)
+   649→        q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
+   650→        const hS = 0.65 + Math.random() * 0.75 + nearTree * 0.25
+   651→        sc.set(1, hS, 1)
+   652→        m.compose(pos, q, sc)
+   653→        mesh.setMatrixAt(placed, m)
+   654→        // tonos de pasto seco del desierto (más verde cerca de árboles)
+   655→        const t = Math.random()
+   656→        col.setRGB(
+   657→          0.42 + t * 0.13 + nearTree * 0.05,
+   658→          0.48 + t * 0.15 + nearTree * 0.14,
+   659→          0.24 + t * 0.09,
+   660→        )
+   661→        mesh.setColorAt(placed, col)
+   662→        placed++
+   663→      }
+   664→    }
+   665→    // rellenar hasta el total con briznas sueltas si faltó
+   666→    while (placed < count) {
+   667→      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+   668→      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+   669→      if (this.grassBlocked(gx, gz, 0.45)) { mesh.setMatrixAt(placed, m.makeScale(0, 0, 0)); placed++; continue }
+   670→      pos.set(gx, 0, gz)
+   671→      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
+   672→      sc.set(1, 0.6 + Math.random() * 0.6, 1)
+   673→      m.compose(pos, q, sc)
+   674→      mesh.setMatrixAt(placed, m)
+   675→      col.setRGB(0.44 + Math.random() * 0.1, 0.46 + Math.random() * 0.12, 0.25 + Math.random() * 0.07)
+   676→      mesh.setColorAt(placed, col)
+   677→      placed++
+   678→    }
+   679→    mesh.count = placed
+   680→    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+   681→    mesh.instanceMatrix.needsUpdate = true
+   682→    this.grassMesh = mesh
+   683→    this.scene.add(mesh)
+   684→  }
+   685→
+   686→  /** ¿hay un obstáculo o charco en (x,z)? (para no plantar pasto dentro/debajo) */
+   687→  private grassBlocked(x: number, z: number, margin: number): boolean {
+   688→    for (let i = 0; i < MAP_AABBS.length; i++) {
+   689→      const b = MAP_AABBS[i]
+   690→      if (b.minY > 0.6) continue // encima del suelo (techos) no importa
+   691→      if (x > b.minX - margin && x < b.maxX + margin && z > b.minZ - margin && z < b.maxZ + margin) {
+   692→        if (b.maxY > 0.25) return true
+   693→      }
+   694→    }
+   695→    for (const p of PUDDLES) {
+   696→      if (Math.hypot(p.x - x, p.z - z) < p.r + 0.3) return true
+   697→    }
+   698→    return false
+   699→  }
+   700→
+
+[showing lines 1-700 of 2762; use offset=701 with limit to continue reading]

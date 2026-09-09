@@ -1,6 +1,7 @@
 // ============================================================
 // FRONTERA CERO — Configuración compartida cliente/servidor
-// Mapa 140×140, pociones de escudo (estilo Fortnite), armas
+// Mapa 140×140 (v4: ciudad ordenada), modos de juego,
+// pociones de escudo (estilo Fortnite), armas y controles
 // ============================================================
 
 export const GAME = {
@@ -8,7 +9,7 @@ export const GAME = {
   SNAPSHOT_EVERY: 2,     // snapshot cada 2 ticks (15 Hz)
   INPUT_RATE: 50,        // cliente envía input cada 50 ms (20 Hz)
   INTERP_DELAY: 120,     // ms de interpolación de jugadores remotos
-  ROUND_TIME: 240,       // segundos por ronda
+  ROUND_TIME: 240,       // segundos por ronda (combate de equipos)
   ROUND_KILLS: 30,       // kills de equipo para ganar la ronda
   ROUNDS_TO_WIN: 5,      // rondas para ganar la partida
   RESPAWN_TIME: 3.0,     // segundos hasta reaparecer
@@ -28,7 +29,57 @@ export const GAME = {
   PICKUP_RESPAWN: 32,    // segundos hasta reaparecer una poción
   REGEN_DELAY: 8,        // segundos sin recibir daño para regenerar vida
   REGEN_HP: 1.2,         // HP por segundo regenerado
+  // capturar la bandera
+  FLAG_RETURN_TIME: 6,   // segundos hasta que la bandera caída vuelva a su base
+  FLAG_CAPTURES: 3,      // capturas para ganar la ronda
+  // dominación
+  DOM_ZONE_RADIUS: 6,    // radio de captura de una zona
+  DOM_CAP_TIME: 7,       // segundos para capturar una zona
+  DOM_TICK_POINTS: 5,    // puntos por zona cada 5 s
+  DOM_TARGET: 150,       // puntos para ganar la ronda
+  // todos contra todos
+  FFA_KILLS: 15,         // bajas individuales para ganar la ronda
 } as const
+
+// ------------------------------------------------------------
+// MODOS DE JUEGO
+// ------------------------------------------------------------
+export type GameMode = 'escaramuza' | 'ffa' | 'bandera' | 'dominacion'
+
+export interface ModeInfo {
+  id: GameMode
+  name: string
+  short: string
+  desc: string
+  target: number
+  time: number
+  teams: boolean
+}
+
+export const MODES: Record<GameMode, ModeInfo> = {
+  escaramuza: {
+    id: 'escaramuza', name: 'COMBATE DE EQUIPOS', short: 'EQUIPOS',
+    desc: '4 vs 4 · la primera escuadra en llegar al objetivo gana la ronda',
+    target: GAME.ROUND_KILLS, time: GAME.ROUND_TIME, teams: true,
+  },
+  ffa: {
+    id: 'ffa', name: 'TODOS CONTRA TODOS', short: 'LIBRE',
+    desc: 'Operador contra operador · la primera racha individual gana',
+    target: GAME.FFA_KILLS, time: GAME.ROUND_TIME, teams: false,
+  },
+  bandera: {
+    id: 'bandera', name: 'CAPTURAR LA BANDERA', short: 'BANDERA',
+    desc: 'Roba la bandera rival y llévala a tu base · primero a 3 capturas',
+    target: GAME.FLAG_CAPTURES, time: 300, teams: true,
+  },
+  dominacion: {
+    id: 'dominacion', name: 'DOMINACIÓN', short: 'DOMINACIÓN',
+    desc: 'Toma y conserva las 3 zonas del mapa · primero a 150 puntos',
+    target: GAME.DOM_TARGET, time: 300, teams: true,
+  },
+}
+
+export const MODE_LIST: GameMode[] = ['escaramuza', 'ffa', 'bandera', 'dominacion']
 
 // Dificultad de los bots (escala reacción, puntería y daño)
 export type BotDifficulty = 'facil' | 'normal' | 'dificil' | 'experto'
@@ -98,13 +149,15 @@ export interface WeaponConfig {
   sound: 'pistol' | 'deagle' | 'smg' | 'shotgun' | 'rifle' | 'sniper'
 }
 
+// NOTA de rebalanceo (v4): retroceso y dispersión REDUCIDOS ~40-45 % —
+// la mira ya no "se va mucho" al disparar y la retícula apenas se abre.
 export const WEAPONS: Record<WeaponId, WeaponConfig> = {
   knife: {
     id: 'knife', name: 'Cuchillo Táctico', slot: 'melee', price: 0,
     damage: 55, headMult: 2.0, legMult: 1.0,
     rpm: 120, auto: false, pellets: 1, mag: 0, reserve: 0, reloadTime: 0,
     spreadBase: 0, spreadMove: 0, spreadAir: 0,
-    recoilV: 0.6, recoilH: 0.2, recoilRecover: 0.9, sprayInacc: 0,
+    recoilV: 0.5, recoilH: 0.15, recoilRecover: 0.92, sprayInacc: 0,
     zoomFov: 0, sniper: false, moveMult: 1.08,
     falloffStart: 100, falloffEnd: 100, falloffMin: 1, sound: 'pistol',
   },
@@ -112,8 +165,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'p9', name: 'P9 Compacto', slot: 'secondary', price: 0,
     damage: 33, headMult: 4.0, legMult: 0.75,
     rpm: 400, auto: false, pellets: 1, mag: 15, reserve: 90, reloadTime: 2.2,
-    spreadBase: 0.35, spreadMove: 1.6, spreadAir: 3.5,
-    recoilV: 1.1, recoilH: 0.45, recoilRecover: 0.85, sprayInacc: 0.10,
+    spreadBase: 0.3, spreadMove: 1.0, spreadAir: 2.6,
+    recoilV: 0.62, recoilH: 0.22, recoilRecover: 0.9, sprayInacc: 0.05,
     zoomFov: 62, sniper: false, moveMult: 1.02,
     falloffStart: 18, falloffEnd: 55, falloffMin: 0.68, sound: 'pistol',
   },
@@ -121,8 +174,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'aguila', name: 'Águila .50', slot: 'secondary', price: 700,
     damage: 58, headMult: 4.0, legMult: 0.80,
     rpm: 267, auto: false, pellets: 1, mag: 7, reserve: 35, reloadTime: 2.2,
-    spreadBase: 0.55, spreadMove: 2.4, spreadAir: 5,
-    recoilV: 3.2, recoilH: 0.8, recoilRecover: 0.75, sprayInacc: 0.25,
+    spreadBase: 0.45, spreadMove: 1.5, spreadAir: 3.6,
+    recoilV: 1.8, recoilH: 0.4, recoilRecover: 0.82, sprayInacc: 0.12,
     zoomFov: 60, sniper: false, moveMult: 1.0,
     falloffStart: 20, falloffEnd: 60, falloffMin: 0.7, sound: 'deagle',
   },
@@ -130,8 +183,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'mp9', name: 'MP-9 Vecto', slot: 'primary', price: 1250,
     damage: 26, headMult: 3.0, legMult: 0.75,
     rpm: 750, auto: true, pellets: 1, mag: 30, reserve: 120, reloadTime: 2.3,
-    spreadBase: 0.5, spreadMove: 0.9, spreadAir: 4.5,
-    recoilV: 0.65, recoilH: 0.5, recoilRecover: 0.9, sprayInacc: 0.07,
+    spreadBase: 0.4, spreadMove: 0.6, spreadAir: 3.2,
+    recoilV: 0.4, recoilH: 0.26, recoilRecover: 0.92, sprayInacc: 0.04,
     zoomFov: 60, sniper: false, moveMult: 1.04,
     falloffStart: 14, falloffEnd: 45, falloffMin: 0.6, sound: 'smg',
   },
@@ -139,8 +192,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'breacher', name: 'Breacher-12', slot: 'primary', price: 1800,
     damage: 12, headMult: 2.0, legMult: 0.9,
     rpm: 68, auto: false, pellets: 8, mag: 6, reserve: 32, reloadTime: 3.0,
-    spreadBase: 3.2, spreadMove: 1.2, spreadAir: 4,
-    recoilV: 4.5, recoilH: 1.0, recoilRecover: 0.7, sprayInacc: 0.2,
+    spreadBase: 2.6, spreadMove: 1.0, spreadAir: 3.4,
+    recoilV: 2.6, recoilH: 0.55, recoilRecover: 0.78, sprayInacc: 0.1,
     zoomFov: 66, sniper: false, moveMult: 0.97,
     falloffStart: 8, falloffEnd: 22, falloffMin: 0.28, sound: 'shotgun',
   },
@@ -148,8 +201,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'ar47', name: "AR-47 «Cóndor»", slot: 'primary', price: 2700,
     damage: 36, headMult: 4.0, legMult: 0.75,
     rpm: 600, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 2.5,
-    spreadBase: 0.35, spreadMove: 2.6, spreadAir: 6,
-    recoilV: 1.35, recoilH: 0.75, recoilRecover: 0.8, sprayInacc: 0.12,
+    spreadBase: 0.28, spreadMove: 1.7, spreadAir: 4.4,
+    recoilV: 0.78, recoilH: 0.38, recoilRecover: 0.85, sprayInacc: 0.07,
     zoomFov: 55, sniper: false, moveMult: 0.94,
     falloffStart: 25, falloffEnd: 70, falloffMin: 0.75, sound: 'rifle',
   },
@@ -157,8 +210,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'cr4', name: 'Carabina CR-4', slot: 'primary', price: 2900,
     damage: 33, headMult: 4.0, legMult: 0.75,
     rpm: 666, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 3.1,
-    spreadBase: 0.3, spreadMove: 2.2, spreadAir: 5,
-    recoilV: 1.0, recoilH: 0.5, recoilRecover: 0.85, sprayInacc: 0.09,
+    spreadBase: 0.24, spreadMove: 1.4, spreadAir: 3.8,
+    recoilV: 0.6, recoilH: 0.26, recoilRecover: 0.88, sprayInacc: 0.05,
     zoomFov: 55, sniper: false, moveMult: 0.95,
     falloffStart: 28, falloffEnd: 75, falloffMin: 0.78, sound: 'rifle',
   },
@@ -166,8 +219,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     id: 'awp338', name: 'FR-338 Tirador', slot: 'primary', price: 4750,
     damage: 115, headMult: 2.5, legMult: 0.85,
     rpm: 41, auto: false, pellets: 1, mag: 5, reserve: 30, reloadTime: 3.7,
-    spreadBase: 0.2, spreadMove: 5.0, spreadAir: 8,
-    recoilV: 5.0, recoilH: 1.2, recoilRecover: 0.65, sprayInacc: 0,
+    spreadBase: 0.15, spreadMove: 3.4, spreadAir: 6,
+    recoilV: 2.8, recoilH: 0.6, recoilRecover: 0.75, sprayInacc: 0,
     zoomFov: 9, sniper: true, moveMult: 0.85,
     falloffStart: 200, falloffEnd: 300, falloffMin: 1, sound: 'sniper',
   },
@@ -186,7 +239,7 @@ export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'fra
 ]
 
 // ------------------------------------------------------------
-// TECLAS CONFIGURABLES (rebindable en el menú)
+// CONTROLES CONFIGURABLES (teclado + RATÓN + mando)
 // ------------------------------------------------------------
 export type ActionId =
   | 'fwd' | 'back' | 'left' | 'right'
@@ -194,7 +247,10 @@ export type ActionId =
   | 'reload' | 'grenadeFrag' | 'grenadeSmoke'
   | 'buy' | 'lastWeapon' | 'zipline'
   | 'slot1' | 'slot2' | 'slot3'
+  | 'shoot' | 'aim'
 
+/** Los binds de DISPARAR y APUNTAR aceptan botones del ratón (Mouse0..4)
+ *  o cualquier tecla — por fin se pueden reasignar. */
 export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
   fwd: 'KeyW',
   back: 'KeyS',
@@ -212,6 +268,8 @@ export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
   slot1: 'Digit1',
   slot2: 'Digit2',
   slot3: 'Digit3',
+  shoot: 'Mouse0',
+  aim: 'Mouse2',
 }
 
 export const ACTION_LABELS: Record<ActionId, string> = {
@@ -231,11 +289,30 @@ export const ACTION_LABELS: Record<ActionId, string> = {
   slot1: 'Arma principal',
   slot2: 'Arma secundaria',
   slot3: 'Cuchillo',
+  shoot: 'Disparar',
+  aim: 'Apuntar (ADS)',
 }
 
-/** Convierte un KeyboardEvent.code a etiqueta legible (KeyW → W, Digit1 → 1…) */
+/** ¿El código corresponde a un botón del ratón? */
+export function isMouseButton(code: string): boolean {
+  return code.startsWith('Mouse')
+}
+
+/** Índice del botón del ratón (Mouse2 → 2), o null */
+export function mouseButtonIndex(code: string): number | null {
+  if (!code.startsWith('Mouse')) return null
+  const n = Number(code.slice(5))
+  return Number.isFinite(n) ? n : null
+}
+
+/** Convierte un KeyboardEvent.code o botón a etiqueta legible */
 export function keyLabel(code: string): string {
   if (!code) return '—'
+  if (code.startsWith('Mouse')) {
+    const names = ['CLIC IZQ', 'CLIC MED', 'CLIC DER', 'CLIC 4', 'CLIC 5', 'CLIC 6']
+    const n = Number(code.slice(5))
+    return names[n] ?? `CLIC ${n + 1}`
+  }
   if (code.startsWith('Key')) return code.slice(3)
   if (code.startsWith('Digit')) return code.slice(5)
   if (code.startsWith('Numpad')) return 'NUM ' + code.slice(6)
@@ -252,6 +329,55 @@ export function keyLabel(code: string): string {
     Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
   }
   return names[code] ?? code.toUpperCase()
+}
+
+// ------------------------------------------------------------
+// MANDO — botones reasignables
+// ------------------------------------------------------------
+export type PadAction =
+  | 'shoot' | 'aim' | 'sprint' | 'jump' | 'crouch' | 'reload'
+  | 'weaponNext' | 'grenadeFrag' | 'grenadeSmoke' | 'buy' | 'scoreboard' | 'pause'
+
+export const DEFAULT_PAD_BINDS: Record<PadAction, number> = {
+  shoot: 7,          // RT
+  aim: 6,            // LT
+  sprint: 10,        // L3 (pulsar stick izquierdo)
+  jump: 0,           // A / Cruz
+  crouch: 1,         // B / Círculo
+  reload: 2,         // X / Cuadrado
+  weaponNext: 3,     // Y / Triángulo
+  grenadeFrag: 4,    // LB
+  grenadeSmoke: 13,  // cruceta abajo
+  buy: 5,            // RB
+  scoreboard: 8,     // Back / View
+  pause: 9,          // Start
+}
+
+export const PAD_ACTION_LABELS: Record<PadAction, string> = {
+  shoot: 'Disparar',
+  aim: 'Apuntar (ADS)',
+  sprint: 'Esprintar (L3)',
+  jump: 'Saltar',
+  crouch: 'Agacharse',
+  reload: 'Recargar',
+  weaponNext: 'Cambiar arma',
+  grenadeFrag: 'Granada MOLO',
+  grenadeSmoke: 'Granada de humo',
+  buy: 'Tienda',
+  scoreboard: 'Marcador (mantener)',
+  pause: 'Pausa',
+}
+
+/** Etiqueta de botón estándar Xbox (PS: A=Cruz, B=Círculo…) */
+export function padButtonLabel(i: number): string {
+  const names: Record<number, string> = {
+    0: 'A', 1: 'B', 2: 'X', 3: 'Y',
+    4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT',
+    8: 'VIEW', 9: 'MENU', 10: 'L3', 11: 'R3',
+    12: '↑', 13: '↓', 14: '←', 15: '→',
+    16: 'CENTRO', 17: 'GUIA',
+  }
+  return names[i] ?? `B${i}`
 }
 
 export const WEAPON_LIST = Object.values(WEAPONS)
@@ -289,32 +415,40 @@ export const PICKUP_INFO: Record<PickupKind, { name: string; hp: number; shield:
 
 export interface PickupSpot { kind: PickupKind; x: number; z: number }
 
-/** Posiciones de pociones/botiquines por el mapa (se recogen al acercarse) */
+// ------------------------------------------------------------
+// MAPA v4 — "SECTOR MERIDIANO": ciudad ordenada tipo Warzone
+// Mismo tamaño (140×140), cuadrícula de calles, distritos variados
+// y edificios grandes con interior: hotel de 3 plantas, torre de
+// oficinas de 4, mercado, almacenes, tiendas, casas y gasolinera.
+// ------------------------------------------------------------
+
+/** Posiciones de pociones/botiquines (dentro de edificios y zonas clave) */
 export const PICKUP_SPOTS: PickupSpot[] = [
+  // pociones del hotel y almacén reposicionadas (fuera de columnas/estanterías)
+  { kind: 'bandage', x: 18, z: -21 },
+  { kind: 'shieldSmall', x: 17, z: -17 },
+  // torre de oficinas
+  { kind: 'shieldBig', x: 50, z: -22 },
+  { kind: 'medkit', x: 50, z: -17 },
   // mercado central
-  { kind: 'bandage', x: 0, z: 5 },
-  { kind: 'shieldSmall', x: 0, z: -5 },
-  // almacenes
-  { kind: 'shieldBig', x: 0, z: -44 },
-  { kind: 'medkit', x: 0, z: 44 },
-  // gasolinera / barracón del radar
-  { kind: 'shieldSmall', x: -49.5, z: 0 },
-  { kind: 'shieldBig', x: 44, z: 3.8 },
-  // colonia NE / SW (dentro de las casas)
-  { kind: 'bandage', x: 40, z: -34.5 },
-  { kind: 'bandage', x: -40, z: 34.5 },
-  { kind: 'shieldSmall', x: 36, z: -50 },
-  { kind: 'shieldSmall', x: -36, z: 50 },
-  // depósitos NW / SE
-  { kind: 'medkit', x: 34, z: 43 },
-  { kind: 'medkit', x: -34, z: -43 },
+  { kind: 'bandage', x: 15, z: -52 },
+  { kind: 'shieldSmall', x: 24, z: -52 },
+  // almacén norte / nave oeste
+  { kind: 'shieldBig', x: -22, z: -16 },
+  { kind: 'medkit', x: -19.5, z: -23 },
+  { kind: 'bandage', x: -51, z: -21 },
+  // colonia residencial SE
+  { kind: 'bandage', x: 16, z: 18 },
+  { kind: 'shieldSmall', x: 44.8, z: 16 },
+  { kind: 'shieldBig', x: 16, z: 52 },
+  // barracón del radar
+  { kind: 'medkit', x: -50, z: 56 },
+  // parque SE
+  { kind: 'shieldSmall', x: 46, z: 58 },
 ]
 
 export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
 
-// ------------------------------------------------------------
-// MAPA — cajas AABB (y = centro). Unidad: metros. 140×140
-// ------------------------------------------------------------
 export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive'
 
 export interface MapBox {
@@ -342,9 +476,8 @@ for (const v of [-64, -48, -32, -16, 0, 16, 32, 48, 64]) {
   B(70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
 }
 
-// --- Muros con puerta central (edificios genéricos) ---
-/** Muro a lo largo del eje `ax`, en la coordenada fija `at`, desde `from` hasta `to`, con puerta centrada de ancho 2·gateHalf */
-function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: number, T: number, mat: MatKey, gateHalf = 1.6, doorH = 0) {
+// --- Muros con puerta central ---
+function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: number, T: number, mat: MatKey, gateHalf = 1.6, doorH = 0): void {
   const lo = Math.min(from, to), hi = Math.max(from, to)
   const mid = (lo + hi) / 2
   const mk = (c: number, len: number) => {
@@ -354,7 +487,6 @@ function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: numbe
   }
   mk((lo + (mid - gateHalf)) / 2, (mid - gateHalf) - lo)
   mk((hi + (mid + gateHalf)) / 2, hi - (mid + gateHalf))
-  // dintel sobre la puerta (doorH = altura libre de la puerta)
   if (gateHalf > 0 && H > doorH + 0.6) {
     const lintelH = H - Math.max(doorH, 0.01)
     if (lintelH > 0.15) {
@@ -367,7 +499,6 @@ function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: numbe
 // ------------------------------------------------------------
 // Edificios con interior: muros con puerta + banda de ventanas
 // ------------------------------------------------------------
-/** Rotaciones: la fachada (puerta) del edificio local mira a -z; `f` gira el edificio */
 const ROT = { N: 0, E: Math.PI / 2, S: Math.PI, W: Math.PI * 1.5 } as const
 type Facing = keyof typeof ROT
 
@@ -390,7 +521,7 @@ interface WallOpts {
 /**
  * Muro de edificio en coords. locales. `axis 'z'`: corre a lo largo de x en z=at;
  * `axis 'x'`: corre a lo largo de z en x=at. Puerta = hueco a toda altura con dintel;
- * ventanas = banda practicable (se puede disparar a través) entre zócalo y franja superior.
+ * ventanas = banda practiable (se puede disparar a través) entre zócalo y franja superior.
  */
 function wallL(cx: number, cz: number, f: Facing, axis: 'x' | 'z', at: number, from: number, to: number, mat: MatKey, opts: WallOpts): void {
   const H = opts.H ?? 3.3
@@ -414,12 +545,12 @@ function wallL(cx: number, cz: number, f: Facing, axis: 'x' | 'z', at: number, f
     solids = []
     if (dLo - lo > 0.05) solids.push([lo, dLo])
     if (hi - dHi > 0.05) solids.push([dHi, hi])
-    put(opts.door, dh * 2, doorH, y0 + H) // dintel sobre la puerta
+    put(opts.door, dh * 2, doorH, y0 + H)
   }
   for (const [a, b] of solids) {
-    put((a + b) / 2, b - a, y0, bandLo)               // zócalo
-    put((a + b) / 2, b - a, bandHi, y0 + H)           // franza superior
-    const gaps: [number, number][] = []               // huecos de ventana
+    put((a + b) / 2, b - a, y0, bandLo)
+    put((a + b) / 2, b - a, bandHi, y0 + H)
+    const gaps: [number, number][] = []
     for (const w of opts.wins ?? []) {
       const g0 = w - winW / 2, g1 = w + winW / 2
       if (g0 > a + 0.3 && g1 < b - 0.3) gaps.push([g0, g1])
@@ -431,23 +562,211 @@ function wallL(cx: number, cz: number, f: Facing, axis: 'x' | 'z', at: number, f
   }
 }
 
-/** Waypoints interiores de una casa (puerta → salón → dormitorio) */
 const WP_EXTRA: [number, number][] = []
 function wpTransform(cx: number, cz: number, f: Facing, lx: number, lz: number): [number, number] {
   const ang = ROT[f], c = Math.cos(ang), s = Math.sin(ang)
   return [cx + lx * c - lz * s, cz + lx * s + lz * c]
 }
 
+/** Escalera recta de peldaños crecientes con altura inicial y0.
+ *  (xAt, zAt) = posición local del PRIMER peldaño; (dx, dz) = dirección de subida. */
+function stairsBR(cx: number, cz: number, f: Facing, xAt: number, zAt: number, dx: number, dz: number, steps: number, riseStep: number, runStep: number, wStair: number, y0 = 0, mat: MatKey = 'concrete'): void {
+  for (let i = 0; i < steps; i++) {
+    const rise = riseStep * (i + 1)
+    const sx = xAt + dx * runStep * i
+    const sz = zAt + dz * runStep * i
+    // si sube a lo largo de x, el largo del peldaño va en x
+    BR(cx, cz, f, sx, y0 + rise / 2, sz, dx !== 0 ? runStep + 0.04 : wStair, rise, dz !== 0 ? runStep + 0.04 : wStair, mat)
+  }
+}
+
+// ------------------------------------------------------------
+// HOTEL MERIDIANO — 18×14, 3 plantas + azotea (escaleras interiores
+// de dos tramos apilados + escalera exterior de incendios)
+// ------------------------------------------------------------
+function hotel(cx: number, cz: number, f: Facing): void {
+  const HW = 9, HD = 7, H1 = 3.0, H2 = 2.8, T = 0.4
+  const F2 = 3.3, F3 = 6.6, ROOF = 9.55
+  // ---- planta baja: lobby ----
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H1, T, door: 0, doorHalf: 1.7, doorH: 2.4, wins: [-6, 6] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H1, T, wins: [-5, 0, 5] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
+  // columnas del lobby
+  BR(cx, cz, f, 0, 1.5, -3, 0.7, 3.0, 0.7, 'concrete')
+  BR(cx, cz, f, 0, 1.5, 2, 0.7, 3.0, 0.7, 'concrete')
+  // recepción + mobiliario
+  BR(cx, cz, f, -4.5, 0.55, -4.5, 3.4, 1.1, 0.9, 'wood')        // mostrador
+  BR(cx, cz, f, -6, 0.4, 1.5, 2.0, 0.8, 0.9, 'sandbag')          // sofá
+  BR(cx, cz, f, -3.2, 0.45, 1.5, 1.2, 0.9, 0.9, 'wood')         // mesa baja
+  BR(cx, cz, f, -7.6, 0.9, -1, 0.7, 1.8, 1.6, 'wood')           // estante
+  // ---- escalera interior: 2 tramos apilados (lado este, suben hacia -z) ----
+  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, 0)      // tramo A: planta baja → P1
+  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, F2)    // tramo B: P1 → P2 (apilado)
+  // ---- forjado P1 con hueco sobre la escalera (x 5..9, z 0.4..7) ----
+  BR(cx, cz, f, -2.1, 3.15, 0, 14.2, 0.3, 14, 'concrete')       // franja oeste
+  BR(cx, cz, f, 7, 3.15, -3.85, 4, 0.3, 6.3, 'concrete')        // rincón este-sur
+  BR(cx, cz, f, 6.9, 3.15, -0.15, 2.8, 0.3, 1.1, 'concrete')    // rellano del tramo A
+  // ---- muros P1 ----
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-6, 0, 6] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-5, 0, 5] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
+  // tabique de habitaciones en P1
+  wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.7, 'sand', { H: H2, T: 0.3, y0: F2, door: -2, doorHalf: 0.8, doorH: 2.05 })
+  BR(cx, cz, f, -6, F2 + 0.4, -4, 1.8, 0.8, 0.9, 'sandbag')     // cama (hab.)
+  BR(cx, cz, f, -6, F2 + 0.45, 0, 1.2, 0.9, 0.9, 'wood')
+  // ---- forjado P2 + muros P2 ----
+  BR(cx, cz, f, -2.1, F3 + 0.15 - 0.3, 0, 14.2, 0.3, 14, 'concrete')
+  BR(cx, cz, f, 7, F3 - 0.15, -3.85, 4, 0.3, 6.3, 'concrete')
+  BR(cx, cz, f, 6.9, F3 - 0.15, -0.15, 2.8, 0.3, 1.1, 'concrete')
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-6, 0, 6] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
+  BR(cx, cz, f, -6, F3 + 0.7, 4, 1.2, 1.2, 1.2, 'crate')
+  // ---- azotea: forjado + pretil (hueco al este donde llega la escalera) ----
+  BR(cx, cz, f, 0, ROOF, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
+  const py = ROOF + 0.475
+  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, +HW + 0.12, py, -6.5, 0.22, 0.35, 1.1, 'concrete')   // pretil este, tramo norte
+  BR(cx, cz, f, +HW + 0.12, py, 4.5, 0.22, 0.35, 5.1, 'concrete')     // pretil este, tramo sur
+  BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
+  BR(cx, cz, f, -4, ROOF + 0.75, -4, 1.6, 1.1, 1.3, 'metalGrey')  // climatizador
+  BR(cx, cz, f, -6.5, ROOF + 0.6, 3, 1.1, 0.8, 1.1, 'metalGrey')
+  // ---- escalera exterior de incendios (fachada este, sube hacia -z) ----
+  stairsBR(cx, cz, f, 10.1, 7.2, 0, -1, 19, 0.5, 0.62, 1.4)
+  // waypoints: entrada, lobby, pasillo P1 (solo planta baja para bots)
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -8.6),
+    wpTransform(cx, cz, f, 0, -1),
+    wpTransform(cx, cz, f, -4, 3),
+    wpTransform(cx, cz, f, 3, -2),
+  )
+}
+
+// ------------------------------------------------------------
+// TORRE ÁMBAR (oficinas) — 14×14, 4 plantas + azotea con mirador.
+// Escalera interior de 4 tramos apilados (núcleo este); el último
+// tramo desemboca en la azotea a través de un hueco.
+// ------------------------------------------------------------
+function torreOficina(cx: number, cz: number, f: Facing): void {
+  const HW = 7, HD = 7, HF = 2.8, T = 0.4
+  const F = [0, 3.1, 6.2, 9.3]
+  const ROOF = 12.25
+  for (let p = 0; p < 4; p++) {
+    const y0 = F[p]
+    // fachada sur: con puerta en planta baja
+    if (p === 0) {
+      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, door: 0, doorHalf: 1.3, doorH: 2.3, wins: [-4.5, 4.5] })
+    } else {
+      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+    }
+    wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+    wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+    wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+  }
+  // tabiques de oficinas (plantas 1..3)
+  for (let p = 1; p < 4; p++) {
+    wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.2, 'sand', { H: HF, T: 0.25, y0: F[p], door: -1, doorHalf: 0.8, doorH: 2.05 })
+  }
+  // escritorios
+  BR(cx, cz, f, -4.5, 0.45, -4.5, 1.6, 0.9, 0.9, 'wood')
+  BR(cx, cz, f, -4.5, 3.55, 3.5, 1.6, 0.9, 0.9, 'wood')
+  BR(cx, cz, f, -4.5, 6.65, -3.5, 1.6, 0.9, 0.9, 'wood')
+  BR(cx, cz, f, 3, 0.45, 5, 1.3, 0.9, 0.9, 'wood')
+  // ---- escalera interior: 4 tramos apilados (núcleo este) ----
+  for (let p = 0; p < 4; p++) {
+    stairsBR(cx, cz, f, 5.6, 6.4, 0, -1, 10, 0.28, 0.55, 2.4, F[p])
+  }
+  // ---- forjados (hueco del núcleo x 4.2..7, z 0.4..7 + rellano) ----
+  for (let p = 1; p < 4; p++) {
+    BR(cx, cz, f, -1.6, F[p] - 0.15, 0, 11.2, 0.3, 14, 'concrete')   // franja oeste
+    BR(cx, cz, f, 6.2, F[p] - 0.15, -3.85, 2.6, 0.3, 6.3, 'concrete')
+    BR(cx, cz, f, 5.6, F[p] - 0.15, -0.15, 2.4, 0.3, 1.1, 'concrete')
+  }
+  // ---- azotea con mirador (pretil alto) + hueco de la escalera ----
+  BR(cx, cz, f, -1.6, ROOF, 0, 11.2, 0.3, 14, 'roof')
+  BR(cx, cz, f, 6.2, ROOF, -3.85, 2.6, 0.3, 6.3, 'concrete')
+  BR(cx, cz, f, 5.6, ROOF, -0.15, 2.4, 0.3, 1.1, 'concrete')
+  const py = ROOF + 0.55
+  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.7, 0.7, 0.22, 'concrete')
+  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.7, 0.7, 0.22, 'concrete')
+  BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.7, HD * 2 + 0.7, 'concrete')
+  BR(cx, cz, f, +HW + 0.12, py, -3.5, 0.22, 0.7, 7, 'concrete')       // pretil este, tramo norte
+  BR(cx, cz, f, +HW + 0.12, py, 4, 0.22, 0.7, 6, 'concrete')          // tramo sur (hueco en medio)
+  BR(cx, cz, f, -3.5, ROOF + 0.6, -4, 1.5, 1.0, 1.2, 'metalGrey')     // maquinaria
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -8.5),
+    wpTransform(cx, cz, f, 0, -3),
+    wpTransform(cx, cz, f, -4, 0),
+    wpTransform(cx, cz, f, 3, -4),
+  )
+}
+
+// ------------------------------------------------------------
+// MERCADO CENTRAL — 20×20 con 4 puertas, puestos interiores y
+// tejado accesible por escaleras exteriores N y S
+// ------------------------------------------------------------
+function mercado(cx: number, cz: number, f: Facing): void {
+  const MW = 10, MH = 4.6, MT = 0.6, MG = 1.7
+  // fachadas N y S (z = ∓MW) con puerta central
+  {
+    const segW = MW - MG
+    for (const sz of [-1, 1]) {
+      BR(cx, cz, f, -(MG + segW / 2), MH / 2, sz * MW, segW, MH, MT, 'sand')
+      BR(cx, cz, f, MG + segW / 2, MH / 2, sz * MW, segW, MH, MT, 'sand')
+      BR(cx, cz, f, 0, MH - 0.5, sz * MW, MG * 2, 1, MT, 'sand')
+    }
+    // fachadas E y O (x = ±MW) con puerta central
+    for (const sx of [-1, 1]) {
+      BR(cx, cz, f, sx * MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
+      BR(cx, cz, f, sx * MW, MH / 2, (MG + segW / 2), MT, MH, segW, 'sand')
+      BR(cx, cz, f, sx * MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
+    }
+  }
+  // pilares de esquina e interiores
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    BR(cx, cz, f, sx * 9.6, MH / 2, sz * 9.6, 1, MH, 1, 'concrete')
+    BR(cx, cz, f, sx * 6, MH / 2, sz * 6, 0.7, MH, 0.7, 'concrete')
+  }
+  // puestos interiores
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    BR(cx, cz, f, sx * 4.2, 0.6, sz * 2, 1.2, 1.2, 1.2, 'crate')
+    BR(cx, cz, f, sx * 4.2, 1.8, sz * 2, 1.2, 1.2, 1.2, 'crate')
+    BR(cx, cz, f, sx * 2, 0.45, sz * 5, 0.7, 0.9, 0.7, 'barrel')
+  }
+  // techo con parapeto (hueco N/S donde llegan las escaleras)
+  BR(cx, cz, f, 0, MH + 0.15, 0, MW * 2 + 1.4, 0.3, MW * 2 + 1.4, 'roof')
+  BR(cx, cz, f, 4.4, MH + 0.45, -10.3, 11.9, 0.4, 0.3, 'concrete')    // parapeto N (hueco a la izq.)
+  BR(cx, cz, f, -4.4, MH + 0.45, 10.3, 11.9, 0.4, 0.3, 'concrete')   // parapeto S (hueco a la der.)
+  BR(cx, cz, f, 10.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+  BR(cx, cz, f, -10.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+  // escaleras exteriores N y S (junto a la fachada, suben a lo largo de x)
+  stairsBR(cx, cz, f, -10.6, -12.6, 1, 0, 9, 0.5, 0.9, 1.0, 0)
+  stairsBR(cx, cz, f, 10.6, 12.6, -1, 0, 9, 0.5, 0.9, 1.0, 0)
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -11),
+    wpTransform(cx, cz, f, 0, 0),
+    wpTransform(cx, cz, f, 0, 7),
+    wpTransform(cx, cz, f, -6, 3),
+    wpTransform(cx, cz, f, 6, -3),
+  )
+}
+
+// ------------------------------------------------------------
+// CASAS (colonia residencial) — probadas en v3
+// ------------------------------------------------------------
 /** Casa pequeña 9×8 con interior: salón + dormitorio, ventanas, tejado plano */
 function smallHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
   const HW = 4.5, HD = 4.0, H = 3.3, T = 0.35
   const o: WallOpts = { H, T }
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.05, doorH: 2.15, wins: [-2.85, 2.85] }) // fachada
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-2.2, 2.2] })                                            // trasera
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.05, doorH: 2.15, wins: [-2.85, 2.85] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-2.2, 2.2] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
   wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
-  wallL(cx, cz, f, 'z', 1.2, -HW + T, HW - T, mat, { ...o, door: 1.9, doorHalf: 0.8, doorH: 2.05 })                // tabique
-  // mobiliario (salón z<1.2 · dormitorio z>1.2)
+  wallL(cx, cz, f, 'z', 1.2, -HW + T, HW - T, mat, { ...o, door: 1.9, doorHalf: 0.8, doorH: 2.05 })
   BR(cx, cz, f, -2.7, 0.4, -3.1, 1.9, 0.8, 0.85, 'sandbag')   // sofá
   BR(cx, cz, f, -0.6, 0.45, -2.5, 1.3, 0.9, 0.9, 'wood')      // mesa
   BR(cx, cz, f, 3.9, 0.9, -1.5, 0.7, 1.8, 1.6, 'wood')        // estante
@@ -460,7 +779,6 @@ function smallHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): vo
   BR(cx, cz, f, 0, H + 0.475, +HD + 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, -HW - 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
   BR(cx, cz, f, +HW + 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
-  // waypoints: frente de puerta, salón y dormitorio (alineados con las puertas)
   WP_EXTRA.push(
     wpTransform(cx, cz, f, 0, -6.2),
     wpTransform(cx, cz, f, 1.9, -1.5),
@@ -468,51 +786,42 @@ function smallHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): vo
   )
 }
 
-/** Casa grande de dos plantas: escalera interior, ventanas en ambas plantas y tejado accesible */
+/** Casa grande de dos plantas: escalera interior y tejado accesible */
 function bigHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
   const HW = 5.5, HD = 4.5, H1 = 3.2, H2 = 2.8, T = 0.4
-  // ---- planta baja ----
   wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H1, T, door: 0, doorHalf: 1.15, doorH: 2.25, wins: [-3.6, 3.6] })
   wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H1, T, wins: [-3.3, 0, 3.3] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
   wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
-  // escalera interior junto a la pared este (sube hacia el norte)
-  for (let i = 0; i < 8; i++) {
-    const rise = 0.4 * (i + 1)
-    BR(cx, cz, f, 3.55, rise / 2, 2.7 - 0.8 * i, 1.4, rise, 0.85, 'concrete')
-  }
+  // escalera interior junto a la pared este
+  stairsBR(cx, cz, f, 3.55, 2.7, 0, -1, 8, 0.4, 0.8, 1.4, 0)
   // mobiliario planta baja
-  BR(cx, cz, f, -3.4, 0.4, -3.3, 2.1, 0.8, 0.85, 'sandbag')   // sofá
-  BR(cx, cz, f, -1.2, 0.45, -2.7, 1.3, 0.9, 0.9, 'wood')      // mesa
-  BR(cx, cz, f, -4.85, 0.9, -0.5, 0.7, 1.8, 1.7, 'wood')      // estante
-  BR(cx, cz, f, -4.3, 0.6, 3.4, 1.2, 1.2, 1.2, 'crate')       // cajas apiladas
+  BR(cx, cz, f, -3.4, 0.4, -3.3, 2.1, 0.8, 0.85, 'sandbag')
+  BR(cx, cz, f, -1.2, 0.45, -2.7, 1.3, 0.9, 0.9, 'wood')
+  BR(cx, cz, f, -4.85, 0.9, -0.5, 0.7, 1.8, 1.7, 'wood')
+  BR(cx, cz, f, -4.3, 0.6, 3.4, 1.2, 1.2, 1.2, 'crate')
   BR(cx, cz, f, -4.3, 1.8, 3.4, 1.2, 1.2, 1.2, 'crate')
-  // ---- forjado 2.ª planta (hueco sobre la escalera) ----
-  BR(cx, cz, f, -1.5, H1 + 0.15, 0, 8.0, 0.3, HD * 2, 'concrete')       // franja oeste
-  BR(cx, cz, f, 4.0, H1 + 0.15, 3.25, 3.0, 0.3, 2.5, 'concrete')        // rincón este-sur
-  // ---- muros 2.ª planta (ventanas amplias) ----
+  // forjado 2.ª planta (hueco sobre la escalera)
+  BR(cx, cz, f, -1.5, H1 + 0.15, 0, 8.0, 0.3, HD * 2, 'concrete')
+  BR(cx, cz, f, 4.0, H1 + 0.15, 3.25, 3.0, 0.3, 2.5, 'concrete')
+  // muros 2.ª planta
   wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
   wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
   wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
-  // mobiliario 2.ª planta
   BR(cx, cz, f, -4.5, H1 + 0.9, 3.4, 1.2, 1.2, 1.2, 'crate')
   BR(cx, cz, f, -4.5, H1 + 2.1, 3.4, 1.2, 1.2, 1.2, 'crate')
   BR(cx, cz, f, -2.0, H1 + 0.75, -3.0, 1.3, 0.9, 0.9, 'wood')
-  // ---- tejado accesible + pretil (hueco oeste donde llega la escalera exterior) ----
+  // tejado accesible + pretil (hueco oeste para la escalera exterior)
   BR(cx, cz, f, 0, H1 + 0.3 + H2 + 0.15, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
   const py = H1 + 0.3 + H2 + 0.475
   BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, +HW + 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
-  BR(cx, cz, f, -HW - 0.12, py, 1.9, 0.22, 0.35, 5.2, 'concrete')      // pretil oeste, tramo sur
-  BR(cx, cz, f, -HW - 0.12, py, -3.5, 0.22, 0.35, 2.0, 'concrete')     // tramo norte (hueco entre ambos)
-  // escalera exterior al tejado (pared oeste, sube hacia el norte)
-  for (let i = 0; i < 14; i++) {
-    const rise = 0.5 * (i + 1)
-    BR(cx, cz, f, -6.3, rise / 2, 4.0 - 0.62 * i, 1.3, rise, 0.68, 'concrete')
-  }
-  // waypoints: puerta, interior y fondo
+  BR(cx, cz, f, -HW - 0.12, py, 1.9, 0.22, 0.35, 5.2, 'concrete')
+  BR(cx, cz, f, -HW - 0.12, py, -3.5, 0.22, 0.35, 2.0, 'concrete')
+  // escalera exterior al tejado (pared oeste)
+  stairsBR(cx, cz, f, -6.3, 4.0, 0, -1, 14, 0.5, 0.62, 1.3, 0)
   WP_EXTRA.push(
     wpTransform(cx, cz, f, 0, -6.5),
     wpTransform(cx, cz, f, 0, -1),
@@ -520,7 +829,7 @@ function bigHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void
   )
 }
 
-/** Barracón militar pequeño (8×5.4) con interior: literas y taquillas */
+/** Barracón militar 8×5.4 con literas */
 function barracks(cx: number, cz: number, f: Facing, mat: MatKey = 'metalGreen'): void {
   const HW = 4.0, HD = 2.7, H = 2.9, T = 0.35
   const o: WallOpts = { H, T }
@@ -528,12 +837,10 @@ function barracks(cx: number, cz: number, f: Facing, mat: MatKey = 'metalGreen')
   wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-1.8, 1.8] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [0] })
   wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [0] })
-  // literas y taquillas
   BR(cx, cz, f, 2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
   BR(cx, cz, f, -2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
   BR(cx, cz, f, -3.3, 0.9, -1.6, 0.6, 1.8, 1.0, 'metalGrey')
   BR(cx, cz, f, 2.2, 0.6, -1.5, 1.2, 1.2, 1.2, 'crate')
-  // tejado
   BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
   WP_EXTRA.push(
     wpTransform(cx, cz, f, 0, -4.3),
@@ -541,51 +848,121 @@ function barracks(cx: number, cz: number, f: Facing, mat: MatKey = 'metalGreen')
   )
 }
 
-// --- Mercado Central (0,0) 22×22, puertas de 3.2 m en cada lado ---
-const MW = 11, MH = 4.6, MT = 0.6, MG = 1.6
-for (const side of [-1, 1]) {
-  // Norte (z = -MW) y Sur (z = +MW)
-  const segW = MW - MG
-  B(-(MG + segW / 2), MH / 2, -MW, segW, MH, MT, 'sand')
-  B(MG + segW / 2, MH / 2, -MW, segW, MH, MT, 'sand')
-  B(-(MG + segW / 2), MH / 2, MW, segW, MH, MT, 'sand')
-  B(MG + segW / 2, MH / 2, MW, segW, MH, MT, 'sand')
-  B(0, MH - 0.5, -MW, MG * 2, 1, MT, 'sand')
-  B(0, MH - 0.5, MW, MG * 2, 1, MT, 'sand')
-  // Este (x = MW) y Oeste (x = -MW)
-  B(MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
-  B(MW, MH / 2, MG + segW / 2, MT, MH, segW, 'sand')
-  B(-MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
-  B(-MW, MH / 2, MG + segW / 2, MT, MH, segW, 'sand')
-  B(MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
-  B(-MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
-}
-// pilares de esquina e interiores
-for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-  B(sx * 10.6, MH / 2, sz * 10.6, 1, MH, 1, 'concrete')
-  B(sx * 6.5, MH / 2, sz * 6.5, 0.7, MH, 0.7, 'concrete')
-}
-// puestos interiores (escondites)
-for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-  B(sx * 4.5, 0.6, sz * 1.8, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 4.5, 1.8, sz * 1.8, 1.2, 1.2, 1.2, 'crate')
-  B(sx * 2.0, 0.45, sz * 5.2, 0.7, 0.9, 0.7, 'barrel')
-}
-// techo con parapeto (hueco en N/S donde llegan las escaleras)
-B(0, MH + 0.15, 0, 23, 0.3, 23, 'roof')
-B(4.15, MH + 0.45, -11.35, 14.9, 0.4, 0.3, 'concrete')   // parapeto N (hueco a la izquierda)
-B(-4.15, MH + 0.45, 11.35, 14.9, 0.4, 0.3, 'concrete')  // parapeto S (hueco a la derecha)
-B(11.35, MH + 0.45, 0, 0.3, 0.4, 23, 'concrete')
-B(-11.35, MH + 0.45, 0, 0.3, 0.4, 23, 'concrete')
-// escaleras exteriores N y S (suben al techo, sin tapar las puertas)
-for (let i = 0; i < 9; i++) {
-  const h = 0.5 * (i + 1)
-  B(-11 + 0.9 * i, h / 2, -12.9, 1.0, h, 1.6, 'concrete')
-  B(11 - 0.9 * i, h / 2, 12.9, 1.0, h, 1.6, 'concrete')
+// ------------------------------------------------------------
+// ALMACÉN — grande, con puerta amplia, estanterías y tejado
+// accesible por escalera exterior. XW/ZW = semiejes.
+// ------------------------------------------------------------
+function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): void {
+  const T = 0.6, G = 2.6
+  // pared trasera y frontal con puerta grande
+  wallL(cx, cz, f, 'z', -ZW, -XW, XW, 'metalBlue', { H, T, door: 0, doorHalf: G, doorH: 3.6 })
+  wallL(cx, cz, f, 'z', +ZW, -XW, XW, 'metalBlue', { H, T, wins: [-XW * 0.55, 0, XW * 0.55], bandLo: 1.6, bandHi: 3.0 })
+  // laterales con puertas
+  for (const sx of [-1, 1]) {
+    wallL(cx, cz, f, 'x', sx * XW, -ZW, ZW, 'metalBlue', { H, T, door: 0, doorHalf: 1.3, doorH: 3.2, wins: [-ZW * 0.5, ZW * 0.5], bandLo: 1.6, bandHi: 3.0 })
+  }
+  // techo
+  BR(cx, cz, f, 0, H + 0.15, 0, XW * 2 + 1.2, 0.3, ZW * 2 + 1.2, 'roof')
+  // estanterías interiores (dos hileras)
+  BR(cx, cz, f, -XW * 0.45, 1.3, -ZW * 0.3, 2.4, 2.6, ZW * 1.2, 'metalGreen')
+  BR(cx, cz, f, XW * 0.45, 1.3, -ZW * 0.3, 2.4, 2.6, ZW * 1.2, 'metalGreen')
+  BR(cx, cz, f, -XW * 0.45, 1.3, 0, 1.4, 1.2, 1.4, 'crate')
+  BR(cx, cz, f, -XW * 0.45, 2.6, 0, 1.4, 1.2, 1.4, 'crate')
+  BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.5, 0.7, 0.9, 0.7, 'barrel')
+  // muelle de carga frente a la puerta
+  BR(cx, cz, f, 0, 0.225, -ZW - 1.4, 7, 0.45, 2, 'concrete')
+  // escalera exterior al tejado (lado oeste, sube hacia -z)
+  stairsBR(cx, cz, f, -XW - 1.0, ZW + 1.2, 0, -1, Math.ceil(H / 0.5), 0.5, 0.62, 1.3, 0)
+  // pretiles del tejado (hueco donde llega la escalera, lado oeste)
+  BR(cx, cz, f, 0, H + 0.45, -ZW - 0.15, XW * 2 + 1.2, 0.4, 0.28, 'concrete')
+  BR(cx, cz, f, 0, H + 0.45, +ZW + 0.15, XW * 2 + 1.2, 0.4, 0.28, 'concrete')
+  BR(cx, cz, f, +XW + 0.15, H + 0.45, 0, 0.28, 0.4, ZW * 2 + 1.2, 'concrete')
+  BR(cx, cz, f, -XW - 0.15, H + 0.45, 3, 0.28, 0.4, 5, 'concrete')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -ZW - 3.4),
+    wpTransform(cx, cz, f, 0, -4),
+    wpTransform(cx, cz, f, 0, 0),
+    wpTransform(cx, cz, f, 0, 4),
+    wpTransform(cx, cz, f, XW + 2.8, 0),
+  )
 }
 
-// --- Torres de vigilancia (genéricas) ---
-function tower(cx: number, cz: number, stairsFrom: number): void {
+/** Tienda pequeña 7×6 con mostrador y escaparate */
+function shop(cx: number, cz: number, f: Facing): void {
+  const HW = 3.5, HD = 3, H = 3.6, T = 0.35
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H, T, door: 1.8, doorHalf: 0.9, doorH: 2.2, wins: [-1.6, 0.6], winW: 2.0 })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H, T })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H, T, wins: [0] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H, T, wins: [0] })
+  BR(cx, cz, f, 0, 0.55, 0.8, 2.6, 1.1, 0.8, 'wood')       // mostrador
+  BR(cx, cz, f, -2.6, 0.9, 0, 0.6, 1.8, 1.5, 'wood')       // estante
+  BR(cx, cz, f, 2.4, 0.45, -1.8, 1.2, 0.9, 0.9, 'crate')
+  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.5, 0.3, HD * 2 + 0.5, 'roof')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 1.8, -4.6),
+    wpTransform(cx, cz, f, 0, 0),
+  )
+}
+
+// ------------------------------------------------------------
+// GASOLINERA — kiosco + marquesina con bombas (f: entrada hacia +x)
+// ------------------------------------------------------------
+function gasStation(cx: number, cz: number, f: Facing): void {
+  const KW = 5, KD = 4, KH = 3.2, T = 0.4
+  // kiosco (tienda) 10×8
+  wallL(cx, cz, f, 'z', -KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.5, 2.5] })
+  wallL(cx, cz, f, 'z', +KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.5, 0, 2.5] })
+  wallL(cx, cz, f, 'x', +KW, -KD, KD, 'sand', { H: KH, T, door: 0, doorHalf: 0.95, doorH: 2.2, wins: [-1.5, 1.5] })
+  wallL(cx, cz, f, 'x', -KW, -KD, KD, 'sand', { H: KH, T })
+  BR(cx, cz, f, 0, 3.75, 0, KW * 2 + 0.8, 0.3, KD * 2 + 0.8, 'roof')
+  BR(cx, cz, f, 2.2, 0.55, 0, 1.2, 1.1, 3, 'crate')        // mostrador
+  BR(cx, cz, f, -3, 0.6, -2.5, 3, 1.2, 0.9, 'crate')       // estantería
+  BR(cx, cz, f, -3, 0.6, 2.5, 3, 1.2, 0.9, 'crate')
+  // marquesina (patio de bombas, al este)
+  BR(cx, cz, f, 8.5, 0.225, 0, 8, 0.45, 10, 'concrete')    // explanada
+  BR(cx, cz, f, 8.5, 4.4, 0, 12, 0.5, 12, 'roof')          // marquesina
+  for (const [px, pz] of [[6.2, -2.5], [6.2, 2.5], [10.8, -2.5], [10.8, 2.5]] as [number, number][]) {
+    BR(cx, cz, f, px, 2.1, pz, 0.5, 4.2, 0.5, 'concrete')
+  }
+  BR(cx, cz, f, 7.2, 0.6, 0, 1.2, 1.2, 1.2, 'metalRed')    // bombas
+  BR(cx, cz, f, 9.8, 0.6, 0, 1.2, 1.2, 1.2, 'metalRed')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, 6),
+    wpTransform(cx, cz, f, 8.5, 6),
+    wpTransform(cx, cz, f, 8.5, -6),
+  )
+}
+
+// ------------------------------------------------------------
+// ESTACIÓN DE RADAR — recinto amurallado con barracón
+// ------------------------------------------------------------
+function radarStation(cx: number, cz: number, f: Facing): void {
+  const W = 12, D = 10, H = 2.6, T = 0.5
+  wallL(cx, cz, f, 'z', -D, -W, W, 'concrete', { H, T })
+  wallL(cx, cz, f, 'z', +D, -W, W, 'concrete', { H, T })
+  wallL(cx, cz, f, 'x', -W, -D, D, 'concrete', { H, T })
+  wallL(cx, cz, f, 'x', +W, -D, D, 'concrete', { H, T, door: 0, doorHalf: 1.3, doorH: 2.2 })
+  // radar (base + plataforma + antena)
+  BR(cx, cz, f, -5, 1.5, -4, 3, 3, 3, 'concrete')
+  BR(cx, cz, f, -5, 3.2, -4, 4, 0.4, 4, 'metalOrange')
+  BR(cx, cz, f, -5, 4.2, -4, 0.4, 1.6, 0.4, 'metalGrey')
+  // barracón con literas (dentro)
+  barracks(cx, cz, f)
+  // el barracón se coloca en el centro local (0,0) del recinto
+  BR(cx, cz, f, 4, 0.7, 4, 1.4, 1.4, 1.4, 'crate')     // generador
+  BR(cx, cz, f, 4, 0.6, -4, 1.2, 1.2, 1.2, 'crate')
+  // sacos de cobertura junto a la puerta (dentro del recinto)
+  for (const z of [-7, 7]) BR(cx, cz, f, W - 3, 0.4, z, 3, 0.8, 0.6, 'sandbag')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, W + 4, 0),
+    wpTransform(cx, cz, f, W - 2, 0),
+    wpTransform(cx, cz, f, 6, 6),
+    wpTransform(cx, cz, f, -8, 6),
+  )
+}
+
+/** Torre de vigilancia genérica (escaleras al lado `stairsFrom`: +1 sur · -1 norte) */
+function watchTower(cx: number, cz: number, stairsFrom: number): void {
   B(cx, 1.6, cz, 2.0, 3.2, 2.0, 'concrete')
   B(cx, 3.5, cz, 4.4, 0.3, 4.4, 'concrete')
   B(cx, 3.9, cz - 2.1, 4.4, 0.55, 0.3, 'metalOrange')
@@ -598,150 +975,148 @@ function tower(cx: number, cz: number, stairsFrom: number): void {
     B(cx, h / 2 - 0.02, z, 1.6, h, 0.62, 'concrete')
   }
 }
-tower(0, -26, 1)    // torre norte (escaleras al sur)
-tower(0, 26, -1)    // torre sur (escaleras al norte)
 
-// --- Almacenes (0,±44) 26×17 con puertas frontal y laterales ---
-function warehouse(cz: number, faceTo: number): void {
-  const XW = 13, ZW = 8.5, H = 5.5, TW = 0.6, G = 2.4
-  // pared trasera
-  B(0, H / 2, cz - faceTo * ZW, XW * 2, H, TW, 'metalBlue')
-  // pared frontal con puerta central
-  const fz = cz + faceTo * ZW
-  const seg = XW - G
-  B(-(G + seg / 2), H / 2, fz, seg, H, TW, 'metalBlue')
-  B(G + seg / 2, H / 2, fz, seg, H, TW, 'metalBlue')
-  B(0, H - 0.55, fz, G * 2, 1.1, TW, 'metalBlue')
-  // laterales con puertas
-  for (const sx of [-1, 1]) {
-    const segZ = ZW - G
-    B(sx * XW, H / 2, cz - (G + segZ / 2), TW, H, segZ, 'metalBlue')
-    B(sx * XW, H / 2, cz + (G + segZ / 2), TW, H, segZ, 'metalBlue')
-    B(sx * XW, H - 0.55, cz, TW, 1.1, G * 2, 'metalBlue')
+// ------------------------------------------------------------
+// Mobiliario urbano: rotonda, quiosco, fuente, tanques, vehículos
+// ------------------------------------------------------------
+/** Rotonda central (0,0): fuente + jardineras */
+function roundabout(): void {
+  B(0, 0.45, 0, 5.6, 0.9, 5.6, 'concrete')            // basamento de la fuente
+  B(0, 1.2, 0, 1.8, 2.4, 1.8, 'concrete')             // pilar central
+  for (const [x, z] of [[8.5, 0], [-8.5, 0], [0, 8.5], [0, -8.5], [6.2, 6.2], [-6.2, 6.2], [6.2, -6.2], [-6.2, -6.2]] as [number, number][]) {
+    B(x, 0.45, z, 2.4, 0.9, 0.8, 'concrete')          // jardineras
   }
-  // techo
-  B(0, H + 0.15, cz, XW * 2 + 1.6, 0.3, ZW * 2 + 1.6, 'roof')
-  // carga interior
-  B(5, 1.2, cz - faceTo * 2, 2.5, 2.4, 6, 'metalGreen')
-  B(-6, 0.6, cz - faceTo * 4, 1.4, 1.2, 1.4, 'crate')
-  B(-6, 1.8, cz - faceTo * 4, 1.4, 1.2, 1.4, 'crate')
-  B(2.5, 0.45, cz + faceTo * 4, 0.7, 0.9, 0.7, 'barrel')
-  B(9, 0.45, cz + faceTo * 5, 0.7, 0.9, 0.7, 'barrel')
-  // muelle de carga frente a la puerta (bajo: se sube con un paso)
-  B(0, 0.225, fz + faceTo * 1.4, 7, 0.45, 2, 'concrete')
-}
-warehouse(-44, 1)   // almacén norte (puerta al sur)
-warehouse(44, -1)   // almacén sur (puerta al norte)
-
-// --- Gasolinera Oeste (-44,0): tienda + marquesina con bombas ---
-gatedWall('x', -4, -54.5, -44.5, 3.6, 0.5, 'sand', 0, 0)       // pared norte tienda (sin puerta)
-gatedWall('x', 4, -54.5, -44.5, 3.6, 0.5, 'sand', 1.5, 2.6)    // pared sur tienda (puerta al sur)
-gatedWall('z', -54.5, -4, 4, 3.6, 0.5, 'sand', 0, 0)           // pared oeste (sin puerta)
-gatedWall('z', -44.5, -4, 4, 3.6, 0.5, 'sand', 1.5, 2.6)       // pared este (puerta a la marquesina)
-B(-49.5, 3.75, 0, 10.8, 0.3, 8.8, 'roof')                      // techo tienda
-B(-52.5, 0.55, 0, 1.2, 1.1, 3, 'crate')                        // mostrador
-B(-49.5, 0.6, 3, 3, 1.2, 0.9, 'crate')                         // estantería
-B(-49.5, 0.6, -3, 3, 1.2, 0.9, 'crate')                        // estantería
-B(-39, 4.4, 0, 14, 0.5, 12, 'roof')                            // marquesina
-for (const px of [-45.5, -32.5]) for (const pz of [-5, 5]) B(px, 2.1, pz, 0.5, 4.2, 0.5, 'concrete')
-B(-39, 0.6, -2.2, 1.2, 1.2, 1.2, 'metalRed')                   // bomba
-B(-39, 0.6, 2.2, 1.2, 1.2, 1.2, 'metalRed')                    // bomba
-B(-39, 1.8, 2.2, 1.2, 1.2, 1.2, 'metalRed')                    // bomba apilada
-B(-46, 0.45, -7, 0.7, 0.9, 0.7, 'barrel')                      // bidones
-B(-47.6, 0.45, -7.4, 0.7, 0.9, 0.7, 'barrel')
-B(-46.8, 0.45, -8.6, 0.7, 0.9, 0.7, 'barrel')
-
-// --- Estación de Radar Este (44,0): compuesto amurallado ---
-gatedWall('z', 33, -10, 10, 2.6, 0.5, 'concrete', 2.2, 2.1)    // muro oeste con puerta
-gatedWall('z', 55, -10, 10, 2.6, 0.5, 'concrete', 0, 0)        // muro este
-gatedWall('x', -10, 33, 55, 2.6, 0.5, 'concrete', 0, 0)        // muro norte
-gatedWall('x', 10, 33, 55, 2.6, 0.5, 'concrete', 2.2, 2.1)     // muro sur con puerta
-B(48, 1.5, -3, 3, 3, 3, 'concrete')                            // base del radar
-B(48, 3.2, -3, 4, 0.4, 4, 'metalOrange')                       // plataforma radar
-B(48, 4.2, -3, 0.4, 1.6, 0.4, 'metalGrey')                     // antena
-barracks(44, 5.8, 'N')                                         // barracón con literas (interior)
-B(37, 0.7, 4, 1.4, 1.4, 1.4, 'crate')                          // generador
-B(52, 0.6, 3, 1.2, 1.2, 1.2, 'crate')
-// trinchera exterior junto a la puerta oeste (con hueco central)
-for (const z of [-4, -2.2, 2.2, 4]) B(28.5, 0.4, z, 3, 0.8, 0.6, 'sandbag')
-
-// --- Colonia residencial NE / SW: casas con interior y calles limpias ---
-// Calles: E-O en z=sz·26 (ancha y despejada) · N-S en x=sx·30
-for (const [sx, sz] of [[1, -1], [-1, 1]] as [number, number][]) {
-  // casas 1 y 2: fachada hacia la calle E-O
-  smallHouse(sx * 19, sz * 36, sz < 0 ? 'S' : 'N')
-  smallHouse(sx * 41, sz * 36, sz < 0 ? 'S' : 'N')
-  // casa 3: fachada hacia la calle N-S
-  smallHouse(sx * 19, sz * 50, sx > 0 ? 'E' : 'W')
-  // casa grande de dos plantas (escalera interior + tejado accesible)
-  bigHouse(sx * 41, sz * 50, sx > 0 ? 'W' : 'E')
-  // mobiliario urbano ordenado: contenedor de residuos, muretes y bancos
-  B(sx * 34, 1.2, sz * 21.5, 2.6, 2.4, 2.4, 'metalGreen')   // contenedor de residuos
-  B(sx * 24, 0.55, sz * 24.5, 3, 1.1, 0.5, 'concrete')     // muro bajo de acera
-  B(sx * 50, 0.55, sz * 27.5, 3, 1.1, 0.5, 'concrete')     // parada de bus
-  B(sx * 52, 0.45, sz * 20, 1.8, 0.28, 0.6, 'wood')        // bancos del parque
-  B(sx * 48, 0.45, sz * 18, 0.6, 0.28, 1.8, 'wood')
-  B(sx * 54, 0.5, sz * 22, 2.0, 1.0, 2.0, 'concrete')      // fuente del parque
 }
 
-// --- Depósito de contenedores NW / SE: filas alineadas con pasillos amplios ---
-for (const [sx, sz] of [[-1, -1], [1, 1]] as [number, number][]) {
-  const row1: MatKey[] = ['metalRed', 'metalBlue', 'metalGreen', 'metalOrange']
-  const row2: MatKey[] = ['metalBlue', 'metalOrange', 'metalRed', 'metalGreen']
-  const xs = [17, 27, 37, 47]
-  // fila 1 (z = sz·24) — 4 contenedores alineados con huecos regulares
-  for (let i = 0; i < 4; i++) B(sx * xs[i], 1.2, sz * 24, 6, 2.4, 2.5, row1[i])
-  // fila 2 (z = sz·36) + uno apilado (se sube con la plataforma de salto)
-  for (let i = 0; i < 4; i++) B(sx * xs[i], 1.2, sz * 36, 6, 2.4, 2.5, row2[i])
-  B(sx * 27, 3.6, sz * 36, 6, 2.4, 2.5, 'metalGrey')
-  // torre de vigilancia del depósito
-  tower(sx * 44, sz * 46, -sz)
-  // cobertura intencional y ordenada en los pasillos
-  B(sx * 32, 0.4, sz * 19.5, 3, 0.8, 0.6, 'sandbag')
-  B(sx * 14, 0.55, sz * 42, 3, 1.1, 0.5, 'concrete')
-  B(sx * 47, 0.45, sz * 19, 0.7, 0.9, 0.7, 'barrel')
+/** Quiosco abierto 5×5 (4 postes + tejado) */
+function kiosco(cx: number, cz: number): void {
+  for (const [x, z] of [[-2.2, -2.2], [2.2, -2.2], [-2.2, 2.2], [2.2, 2.2]] as [number, number][]) {
+    B(cx + x, 1.5, cz + z, 0.3, 3.0, 0.3, 'wood')
+  }
+  B(cx, 3.2, cz, 5.4, 0.3, 5.4, 'roof')
+  B(cx, 0.45, cz, 2.0, 0.9, 1.2, 'wood')               // mesa
 }
 
-// --- Carril central: autobuses abandonados ---
-for (const sx of [-1, 1]) {
-  B(sx * 16, 1.3, 0, 2.4, 2.6, 6.5, 'metalBlue')
-  B(sx * 16, 1.05, sx * 3.9, 2.2, 2.1, 1.3, 'metalBlue')
-  B(sx * 19.5, 0.6, 3.2, 1.2, 1.2, 1.2, 'crate')
+/** Fuente de parque (más pequeña que la rotonda) */
+function fountain(cx: number, cz: number): void {
+  B(cx, 0.35, cz, 3.4, 0.7, 3.4, 'concrete')
+  B(cx, 0.95, cz, 1.1, 1.5, 1.1, 'concrete')
 }
 
-// --- Plaza del mercado: jardineras alineadas (ordenado, sin amontonar) ---
-for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
-  B(sx * 10, 0.7, sz * 10, 4.5, 1.4, 0.5, 'concrete')          // jardinera/banco
-  B(sx * 10, 0.15, sz * 13.5, 4.5, 0.3, 0.5, 'concrete')       // borde de acera
+/** Planta de tanques industriales (3 silos + tuberías) */
+function tankPlant(cx: number, cz: number): void {
+  B(cx - 6, 3, cz, 5, 6, 5, 'metalGrey')
+  B(cx, 3, cz + 1, 5, 6, 5, 'metalGrey')
+  B(cx - 3, 3, cz - 6, 5, 6, 5, 'metalGrey')
+  B(cx - 3, 6.4, cz - 2, 9, 0.5, 0.5, 'metalOrange')   // tubería
+  B(cx - 2, 6.4, cz + 3, 0.5, 0.5, 5, 'metalOrange')
+  WP_EXTRA.push([cx, cz + 5])
 }
 
+/** Coche abandonado (cobertura en calles) */
+function car(x: number, z: number, alongX: boolean, mat: MatKey = 'metalBlue'): void {
+  if (alongX) {
+    B(x, 0.55, z, 4.2, 1.1, 1.9, mat)
+    B(x, 1.15, z, 2.1, 0.75, 1.7, 'metalGrey')
+  } else {
+    B(x, 0.55, z, 1.9, 1.1, 4.2, mat)
+    B(x, 1.15, z, 1.7, 0.75, 2.1, 'metalGrey')
+  }
+}
 
-// --- Árboles (tronco con colisión; copa es decorativa) ---
-export const TREES: [number, number][] = [
-  // perímetro
-  [60, 8], [-60, -8], [-60, 8], [60, -8],
-  [8, 60], [-8, -60], [-8, 60], [8, -60],
-  [54, -40], [-54, 40],
-  // parques de las colonias NE / SW
-  [52, 16], [56, 21], [47, 20], [-52, -16], [-56, -21], [-47, -20],
-  // depósitos NW / SE
-  [52, 40], [-52, -40], [14, 44], [-14, -44],
-  // avenidas y calles
-  [9, 32], [-9, -32], [9, 46], [-9, -46], [58, 24], [-58, -24],
-]
-for (const [tx, tz] of TREES) B(tx, 2.1, tz, 0.5, 4.2, 0.5, 'wood')
+/** Autobús abandonado */
+function bus(x: number, z: number, alongX: boolean): void {
+  if (alongX) {
+    B(x, 1.3, z, 2.4, 2.6, 6.5, 'metalBlue')
+    B(x, 1.05, z, 2.2, 2.1, 1.3, 'metalBlue')
+  } else {
+    B(x, 1.3, z, 6.5, 2.6, 2.4, 'metalBlue')
+    B(x, 1.05, z, 1.3, 2.1, 2.2, 'metalBlue')
+  }
+}
 
-// --- Farolas (poste con colisión; luz y cabezal decorativos) ---
-export const LAMPS: [number, number][] = [
-  [12, 12], [-12, -12], [12, -12], [-12, 12],
-  [20, 4], [-20, -4], [20, -4], [-20, 4],
-  [4, 26], [-4, -26], [4, -26], [-4, 26],
-  [-39, 6.5], [39, -6.5],
-  [14, -23], [-14, 23], [40, -23], [-40, 23],
-]
-for (const [lx, lz] of LAMPS) B(lx, 2.6, lz, 0.35, 5.2, 0.35, 'metalGrey')
+// ------------------------------------------------------------
+// COLOCACIÓN DEL MAPA
+// ------------------------------------------------------------
+// === NE: distrito cívico ===
+hotel(19.5, -19.5, 'S')
+torreOficina(50, -20, 'S')
+mercado(19.5, -52, 'S')
+shop(44, -57, 'N')
+shop(56, -57, 'N')
+// aparcamiento NE (autos + cobertura ordenada)
+car(48, -44, true, 'metalRed')
+car(56, -44, true, 'metalGrey')
+B(50, 0.55, -49, 3, 1.1, 0.5, 'concrete')              // barrera
+B(44, 0.55, -49, 3, 1.1, 0.5, 'concrete')
 
-// --- Cajas cerca de spawns (cobertura inicial) ---
+// === NO: distrito industrial ===
+almacen(-19.5, -19.5, 'N', 11, 8, 6)                    // almacén norte (puerta al sur→calle z=-35… fachada -z)
+almacen(-51, -19.5, 'E', 9, 7, 5.5)                     // nave oeste (puerta al este→calle x=-35)
+// depósito de contenedores
+{
+  const row1: MatKey[] = ['metalRed', 'metalBlue', 'metalGreen']
+  const row2: MatKey[] = ['metalBlue', 'metalOrange', 'metalRed']
+  const xs = [-25, -17.5, -10]
+  for (let i = 0; i < 3; i++) {
+    B(xs[i], 1.2, -45, 6, 2.4, 2.5, row1[i])
+    B(xs[i], 1.2, -57, 6, 2.4, 2.5, row2[i])
+  }
+  B(-17.5, 3.6, -57, 6, 2.4, 2.5, 'metalGrey')          // apilado
+  WP_EXTRA.push([-19, -51], [-11, -51], [-26, -51])
+  // cobertura ordenada del pasillo
+  B(-19, 0.4, -49.5, 3, 0.8, 0.6, 'sandbag')
+  B(-19, 0.55, -62.5, 3, 1.1, 0.5, 'concrete')
+}
+watchTower(-11, -61, 1)
+tankPlant(-51, -51)
+
+// === SE: distrito residencial + parque ===
+smallHouse(16, 16, 'W')
+smallHouse(46, 13.5, 'N')
+smallHouse(46, 27, 'E')
+bigHouse(16, 50, 'W')
+// parque SE: árboles + fuente + quiosco + bancos
+fountain(51, 46)
+kiosco(42, 58)
+B(46, 0.45, 52, 1.8, 0.28, 0.6, 'wood')                // bancos
+B(56, 0.45, 52, 1.8, 0.28, 0.6, 'wood')
+B(48, 0.45, 62, 0.6, 0.28, 1.8, 'wood')
+// zona DOM CHARLIE queda abierta en (46, 58)
+
+// === SO: gasolinera + radar + residencial ===
+gasStation(-51, 19.5, 'E')
+radarStation(-51, 51, 'E')
+smallHouse(-14, 45, 'N')
+smallHouse(-14, 57.5, 'N')
+// aparcamiento/patio SO (cobertura inicial)
+car(-20, 15, true, 'metalRed')
+car(-25, 24, true, 'metalGrey')
+B(-14, 0.4, 20, 3, 0.8, 0.6, 'sandbag')
+
+// === Rotonda central ===
+roundabout()
+
+// === Vehículos en las avenidas (cobertura ordenada) ===
+bus(16, 2.5, true)
+bus(-16, -2.5, true)
+car(32, -2.2, true, 'metalRed')
+car(48, 2.2, true, 'metalGrey')
+car(-32, 2.2, true, 'metalRed')
+car(-48, -2.2, true, 'metalGrey')
+car(2.2, -16, false, 'metalRed')
+car(-2.2, -32, false, 'metalGrey')
+car(2.2, 16, false, 'metalRed')
+car(-2.2, 32, false, 'metalGrey')
+car(2.2, -48, false, 'metalRed')
+
+// === Bases de banderas (CTF) en los extremos de la avenida E-O ===
+B(-58, 0.15, 0, 3.5, 0.3, 3.5, 'concrete')
+B(-58, 1.8, 0, 0.18, 3.6, 0.18, 'metalGrey')
+B(58, 0.15, 0, 3.5, 0.3, 3.5, 'concrete')
+B(58, 1.8, 0, 0.18, 3.6, 0.18, 'metalGrey')
+
+// === Cajas cerca de spawns ===
 B(-66, 0.6, -54, 1.2, 1.2, 1.2, 'crate')
 B(-54, 0.6, -66, 1.2, 1.2, 1.2, 'crate')
 B(-60, 0.4, -58, 3, 0.8, 0.6, 'sandbag')
@@ -749,36 +1124,90 @@ B(66, 0.6, 54, 1.2, 1.2, 1.2, 'crate')
 B(54, 0.6, 66, 1.2, 1.2, 1.2, 'crate')
 B(60, 0.4, 58, 3, 0.8, 0.6, 'sandbag')
 
-// --- Barriles explosivos (explotan al dispararles, con respawn) ---
+// ------------------------------------------------------------
+// ÁRBOLES (el tronco tiene colisión; el modelo GLB Arbol.glb se
+// instancia en el motor si está disponible)
+// ------------------------------------------------------------
+export const TREES: [number, number][] = [
+  // parque SE (denso)
+  [43, 43], [58, 41], [40, 56], [58, 58], [50, 64], [62, 50], [44, 48],
+  // calles residenciales SE
+  [28, 12], [28, 30], [60, 25], [58, 9], [28, 45], [28, 56], [9, 10], [30, 26],
+  // residencial SO
+  [-28, 45], [-28, 58], [-27, 50], [-8, 39], [-28, 28],
+  // industrial NO (puntos sueltos)
+  [-30, -48], [-7, -33], [-30, -31], [-60, -31],
+  // aparcamiento NE
+  [40, -40], [60, -40], [38, -30],
+  // perímetro
+  [64, 20], [-64, -20], [20, -64], [-20, 64], [64, -30], [-64, 30],
+]
+for (const [tx, tz] of TREES) B(tx, 2.1, tz, 0.5, 4.2, 0.5, 'wood')
+
+// --- Farolas (poste con colisión; luz y cabezal decorativos) ---
+export const LAMPS: [number, number][] = [
+  // rotonda
+  [11, 11], [11, -11], [-11, 11], [-11, -11],
+  // avenida E-O
+  [24, 7], [-24, 7], [48, -7], [-48, -7],
+  // avenida N-S
+  [7, 24], [-7, 24], [7, -48], [-7, -48], [7, 48], [-7, 48],
+  // cruces de calles secundarias
+  [31, 31], [-31, 31], [31, -31], [-31, -31],
+  // parque y aparcamientos
+  [50, 40], [54, -42],
+]
+for (const [lx, lz] of LAMPS) B(lx, 2.6, lz, 0.35, 5.2, 0.35, 'metalGrey')
+
+// --- Barriles explosivos ---
 export interface ExplosiveBarrel { x: number; z: number }
 export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
-  { x: 4.2, z: 6.8 }, { x: -4.2, z: -6.8 },       // mercado central
-  { x: -36.8, z: 0.8 }, { x: -41.2, z: -0.8 },    // gasolinera (junto a las bombas)
-  { x: 3.4, z: -34.6 }, { x: -3.4, z: 34.6 },     // almacenes
-  { x: 26, z: -23.5 }, { x: -26, z: 23.5 },       // calles de las colonias
-  { x: 32, z: 33 }, { x: -32, z: -33 },           // pasillos de los depósitos
-  { x: 14, z: -14 }, { x: -14, z: 14 },           // plaza
+  // gasolinera
+  { x: -44.2, z: 14.5 }, { x: -45.8, z: 25 },
+  // almacén norte
+  { x: -24, z: -14 }, { x: -14, z: -24 },
+  // mercado
+  { x: 8.5, z: -44 }, { x: 30.5, z: -44 },
+  // rotonda
+  { x: 11, z: -11 }, { x: -11, z: 11 },
+  // depósito de contenedores
+  { x: -22, z: -51 }, { x: -13, z: -62.5 },
+  // aparcamiento NE / parque
+  { x: 54, z: -48 }, { x: 58, z: 44 },
+  // planta de tanques / radar
+  { x: -51, z: -43.5 }, { x: -37, z: 47 },
 ]
 for (const eb of EXPLODING_BARRELS) B(eb.x, 0.5, eb.z, 0.74, 1.0, 0.74, 'explosive')
 
-// --- Tirolinas (usar E junto al ancla para descender) ---
+// --- Tirolinas (E para agarrarlas) ---
 export interface ZiplineSpec { from: [number, number, number]; to: [number, number, number] }
 export const ZIPLINES: ZiplineSpec[] = [
-  { from: [0, 5.0, 11.4], to: [16, 3.55, 0] },      // techo mercado → autobús E
-  { from: [0, 5.0, -11.4], to: [-16, 3.55, 0] },    // techo mercado → autobús O
-  { from: [41, 7.0, -45.7], to: [52, 2.6, -2] },    // tejado casa grande NE → estación radar
-  { from: [-41, 7.0, 45.7], to: [-46, 2.3, 6] },    // tejado casa grande SO → gasolinera
+  { from: [19.5, 10.0, -19.5], to: [-7, 3.0, 5] },       // azotea del hotel → rotonda
+  { from: [50, 12.7, -20], to: [19.5, 5.4, -52] },       // azotea de la torre → tejado del mercado
+  { from: [16, 7.1, 50], to: [48, 3.0, 46] },            // tejado casa grande → fuente del parque
+  { from: [-19.5, 6.3, -19.5], to: [-49, 4.5, -46] },    // tejado del almacén → planta de tanques
 ]
 
-// --- Plataformas de salto (impulso vertical automático) ---
+// --- Plataformas de salto ---
 export interface JumpPadSpec { x: number; z: number }
 export const JUMP_PADS: JumpPadSpec[] = [
-  { x: -2.5, z: -20.5 },  // torre norte
-  { x: 2.5, z: 20.5 },    // torre sur
-  { x: 34, z: 4 },        // radar (junto a la puerta)
-  { x: -34, z: -4 },      // gasolinera
-  { x: 22, z: 31 },       // depósito SE (sube a los contenedores)
-  { x: -22, z: -31 },     // depósito NW
+  { x: -22, z: -39 },    // depósito NO (sube a los contenedores)
+  { x: 56, z: -49 },     // aparcamiento NE (sube a los tejados de las tiendas)
+  { x: -36, z: 51 },     // exterior del radar (salta la muralla al interior)
+  { x: 44, z: 44 },      // parque SE
+  { x: 11, z: -11 },     // rotonda NE (sube al autobús/edificio bajo)
+]
+
+// --- Banderas (capturar la bandera) ---
+export const FLAG_A: [number, number] = [-58, 0]
+export const FLAG_B: [number, number] = [58, 0]
+
+// --- Zonas de dominación ---
+export interface DomZoneSpec { id: 'A' | 'B' | 'C'; name: string; x: number; z: number }
+export const DOM_ZONES: DomZoneSpec[] = [
+  { id: 'A', name: 'ALFA', x: 0, z: 0 },         // rotonda central
+  { id: 'B', name: 'BRAVO', x: -19.5, z: -19.5 },// interior del almacén norte
+  { id: 'C', name: 'CHARLIE', x: 46, z: 58 },    // parque SE
 ]
 
 export const MAP_BOXES: MapBox[] = MAP
@@ -847,49 +1276,38 @@ export function segmentBlocked(px: number, py: number, pz: number, qx: number, q
 }
 
 // ------------------------------------------------------------
-// WAYPOINTS para bots (grafo con LOS a 0.5 m)
+// WAYPOINTS para bots (calles + interiores)
 // ------------------------------------------------------------
 export const WAYPOINTS: [number, number][] = [
-  // perímetro r62
-  [-62, -62], [-44, -62], [-22, -62], [0, -62], [22, -62], [44, -62], [62, -62],
-  [62, -44], [62, -22], [62, 0], [62, 22], [62, 44], [62, 62],
-  [44, 62], [22, 62], [0, 62], [-22, 62], [-44, 62], [-62, 62],
-  [-62, 44], [-62, 22], [-62, 0], [-62, -22], [-62, -44],
-  // anillo 46
-  [0, -46], [18, -42], [34, -46], [47, -29], [46, -18], [44, 0], [46, 18], [47, 29], [34, 46], [18, 42],
-  [0, 46], [-18, 42], [-34, 46], [-47, 29], [-46, 18], [-42, 0], [-46, -18], [-47, -29], [-34, -46], [-18, -42],
-  // anillo 30
-  [0, -30], [11, -30], [22, -30], [26, -26], [30, -11], [30, 0], [30, 11], [26, 26], [22, 30], [11, 30],
-  [0, 30], [-11, 30], [-22, 30], [-26, 26], [-30, 11], [-30, 0], [-30, -11], [-26, -26], [-22, -30], [-11, -30],
-  // ejes
-  [22, 0], [-22, 0],
-  // mercado central (interior y puertas)
-  [0, 0], [0, -9], [0, 9], [9, 0], [-9, 0], [0, -16], [0, 16], [14, 0], [-14, 0],
-  // flancos de torres + conectores de plaza
-  [4, -21], [-4, 21], [4, 21], [-4, -21], [6, -13], [-6, 13],
-  // almacén norte / sur
-  [0, -31.5], [0, -44], [9, -40], [-9, -40], [17, -44], [-17, -44],
-  [0, 31.5], [0, 44], [9, 40], [-9, 40], [17, 44], [-17, 44],
-  // gasolinera oeste
-  [-49.5, 0], [-39, 0], [-39, 8.5], [-39, -6], [-28, 0],
-  // estación de radar + barracón
-  [28, 0], [38, 0], [44, 1.5], [44, 5.8], [44, 13],
-  // colonia NE (calles y parque)
-  [12, -26], [24, -26], [36, -26], [48, -26], [56, -26],
-  [30, -12], [30, -40], [30, -54], [52, 18],
-  // colonia SW (calles y parque)
-  [-12, 26], [-24, 26], [-36, 26], [-48, 26], [-56, 26],
-  [-30, 12], [-30, 40], [-30, 54], [-52, -18],
-  // depósito SE (calle, pasillo y fondo)
-  [12, 16], [24, 16], [36, 16], [48, 16],
-  [12, 30], [22, 30], [32, 30], [42, 30],
-  [14, 41], [26, 41], [38, 41], [52, 41], [44, 38.5],
-  // depósito NW
-  [-12, -16], [-24, -16], [-36, -16], [-48, -16],
-  [-12, -30], [-22, -30], [-32, -30], [-42, -30],
-  [-14, -41], [-26, -41], [-38, -41], [-52, -41], [-44, -38.5],
-  // carril central (autobuses)
-  [13, 0], [-13, 0], [21, 4], [-21, -4],
+  // anillo rotonda (r=12, fuera de las jardineras)
+  [12, 0], [8.5, 8.5], [0, 12], [-8.5, 8.5], [-12, 0], [-8.5, -8.5], [0, -12], [8.5, -8.5],
+  // avenida E-O (z=±5)
+  [18, 5], [27, 5], [36, 5], [45, 5], [54, 5], [-18, 5], [-27, 5], [-36, 5], [-45, 5], [-54, 5],
+  [18, -5], [27, -5], [36, -5], [45, -5], [54, -5], [-18, -5], [-27, -5], [-36, -5], [-45, -5], [-54, -5],
+  // avenida N-S (x=±5)
+  [5, 18], [5, 27], [5, 36], [5, 45], [5, 54], [5, -18], [5, -27], [5, -36], [5, -45], [5, -54],
+  [-5, 18], [-5, 27], [-5, 36], [-5, 45], [-5, 54], [-5, -18], [-5, -27], [-5, -36], [-5, -45], [-5, -54],
+  // calles secundarias N-S (x=±35)
+  [35, 42], [35, 30], [35, 18], [35, 6], [35, -6], [35, -18], [35, -30], [35, -42], [35, -54],
+  [-35, 42], [-35, 30], [-35, 18], [-35, 6], [-35, -6], [-35, -18], [-35, -30], [-35, -42], [-35, -54],
+  // calles secundarias E-O (z=±35)
+  [42, 35], [30, 35], [18, 35], [6, 35], [-6, 35], [-18, 35], [-30, 35], [-42, 35], [-54, 35],
+  [42, -35], [30, -35], [18, -35], [6, -35], [-6, -35], [-18, -35], [-30, -35], [-42, -35], [-54, -35],
+  // anillo perímetro r62 (esquivando el mercado y el radar)
+  [-62, -62], [-44, -62], [-22, -62], [22, -59], [44, -62], [62, -62],
+  [62, -44], [62, -22], [62, 22], [62, 44], [62, 62],
+  [44, 66], [22, 62], [-22, 62], [-44, 66], [-62, 62],
+  [-62, 44], [-62, 22], [-62, -22], [-62, -44],
+  // anillo intermedio r48 (esquivando fachadas)
+  [0, -48], [26, -38], [40, 21], [48, 0], [40, 28], [24, 42], [0, 48], [-24, 42], [-40, 24], [-48, 0], [-42, -24], [-24, -42],
+  // extremos de banderas (junto a las bases, sin pisarlas)
+  [-58, 2.6], [58, 2.6],
+  // parque SE
+  [44, 42], [58, 42], [46, 54], [58, 56], [50, 50], [46, 62],
+  // aparcamientos
+  [48, -42], [51, -42], [44, -48], [-14, 14], [-24, 20], [-24, 14],
+  // planta de tanques / radar exterior
+  [-49, -46], [-38, 51], [-33, 63],
   // interiores de edificios (generados por las funciones de construcción)
   ...WP_EXTRA,
 ]
@@ -917,24 +1335,23 @@ export const WAYPOINT_EDGES: number[][] = WAYPOINTS.map(() => [])
 // ------------------------------------------------------------
 export interface NeonSpec { text: string; x: number; y: number; z: number; ry: number; color: string; w: number }
 export const NEONS: NeonSpec[] = [
-  { text: 'MERCADO', x: 11.6, y: 3.6, z: 0, ry: Math.PI / 2, color: '#22d3ee', w: 6 },
-  { text: 'MERCADO', x: -11.6, y: 3.6, z: 0, ry: -Math.PI / 2, color: '#22d3ee', w: 6 },
-  { text: 'GAS', x: -53.8, y: 3.9, z: -4, ry: Math.PI / 2, color: '#f87171', w: 3 },
-  { text: '24H', x: -44.2, y: 2.9, z: 2.2, ry: Math.PI / 2, color: '#fbbf24', w: 2.2 },
-  { text: 'RADAR', x: 44, y: 2.1, z: 10.6, ry: Math.PI, color: '#4ade80', w: 4.5 },
-  { text: 'COLONIA', x: 35.15, y: 2.4, z: -50, ry: -Math.PI / 2, color: '#f472b6', w: 4.2 },
-  { text: 'COLONIA', x: -35.15, y: 2.4, z: 50, ry: Math.PI / 2, color: '#f472b6', w: 4.2 },
-  { text: 'DEPÓSITO', x: 32, y: 3.4, z: 34.8, ry: 0, color: '#fbbf24', w: 4.5 },
-  { text: 'DEPÓSITO', x: -32, y: 3.4, z: -34.8, ry: Math.PI, color: '#fbbf24', w: 4.5 },
+  { text: 'HOTEL', x: 19.5, y: 4.2, z: -12.2, ry: 0, color: '#f472b6', w: 4.5 },
+  { text: 'TORRE ÁMBAR', x: 50, y: 5.2, z: -12.8, ry: 0, color: '#fbbf24', w: 5.5 },
+  { text: 'MERCADO', x: 19.5, y: 3.8, z: -41.9, ry: 0, color: '#22d3ee', w: 5 },
+  { text: 'TIENDAS', x: 50, y: 2.8, z: -53.9, ry: Math.PI, color: '#4ade80', w: 4 },
+  { text: 'GAS', x: -42.2, y: 4.0, z: 19.5, ry: Math.PI / 2, color: '#f87171', w: 3 },
+  { text: 'RADAR', x: -38.8, y: 2.1, z: 51, ry: Math.PI / 2, color: '#4ade80', w: 4.5 },
+  { text: 'ALMACÉN', x: -19.5, y: 3.4, z: -27.6, ry: Math.PI, color: '#fbbf24', w: 4.5 },
+  { text: 'DEPÓSITO', x: -19, y: 3.2, z: -38.6, ry: 0, color: '#fbbf24', w: 4.5 },
 ]
 
 export interface PuddleSpec { x: number; z: number; r: number }
 export const PUDDLES: PuddleSpec[] = [
-  { x: 8, z: 14, r: 1.6 }, { x: -8, z: -14, r: 1.4 },
-  { x: 18, z: -3, r: 1.8 }, { x: -18, z: 3, r: 1.5 },
-  { x: 36, z: -26, r: 1.6 }, { x: -36, z: 26, r: 1.4 },
-  { x: 24, z: 32, r: 1.2 }, { x: -24, z: -32, r: 1.2 },
-  { x: -42, z: 5, r: 1.6 }, { x: 42, z: -5, r: 1.4 },
+  { x: 14, z: 8, r: 1.6 }, { x: -14, z: -8, r: 1.4 },
+  { x: 26, z: -9, r: 1.8 }, { x: -26, z: 9, r: 1.5 },
+  { x: 9, z: -26, r: 1.4 }, { x: -9, z: 26, r: 1.6 },
+  { x: 44, z: 3, r: 1.5 }, { x: -44, z: -3, r: 1.4 },
+  { x: 40, z: -40, r: 1.6 }, { x: -40, z: 40, r: 1.4 },
 ]
 
 // ------------------------------------------------------------
@@ -960,19 +1377,41 @@ export interface NetPlayerState {
   streak: number
   aiming: boolean        // apuntando/disparando (pose de tiro)
   sprint: boolean        // esprintando (animación de correr estilo Fortnite)
+  flag: 'A' | 'B' | null // lleva la bandera contraria (CTF)
 }
 
 export type GrenadeKind = 'frag' | 'smoke'
 export interface NetGrenade { id: string; x: number; y: number; z: number; team: Team; kind: GrenadeKind }
 
+export interface NetFlagState {
+  status: 'home' | 'carried' | 'drop'
+  x: number; z: number
+  carrier?: string
+}
+
+export interface NetZoneState {
+  id: 'A' | 'B' | 'C'
+  owner: Team | null
+  prog: number           // 0..1 progreso de captura
+  by: Team | null        // equipo que está capturando
+}
+
 export interface NetRoundState {
   phase: 'live' | 'ended' | 'matchend'
   timeLeft: number
   roundNumber: number
-  scoresA: number   // kills ronda actual equipo A
+  scoresA: number        // puntuación del equipo A (kills · capturas · puntos)
   scoresB: number
   roundWinsA: number
   roundWinsB: number
+  mode: GameMode
+  scoreTarget: number
+  /** solo en CTF */
+  flags?: { a: NetFlagState; b: NetFlagState }
+  /** solo en dominación */
+  zones?: NetZoneState[]
+  /** solo en FFA: líder actual */
+  leader?: { name: string; kills: number; team: Team } | null
 }
 
 export interface NetSnapshot {

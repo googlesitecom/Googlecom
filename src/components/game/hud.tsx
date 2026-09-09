@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
-import { WEAPONS, TEAM_INFO, keyLabel, type Team } from '@/game/shared'
-import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi } from 'lucide-react'
+import { WEAPONS, TEAM_INFO, keyLabel, MODES, type Team } from '@/game/shared'
+import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords } from 'lucide-react'
 
 export function Hud() {
   const hp = useGame(s => s.hp)
@@ -26,32 +26,70 @@ export function Hud() {
   const mode = useGame(s => s.mode)
   const ping = useGame(s => s.ping)
   const gamepadConnected = useGame(s => s.gamepadConnected)
+  const carryingFlag = useGame(s => s.carryingFlag)
+  const scoreboard = useGame(s => s.scoreboard)
   const w = WEAPONS[weapon]
 
   if (phase !== 'playing' && phase !== 'dead') return null
   if (cineActive) return null
 
+  const gameMode = round?.mode ?? 'escaramuza'
+  const myKills = scoreboard.find(p => p.id === useGame.getState().playerId)?.kills ?? 0
+
   return (
     <div className="fixed inset-0 z-30 pointer-events-none font-mono">
-      {/* ===== Barra superior: ronda y marcador ===== */}
+      {/* ===== Barra superior: modo, objetivo y marcador ===== */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-4">
-        <TeamScore team="A" kills={round?.scoresA ?? 0} wins={round?.roundWinsA ?? 0} active={team === 'A'} />
-        <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 text-center shadow-xl">
-          <div className="flex items-center gap-2 text-amber-300">
-            <Timer className="w-4 h-4" />
-            <span className="text-xl font-black tabular-nums">
-              {formatTime(round?.timeLeft ?? 0)}
-            </span>
+        {gameMode === 'escaramuza' && (
+          <>
+            <TeamScore team="A" kills={round?.scoresA ?? 0} wins={round?.roundWinsA ?? 0} active={team === 'A'} />
+            <RoundChip />
+            <TeamScore team="B" kills={round?.scoresB ?? 0} wins={round?.roundWinsB ?? 0} active={team === 'B'} />
+          </>
+        )}
+        {gameMode === 'ffa' && (
+          <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 text-center shadow-xl">
+            <div className="flex items-center gap-2 text-amber-300">
+              <Swords className="w-4 h-4" />
+              <span className="text-xl font-black tabular-nums">{myKills} / {round?.scoreTarget ?? 15}</span>
+            </div>
+            <div className="text-[10px] text-stone-400 tracking-widest">
+              LÍDER: {round?.leader?.name ?? '—'} · {round?.leader?.kills ?? 0}
+            </div>
           </div>
-          <div className="text-[10px] text-stone-400 tracking-widest">
-            RONDA {round?.roundNumber ?? 1} · A {round?.scoresA ?? 0}–{round?.scoresB ?? 0} B
+        )}
+        {gameMode === 'bandera' && (
+          <>
+            <FlagScore team="A" own={team === 'A'} score={round?.scoresA ?? 0} target={round?.scoreTarget ?? 3} status={round?.flags?.a.status ?? 'home'} />
+            <RoundChip />
+            <FlagScore team="B" own={team === 'B'} score={round?.scoresB ?? 0} target={round?.scoreTarget ?? 3} status={round?.flags?.b.status ?? 'home'} />
+          </>
+        )}
+        {gameMode === 'dominacion' && (
+          <div className="flex items-center gap-3">
+            <ZoneChip id="A" zone={round?.zones?.find(z => z.id === 'A')} />
+            <RoundChip />
+            <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-4 py-1.5 flex gap-3">
+              <span className="text-xl font-black tabular-nums" style={{ color: TEAM_INFO.A.color }}>{round?.scoresA ?? 0}</span>
+              <span className="text-stone-600 text-sm">/ {round?.scoreTarget ?? 150}</span>
+              <span className="text-xl font-black tabular-nums" style={{ color: TEAM_INFO.B.color }}>{round?.scoresB ?? 0}</span>
+            </div>
+            <ZoneChip id="B" zone={round?.zones?.find(z => z.id === 'B')} />
+            <ZoneChip id="C" zone={round?.zones?.find(z => z.id === 'C')} />
           </div>
-        </div>
-        <TeamScore team="B" kills={round?.scoresB ?? 0} wins={round?.roundWinsB ?? 0} active={team === 'B'} />
+        )}
       </div>
 
       {/* ===== Chip de sala (multijugador P2P) ===== */}
       <RoomChip />
+
+      {/* ===== Indicador: llevo la bandera ===== */}
+      {carryingFlag && phase === 'playing' && (
+        <div className="absolute top-36 left-1/2 -translate-x-1/2 bg-amber-500/20 border border-amber-400 rounded-lg px-5 py-1.5 flex items-center gap-2 animate-pulse shadow-2xl">
+          <Flag className="w-4 h-4 text-amber-300" />
+          <span className="text-amber-200 text-sm font-black tracking-widest">¡LLEVAS LA BANDERA! CORRE A TU BASE</span>
+        </div>
+      )}
 
       {/* ===== Anuncios centrales ===== */}
       <div className="absolute top-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
@@ -178,6 +216,56 @@ function TeamScore({ team, kills, wins, active }: { team: Team; kills: number; w
       <div className="text-[10px] font-bold tracking-widest" style={{ color: info.color }}>{team === 'A' ? 'ÁMBAR' : 'VERDE'}</div>
       <div className="text-2xl font-black tabular-nums text-stone-100">{kills}</div>
       <div className="text-[9px] text-stone-500 font-bold">/{30} · ★{wins}</div>
+    </div>
+  )
+}
+
+/** chip central: tiempo + ronda */
+function RoundChip() {
+  const round = useGame(s => s.round)
+  return (
+    <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 text-center shadow-xl">
+      <div className="flex items-center gap-2 text-amber-300">
+        <Timer className="w-4 h-4" />
+        <span className="text-xl font-black tabular-nums">
+          {formatTime(round?.timeLeft ?? 0)}
+        </span>
+      </div>
+      <div className="text-[10px] text-stone-400 tracking-widest">
+        RONDA {round?.roundNumber ?? 1}
+      </div>
+    </div>
+  )
+}
+
+/** marcador de bandera (CTF) */
+function FlagScore({ team, own, score, target, status }: { team: Team; own: boolean; score: number; target: number; status: string }) {
+  const info = TEAM_INFO[team]
+  return (
+    <div
+      className={`bg-stone-950/85 border rounded-lg px-3 py-2 text-center shadow-xl min-w-[86px] ${own ? 'ring-1' : ''} ${status !== 'home' ? 'animate-pulse' : ''}`}
+      style={{ borderColor: info.color + (status !== 'home' ? 'ff' : '80'), ...(own ? { boxShadow: `0 0 14px ${info.color}44` } : {}) }}
+    >
+      <div className="text-[10px] font-bold tracking-widest flex items-center justify-center gap-1" style={{ color: info.color }}>
+        <Flag className="w-3 h-3" /> {team === 'A' ? 'ÁMBAR' : 'VERDE'}
+      </div>
+      <div className="text-2xl font-black tabular-nums text-stone-100">{score}<span className="text-stone-500 text-sm">/{target}</span></div>
+      <div className="text-[9px] text-stone-400 font-bold">{status === 'home' ? 'EN BASE' : status === 'carried' ? '¡ROBADA!' : 'CAÍDA'}</div>
+    </div>
+  )
+}
+
+/** chip de zona de dominación */
+function ZoneChip({ id, zone }: { id: string; zone?: { owner: Team | null; prog: number; by: Team | null } }) {
+  const color = zone?.owner ? TEAM_INFO[zone.owner].color : '#78716c'
+  const capturing = zone && zone.by && zone.prog > 0.02
+  return (
+    <div className={`bg-stone-950/85 border rounded-lg px-2.5 py-1.5 text-center shadow-xl min-w-[64px] ${capturing ? 'animate-pulse' : ''}`}
+      style={{ borderColor: color + 'aa' }}>
+      <div className="text-[10px] font-black tracking-widest" style={{ color }}>{id === 'A' ? 'ALFA' : id === 'B' ? 'BRAVO' : 'CHARLIE'}</div>
+      <div className="h-1.5 bg-stone-800 rounded-full overflow-hidden mt-1 w-12 mx-auto">
+        <div className="h-full transition-all" style={{ width: `${Math.round((zone?.prog ?? 0) * 100)}%`, background: color }} />
+      </div>
     </div>
   )
 }

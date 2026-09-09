@@ -3,8 +3,8 @@
 // Puente entre el motor 3D y la interfaz React
 // ============================================================
 import { create } from 'zustand'
-import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty, ActionId } from './shared'
-import { DEFAULT_KEYBINDS } from './shared'
+import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty, ActionId, GameMode, PadAction } from './shared'
+import { DEFAULT_KEYBINDS, DEFAULT_PAD_BINDS } from './shared'
 import type { NetMode } from './net'
 
 export interface KillFeedEntry {
@@ -40,6 +40,7 @@ interface GameState {
   roomCode: string
   fillBots: number
   botDifficulty: BotDifficulty
+  gameMode: GameMode
   netStatus: NetStatus
   netError: string
 
@@ -51,6 +52,9 @@ interface GameState {
 
   /** true mientras se reproduce la cinemática de entrada (oculta el HUD) */
   cineActive: boolean
+
+  /** true si el jugador local lleva la bandera enemiga (CTF) */
+  carryingFlag: boolean
 
   weapon: WeaponId
   mag: number
@@ -71,10 +75,12 @@ interface GameState {
 
   settings: {
     sens: number
+    adsSens: number
     padSens: number
     volume: number
     quality: 'baja' | 'media' | 'alta'
     keybinds: Record<ActionId, string>
+    padBinds: Record<PadAction, number>
   }
 
   fps: number
@@ -90,6 +96,7 @@ interface GameState {
   addAnnouncement: (text: string, kind: Announcement['kind'], team?: Team) => void
   setSettings: (s: Partial<GameState['settings']>) => void
   setKeybind: (action: ActionId, code: string) => void
+  setPadBind: (action: PadAction, button: number) => void
   resetKeybinds: () => void
 }
 
@@ -107,6 +114,7 @@ export const useGame = create<GameState>((set) => ({
   roomCode: '',
   fillBots: 0,
   botDifficulty: 'normal',
+  gameMode: 'escaramuza',
   netStatus: 'idle',
   netError: '',
 
@@ -116,6 +124,7 @@ export const useGame = create<GameState>((set) => ({
   frags: 0,
   smokes: 0,
   cineActive: false,
+  carryingFlag: false,
 
   weapon: 'p9',
   mag: 15,
@@ -136,10 +145,12 @@ export const useGame = create<GameState>((set) => ({
 
   settings: {
     sens: 1.0,
+    adsSens: 0.75,
     padSens: 1.0,
     volume: 0.7,
     quality: 'alta',
     keybinds: { ...DEFAULT_KEYBINDS },
+    padBinds: { ...DEFAULT_PAD_BINDS },
   },
 
   fps: 0,
@@ -179,8 +190,18 @@ export const useGame = create<GameState>((set) => ({
     keybinds[action] = code
     useGame.getState().setSettings({ keybinds })
   },
+  setPadBind: (action, button) => {
+    const cur = useGame.getState().settings
+    const padBinds = { ...cur.padBinds }
+    // si el botón ya está usado por otra acción, liberarla
+    for (const k of Object.keys(padBinds) as PadAction[]) {
+      if (padBinds[k] === button && k !== action) padBinds[k] = -1
+    }
+    padBinds[action] = button
+    useGame.getState().setSettings({ padBinds })
+  },
   resetKeybinds: () => {
-    useGame.getState().setSettings({ keybinds: { ...DEFAULT_KEYBINDS } })
+    useGame.getState().setSettings({ keybinds: { ...DEFAULT_KEYBINDS }, padBinds: { ...DEFAULT_PAD_BINDS } })
   },
 }))
 
@@ -194,9 +215,11 @@ try {
       useGame.getState().setSettings({
         quality: parsed.quality ?? cur.quality,
         sens: parsed.sens ?? cur.sens,
+        adsSens: parsed.adsSens ?? cur.adsSens,
         padSens: parsed.padSens ?? cur.padSens,
         volume: parsed.volume ?? cur.volume,
         keybinds: { ...cur.keybinds, ...(parsed.keybinds ?? {}) },
+        padBinds: { ...cur.padBinds, ...(parsed.padBinds ?? {}) },
       })
     }
   }

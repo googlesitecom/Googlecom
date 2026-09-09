@@ -10,8 +10,9 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
-  PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS,
+  PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS, FLAG_A, FLAG_B, DOM_ZONES,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
+  isMouseButton, mouseButtonIndex,
 } from './shared'
 import { AudioEngine } from './audio'
 import { Effects } from './effects'
@@ -20,6 +21,7 @@ import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
 import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture } from './textures'
 import { useGame } from './store'
 import { NetClient } from './net'
+import { preloadAssets, buildGLBWeapon, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
 
 interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
 interface HitMarker { t: number; headshot: boolean }
@@ -125,7 +127,6 @@ export class Game {
   private reloading = false
   private reloadEndAt = 0
   private reloadStage = 0
-  private ads = false
   private adsAmt = 0
   private recoilP = 0
   private recoilY = 0
@@ -160,8 +161,8 @@ export class Game {
   private padSprint = false
   private padCrouch = false
   private padJump = false
-  private padShootPrev = false
-  private padAdsPrev = false
+  private padShootHeld = false
+  private padAdsHeld = false
   private padSelectPrev = false
   private prevPadButtons: boolean[] = []
 
@@ -200,6 +201,19 @@ export class Game {
   // pasto instanciado (viento)
   private grassUniform = { value: 0 }
   private grassMesh: THREE.InstancedMesh | null = null
+
+  // ---- objetivos de los modos (banderas / zonas) ----
+  private flagViews = new Map<'a' | 'b', { group: THREE.Group; cloth: THREE.Mesh; beam: THREE.Mesh }>()
+  private zoneViews: { id: 'A' | 'B' | 'C'; ring: THREE.Mesh; ring2: THREE.Mesh; letter: THREE.Sprite }[] = []
+  private zoneMatCache = new Map<string, THREE.MeshBasicMaterial>()
+
+  // botones del ratón pulsados (para binds de disparar/apuntar)
+  private mouseButtons = new Set<number>()
+
+  // assets del usuario (GLB + texturas)
+  private procTrees: THREE.Group | null = null
+  private skyMesh: THREE.Mesh | null = null
+  private groundMesh: THREE.Mesh | null = null
 
   // minimapa / mundo
   private shootables: THREE.Object3D[] = []
@@ -251,7 +265,25 @@ export class Game {
     this.buildEnvironment()
     this.buildLights(quality)
     this.buildMap(quality)
+    this.buildStreets()
+    this.buildObjectives()
     this.buildMinimapStatic()
+
+    // assets del usuario (GLB de armas/árbol + texturas): se cargan en segundo
+    // plano y se integran al llegar (con fallback procedural hasta entonces)
+    preloadAssets().then(() => {
+      if (this.disposed) return
+      // DIAGNÓSTICO: partes integradas por separado para localizar cuelgues
+      const parts = (new URLSearchParams(location.search).get('assets') ?? 'all').split(',')
+      if (parts.includes('all') || parts.includes('tex')) this.applyRepoTextures()
+      if (parts.includes('all') || parts.includes('tree')) this.applyRepoTrees()
+    })
+    onWeaponGLBsReady(() => {
+      if (this.disposed) return
+      // refrescar el arma en mano y las de los remotos con los modelos GLB
+      this.setWeapon(this.weapon, true)
+      this.remotes.refreshWeapons()
+    })
 
     this.effects = new Effects(this.scene)
     this.remotes = new RemotePlayers(this.scene)
@@ -289,6 +321,7 @@ export class Game {
       new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
     )
     this.scene.add(sky)
+    this.skyMesh = sky
     // halo del sol bajo (atardecer)
     const sunDir = new THREE.Vector3(0.62, 0.42, -0.52).normalize()
     const glow = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -373,6 +406,7 @@ export class Game {
     ground.receiveShadow = true
     this.scene.add(ground)
     this.shootables.push(ground)
+    this.groundMesh = ground
 
     // materiales PBR compartidos (uno por tipo)
     const mats = new Map<MatKey, THREE.MeshStandardMaterial>()
@@ -409,6 +443,7 @@ export class Game {
       mesh.castShadow = true
       mesh.receiveShadow = true
       mesh.position.set(b.x, b.y, b.z)
+      mesh.userData.matKey = b.mat
       this.scene.add(mesh)
       this.shootables.push(mesh)
       this.mapMeshes.push(mesh)
@@ -490,6 +525,8 @@ export class Game {
   /** Decoración sin colisión: árboles, farolas con luz, neones, charcos reflectantes */
   private buildDecor(texs: Record<MatKey, THREE.Texture>): void {
     // --- árboles (tronco con colisión ya está en el mapa) ---
+    // (se agrupan para poder sustituirlos por el Arbol.glb al cargar)
+    this.procTrees = new THREE.Group()
     const leafMatA = new THREE.MeshStandardMaterial({ color: 0x55683d, roughness: 0.95, flatShading: true })
     const leafMatB = new THREE.MeshStandardMaterial({ color: 0x47592f, roughness: 0.95, flatShading: true })
     const leafGeo = new THREE.SphereGeometry(1, 8, 7)
@@ -501,10 +538,11 @@ export class Game {
         leaf.position.set(tx + ox, oy, tz + oz)
         leaf.scale.setScalar(s)
         leaf.castShadow = true
-        this.scene.add(leaf)
+        this.procTrees.add(leaf)
         this.shootables.push(leaf)
       }
     }
+    this.scene.add(this.procTrees)
 
     // --- farolas: cabezal + bombilla emisiva + luz puntual cálida ---
     const headMat = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.6, metalness: 0.7 })
@@ -683,8 +721,12 @@ export class Game {
     this.scene.add(mesh)
   }
 
-  /** ¿hay un obstáculo o charco en (x,z)? (para no plantar pasto dentro/debajo) */
+  /** ¿hay un obstáculo, charco o CALLE en (x,z)? (para no plantar pasto en el asfalto) */
   private grassBlocked(x: number, z: number, margin: number): boolean {
+    // calles y aceras (más un margen)
+    if (Math.abs(x) < 6.2 + margin || Math.abs(z) < 6.2 + margin) return true
+    if (Math.abs(Math.abs(x) - 35) < 4.2 + margin || Math.abs(Math.abs(z) - 35) < 4.2 + margin) return true
+    if (Math.hypot(x, z) < 10.4 + margin) return true   // rotonda
     for (let i = 0; i < MAP_AABBS.length; i++) {
       const b = MAP_AABBS[i]
       if (b.minY > 0.6) continue // encima del suelo (techos) no importa
@@ -857,6 +899,333 @@ export class Game {
   }
 
   // ----------------------------------------------------------
+  // CALLES URBANAS (asfalto + líneas + aceras) — look Warzone
+  // ----------------------------------------------------------
+  private buildStreets(): void {
+    const asphalt = new THREE.MeshStandardMaterial({ color: 0x2b2e32, roughness: 0.94, metalness: 0.04 })
+    const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: 0.9 })
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8d8c8 })
+    // alturas escalonadas para evitar z-fighting con el terreno (mm → cm)
+    const Y_ASPHALT = 0.03
+    const Y_SIDEWALK = 0.06
+    const Y_RING = 0.05
+    const Y_DASH = 0.08
+    const planes: [number, number, number, number][] = [
+      // [cx, cz, w, d] — avenidas y calles secundarias
+      [0, 0, 140, 12],      // avenida E-O
+      [0, 0, 12, 140],      // avenida N-S
+      [35, 0, 140, 8], [-35, 0, 140, 8],    // secundarias N-S
+      [0, 35, 8, 140], [0, -35, 8, 140],    // secundarias E-O
+    ]
+    for (const [cx, cz, w, d] of planes) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), asphalt)
+      m.rotation.x = -Math.PI / 2
+      m.position.set(cx, Y_ASPHALT, cz)
+      m.receiveShadow = true
+      this.scene.add(m)
+    }
+    // rotonda: anillo de asfalto + pavimento interior
+    const ring = new THREE.Mesh(new THREE.RingGeometry(2.8, 9.8, 40), asphalt)
+    ring.rotation.x = -Math.PI / 2
+    ring.position.set(0, Y_RING, 0)
+    this.scene.add(ring)
+    const inner = new THREE.Mesh(new THREE.CircleGeometry(2.9, 32), sidewalk)
+    inner.rotation.x = -Math.PI / 2
+    inner.position.set(0, Y_RING + 0.01, 0)
+    this.scene.add(inner)
+    // aceras (franjas claras junto a las avenidas)
+    const walks: [number, number, number, number][] = [
+      [0, 7.1, 140, 1.4], [0, -7.1, 140, 1.4],
+      [7.1, 0, 1.4, 140], [-7.1, 0, 1.4, 140],
+      [35, 4.6, 140, 1.2], [35, -4.6, 140, 1.2], [-35, 4.6, 140, 1.2], [-35, -4.6, 140, 1.2],
+      [4.6, 35, 1.2, 140], [-4.6, 35, 1.2, 140], [4.6, -35, 1.2, 140], [-4.6, -35, 1.2, 140],
+    ]
+    for (const [cx, cz, w, d] of walks) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), sidewalk)
+      m.rotation.x = -Math.PI / 2
+      m.position.set(cx, Y_SIDEWALK, cz)
+      m.receiveShadow = true
+      this.scene.add(m)
+    }
+    // líneas discontinuas centrales (una sola malla fusionada)
+    const dashes: THREE.BufferGeometry[] = []
+    const dashGeo = new THREE.PlaneGeometry(1.1, 0.16)
+    const addDash = (x: number, z: number, rot: boolean): void => {
+      const g = dashGeo.clone()
+      if (rot) g.rotateY(Math.PI / 2)
+      g.translate(x, Y_DASH, z)
+      dashes.push(g)
+    }
+    for (let x = -66; x <= 66; x += 4) {
+      if (Math.abs(x) < 11) continue          // rotonda
+      addDash(x, 0, false)
+    }
+    for (let z = -66; z <= 66; z += 4) {
+      if (Math.abs(z) < 11) continue
+      addDash(0, z, true)
+    }
+    if (dashes.length) {
+      const merged = mergeGeometries(dashes, false)!
+      const lines = new THREE.Mesh(merged, lineMat)
+      lines.renderOrder = 2
+      this.scene.add(lines)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // OBJETIVOS DE MODO (banderas CTF · zonas de dominación)
+  // ----------------------------------------------------------
+  private buildObjectives(): void {
+    const mode = useGame.getState().gameMode
+    if (mode === 'bandera') {
+      const mk = (key: 'a' | 'b', pos: [number, number], team: Team): void => {
+        const color = team === 'A' ? 0xf59e0b : 0x22c55e
+        const group = new THREE.Group()
+        const pole = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.06, 0.07, 3.3, 8),
+          new THREE.MeshStandardMaterial({ color: 0xd0d4d8, roughness: 0.4, metalness: 0.8 }),
+        )
+        pole.position.y = 1.65
+        pole.castShadow = true
+        group.add(pole)
+        const cloth = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.1, 0.7),
+          new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, roughness: 0.8, emissive: color, emissiveIntensity: 0.25 }),
+        )
+        cloth.position.set(0.56, 2.9, 0)
+        group.add(cloth)
+        const beam = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.16, 0.3, 12, 10, 1, true),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }),
+        )
+        beam.position.y = 6
+        group.add(beam)
+        group.position.set(pos[0], 0, pos[1])
+        this.scene.add(group)
+        this.flagViews.set(key, { group, cloth, beam })
+      }
+      mk('a', FLAG_A, 'A')
+      mk('b', FLAG_B, 'B')
+    }
+    if (mode === 'dominacion') {
+      for (const z of DOM_ZONES) {
+        const group = new THREE.Group()
+        const mat = this.zoneMat(null)
+        const ring = new THREE.Mesh(new THREE.RingGeometry(GAME.DOM_ZONE_RADIUS - 0.4, GAME.DOM_ZONE_RADIUS, 48), mat)
+        ring.rotation.x = -Math.PI / 2
+        ring.position.y = 0.05
+        group.add(ring)
+        const ring2 = new THREE.Mesh(new THREE.RingGeometry(GAME.DOM_ZONE_RADIUS - 1.6, GAME.DOM_ZONE_RADIUS - 1.3, 48), mat)
+        ring2.rotation.x = -Math.PI / 2
+        ring2.position.y = 0.05
+        group.add(ring2)
+        // letra de la zona (sprite de canvas)
+        const c = document.createElement('canvas')
+        c.width = 64; c.height = 64
+        const ctx2 = c.getContext('2d')!
+        ctx2.fillStyle = 'rgba(10,12,14,0.85)'
+        ctx2.beginPath(); ctx2.arc(32, 32, 26, 0, Math.PI * 2); ctx2.fill()
+        ctx2.fillStyle = '#ffffff'
+        ctx2.font = '900 34px monospace'
+        ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle'
+        ctx2.fillText(z.name[0], 32, 34)
+        const tex = new THREE.CanvasTexture(c)
+        const letter = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
+        letter.position.set(z.x, 6.5, z.z)
+        letter.scale.setScalar(2.2)
+        this.scene.add(letter)
+        group.position.set(z.x, 0, z.z)
+        this.scene.add(group)
+        this.zoneViews.push({ id: z.id, ring, ring2, letter })
+      }
+    }
+  }
+
+  /** material de zona por propietario (cachéado) */
+  private zoneMat(owner: Team | null): THREE.MeshBasicMaterial {
+    const key = owner ?? 'null'
+    let m = this.zoneMatCache.get(key)
+    if (!m) {
+      const color = owner === 'A' ? 0xf59e0b : owner === 'B' ? 0x22c55e : 0xb8bcc2
+      m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false })
+      this.zoneMatCache.set(key, m)
+    }
+    return m
+  }
+
+  /** actualiza visuales de banderas/zonas desde el snapshot */
+  private updateObjectiveViews(round: NetSnapshot['round']): void {
+    if (round.flags) {
+      const place = (key: 'a' | 'b', fs: { status: string; x: number; z: number }): void => {
+        const v = this.flagViews.get(key)
+        if (!v) return
+        v.group.position.set(fs.x, 0, fs.z)
+        v.group.visible = true
+        // paño ondeando
+        v.cloth.rotation.y = Math.sin(performance.now() / 350 + (key === 'a' ? 0 : 2)) * 0.28
+        v.beam.visible = fs.status === 'carried'
+      }
+      place('a', round.flags.a)
+      place('b', round.flags.b)
+    }
+    if (round.zones) {
+      for (const zs of round.zones) {
+        const v = this.zoneViews.find(q => q.id === zs.id)
+        if (!v) continue
+        const mat = this.zoneMat(zs.owner)
+        v.ring.material = mat
+        v.ring2.material = mat
+        // escala del progreso interior
+        const s = 0.2 + (zs.prog || 0) * 0.8
+        v.ring2.scale.setScalar(s)
+        v.letter.material.opacity = zs.owner ? 1 : 0.55
+      }
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Eventos de modos (llamados por la red)
+  // ----------------------------------------------------------
+  onFlagEvent(_flag: 'a' | 'b', type: string, x?: number, z?: number): void {
+    if (type === 'carried') this.audio.pickup(true)
+    else if (type === 'home') this.audio.hitmarker(false)
+    if (x !== undefined && z !== undefined) {
+      // pequeño destello donde ocurre el evento
+      this.effects.impact(new THREE.Vector3(x, 1.2, z), new THREE.Vector3(0, 1, 0))
+    }
+  }
+
+  onZoneEvent(_zone: 'A' | 'B' | 'C', _owner: Team | null): void {
+    this.audio.announceDing()
+  }
+
+  onCaptureFX(x: number, z: number, team: Team): void {
+    const color = team === 'A' ? 0xf59e0b : 0x22c55e
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.4, 0.8, 32),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.set(x, 0.1, z)
+    this.scene.add(ring)
+    const t0 = performance.now()
+    const anim = (): void => {
+      if (this.disposed) return
+      const t = (performance.now() - t0) / 700
+      if (t >= 1) { this.scene.remove(ring); ring.geometry.dispose(); (ring.material as THREE.Material).dispose(); return }
+      ring.scale.setScalar(1 + t * 9)
+      ;(ring.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - t)
+      requestAnimationFrame(anim)
+    }
+    anim()
+  }
+
+  // ----------------------------------------------------------
+  // Integración de los assets del repositorio (texturas + árbol GLB)
+  // ----------------------------------------------------------
+  private applyRepoTextures(): void {
+    const quality = useGame.getState().settings.quality
+    const { pared, piso, cielo } = getRepoTextures()
+    // --- cielo del usuario (Cielo.jpg) ---
+    if (cielo && this.skyMesh) {
+      const mat = this.skyMesh.material as THREE.MeshBasicMaterial
+      mat.map = cielo
+      mat.needsUpdate = true
+      // re-generar el entorno PBR con el cielo nuevo (solo en calidad alta:
+      // el PMREM en rendering por software puede tardar muchísimo)
+      if (quality === 'alta') {
+        try {
+          const pmrem = new THREE.PMREMGenerator(this.renderer)
+          const envScene = new THREE.Scene()
+          const envSky = new THREE.Mesh(
+            new THREE.SphereGeometry(60, 24, 16),
+            new THREE.MeshBasicMaterial({ map: cielo, side: THREE.BackSide }),
+          )
+          envScene.add(envSky)
+          const envRT = pmrem.fromScene(envScene, 0.05)
+          this.scene.environment?.dispose()
+          this.scene.environment = envRT.texture
+          envRT.texture.needsUpdate = true
+          pmrem.dispose()
+        } catch { /* mantener el entorno anterior */ }
+      }
+    }
+    // --- muros (Pared.jpg) y suelos (Piso.jpg) ---
+    if (pared) {
+      for (const m of this.mapMeshes) {
+        const mat = m.material as THREE.MeshStandardMaterial
+        if (!mat || !mat.map) continue
+        if (m.userData.matKey === 'sand' || m.userData.matKey === 'concrete') {
+          mat.map = pared
+          mat.color.set(m.userData.matKey === 'sand' ? 0xd6c6a4 : 0xc2c6ca)
+          mat.needsUpdate = true
+        }
+      }
+    }
+    if (piso) {
+      const g = this.groundMesh
+      if (g) {
+        const mat = g.material as THREE.MeshStandardMaterial
+        const tex = piso.clone()
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+        tex.repeat.set(58, 58)
+        tex.needsUpdate = true
+        mat.map = tex
+        mat.color.set(0xb9ad93)
+        mat.needsUpdate = true
+      }
+    }
+    // --- árboles GLB (Arbol.glb) ---
+  }
+
+  private applyRepoTrees(): void {
+    const quality = useGame.getState().settings.quality
+    const tree = getTreeTemplate()
+    if (tree && this.procTrees) {
+      // quitar las copas procedurales
+      for (const c of [...this.procTrees.children]) {
+        const i = this.shootables.indexOf(c)
+        if (i >= 0) this.shootables.splice(i, 1)
+        this.procTrees.remove(c)
+      }
+      // número de árboles según calidad (el modelo es detallado: ~12k tris)
+      const count = quality === 'alta' ? TREES.length : quality === 'media' ? Math.min(TREES.length, 28) : Math.min(TREES.length, 16)
+      const s = 9.5 / tree.rawHeight
+      // hornear las transformaciones de todos los árboles en UNA geometría por
+      // material (4 draw calls, sin instancing: el combo instancing+alphaTest
+      // puede colgar el rasterizador por software)
+      const m = new THREE.Matrix4()
+      const q = new THREE.Quaternion()
+      const sc = new THREE.Vector3()
+      const pos = new THREE.Vector3()
+      const onlyBark = new URLSearchParams(location.search).get('assets') === 'bark'
+      for (const part of tree.parts) {
+        if (onlyBark && !/^sugar_maple_bark$/i.test(part.mat.name)) continue
+        const geos: THREE.BufferGeometry[] = []
+        for (let i = 0; i < count; i++) {
+          const [tx, tz] = TREES[i]
+          pos.set(tx, 0, tz)
+          q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI * 2)
+          const v = 0.8 + Math.random() * 0.45
+          sc.set(s * v, s * v, s * v)
+          m.compose(pos, q, sc)
+          const g = part.geo.clone()
+          g.applyMatrix4(m)
+          geos.push(g)
+        }
+        const merged = mergeGeometries(geos, false)
+        if (!merged) continue
+        const mesh = new THREE.Mesh(merged, part.mat)
+        mesh.castShadow = quality === 'alta'
+        mesh.receiveShadow = false
+        mesh.frustumCulled = false   // geometría gigante: no dejar que el frustum la descarte entera
+        this.scene.add(mesh)
+      }
+      this.procTrees.visible = false
+    }
+  }
+
+  // ----------------------------------------------------------
   // Eventos de entrada
   // ----------------------------------------------------------
   private bindEvents(): void {
@@ -977,6 +1346,37 @@ export class Game {
   }
 
   private shooting = false
+  private ads = false
+
+  /** disparar/apuntar desde cualquier fuente (TECLA · RATÓN · MANDO) — reasignables */
+  private pollActionInputs(): void {
+    const s = useGame.getState()
+    if (s.phase !== 'playing' || s.buyOpen || this.dead) {
+      this.shooting = false
+      this.ads = false
+      return
+    }
+    const shootBind = this.kb('shoot')
+    const aimBind = this.kb('aim')
+    let shoot = false
+    let aim = false
+    if (shootBind) {
+      const mi = mouseButtonIndex(shootBind)
+      if (mi !== null) shoot = this.locked && this.mouseButtons.has(mi)
+      else shoot = this.keys.has(shootBind)
+    }
+    if (aimBind) {
+      const mi = mouseButtonIndex(aimBind)
+      if (mi !== null) aim = this.locked && this.mouseButtons.has(mi)
+      else aim = this.keys.has(aimBind)
+    }
+    if (this.padConnected) {
+      shoot = shoot || this.padShootHeld
+      aim = aim || this.padAdsHeld
+    }
+    this.shooting = shoot
+    this.ads = aim
+  }
 
   private onMouseDown = (e: MouseEvent): void => {
     if (this.cine.active) { this.endCinematic(); return }
@@ -984,19 +1384,17 @@ export class Game {
     if (s.phase === 'paused') { this.requestLock(); return }
     if (s.phase !== 'playing') return
     if (!this.locked) { this.requestLock(); return }
-    if (e.button === 0) this.shooting = true
-    if (e.button === 2) this.ads = true
+    this.mouseButtons.add(e.button)
   }
 
   private onMouseUp = (e: MouseEvent): void => {
-    if (e.button === 0) this.shooting = false
-    if (e.button === 2) this.ads = false
+    this.mouseButtons.delete(e.button)
   }
 
   private onMouseMove = (e: MouseEvent): void => {
     if (!this.locked || this.dead) return
     const s = useGame.getState()
-    const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / BASE_FOV) : 1
+    const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / BASE_FOV) * (s.settings.adsSens ?? 0.75) : 1
     const sens = 0.0021 * s.settings.sens * (this.ads ? zoomFactor : 1) * (this.sprinting ? 1.12 : 1)
     this.yaw -= e.movementX * sens
     this.pitch -= e.movementY * sens
@@ -1044,7 +1442,7 @@ export class Game {
     const rsx = dz(pad.axes[2] ?? 0)
     const rsy = dz(pad.axes[3] ?? 0)
     if (s.phase === 'playing' && !this.dead && (rsx !== 0 || rsy !== 0)) {
-      const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / BASE_FOV) : 1
+      const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / BASE_FOV) * (s.settings.adsSens ?? 0.75) : 1
       const look = 3.4 * (s.settings.padSens ?? 1) * (this.ads ? zoomFactor : 1)
       this.yaw -= rsx * look * dt
       this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - rsy * look * dt))
@@ -1055,38 +1453,34 @@ export class Game {
     // --- mover (stick izquierdo) ---
     this.padIz = -dz(pad.axes[1] ?? 0) // empujar arriba = adelante
     this.padIx = dz(pad.axes[0] ?? 0)
-    this.padSprint = !!pad.buttons[10]?.pressed || (pad.axes[1] ?? 0) < -0.92
 
     // --- botones ---
     const b = pad.buttons.map(btn => !!btn.pressed)
-    const pressed = (i: number) => !!b[i] && !this.prevPadButtons[i]
+    const pressed = (i: number) => i >= 0 && !!b[i] && !this.prevPadButtons[i]
+    const held = (i: number) => i >= 0 && !!b[i]
 
-    // disparar (RT) y apuntar (LT)
-    const shoot = !!b[7]
-    if (shoot) this.shooting = true
-    else if (this.padShootPrev) this.shooting = false
-    this.padShootPrev = shoot
-
-    const ads = !!b[6]
-    if (ads) this.ads = true
-    else if (this.padAdsPrev) this.ads = false
-    this.padAdsPrev = ads
+    // binds del mando (reasignables en CONTROLES)
+    const pb = s.settings.padBinds ?? { shoot: 7, aim: 6, sprint: 10, jump: 0, crouch: 1, reload: 2, weaponNext: 3, grenadeFrag: 4, grenadeSmoke: 13, buy: 5, scoreboard: 8, pause: 9 }
+    // correr: botón asignado (L3 por defecto) o stick a fondo
+    this.padSprint = held(pb.sprint) || (pad.axes[1] ?? 0) < -0.92
+    this.padShootHeld = held(pb.shoot)
+    this.padAdsHeld = held(pb.aim)
 
     if (s.phase === 'playing' && !this.dead && !s.buyOpen) {
-      if (pressed(0)) this.padJump = true                       // A/Cruz: saltar
-      if (pressed(1)) this.padCrouch = !this.padCrouch          // B/Círculo: agacharse (conmutar)
-      if (pressed(2)) this.startReload()                        // X/Cuadrado: recargar
-      if (pressed(3)) this.cycleWeapon(1)                       // Y/Triángulo: cambiar arma
-      if (pressed(4)) this.throwGrenade('frag')                   // LB: granada MOLO
-      if (pressed(5)) this.openBuyMenu()                        // RB: comprar
-      if (pressed(13)) this.throwGrenade('smoke')                // cruceta abajo: granada de humo
-      if (pressed(12)) this.openBuyMenu()                       // cruceta arriba: comprar
-      if (pressed(14)) this.cycleWeapon(-1)                     // cruceta izq.
-      if (pressed(15)) this.cycleWeapon(1)                      // cruceta der.
+      if (pressed(pb.jump)) this.padJump = true                       // A/Cruz: saltar
+      if (pressed(pb.crouch)) this.padCrouch = !this.padCrouch        // B/Círculo: agacharse (conmutar)
+      if (pressed(pb.reload)) this.startReload()                     // X/Cuadrado: recargar
+      if (pressed(pb.weaponNext)) this.cycleWeapon(1)                 // Y/Triángulo: cambiar arma
+      if (pressed(pb.grenadeFrag)) this.throwGrenade('frag')          // LB: granada MOLO
+      if (pressed(pb.buy)) this.openBuyMenu()                        // RB: comprar
+      if (pressed(pb.grenadeSmoke)) this.throwGrenade('smoke')        // cruceta abajo: humo
+      if (pressed(12)) this.openBuyMenu()                            // cruceta arriba: comprar
+      if (pressed(14)) this.cycleWeapon(-1)                          // cruceta izq.
+      if (pressed(15)) this.cycleWeapon(1)                           // cruceta der.
     }
 
-    // pausa (Start)
-    if (pressed(9)) {
+    // pausa
+    if (pressed(pb.pause)) {
       if (s.phase === 'playing') {
         document.exitPointerLock?.()
         useGame.getState().setPhase('paused')
@@ -1095,12 +1489,12 @@ export class Game {
       }
     }
 
-    // marcador (Back/Select, mantener)
+    // marcador (mantener)
     if (s.phase === 'playing' || s.phase === 'dead') {
-      if (b[8] && !this.padSelectPrev) useGame.getState().setHud({ scoreboardOpen: true })
-      if (!b[8] && this.padSelectPrev) useGame.getState().setHud({ scoreboardOpen: false })
+      if (held(pb.scoreboard) && !this.padSelectPrev) useGame.getState().setHud({ scoreboardOpen: true })
+      if (!held(pb.scoreboard) && this.padSelectPrev) useGame.getState().setHud({ scoreboardOpen: false })
     }
-    this.padSelectPrev = !!b[8]
+    this.padSelectPrev = held(pb.scoreboard)
 
     this.prevPadButtons = b
   }
@@ -1155,6 +1549,7 @@ export class Game {
 
     if (playing && !this.cine.active) {
       this.updateGamepad(dt)
+      this.pollActionInputs()
       this.updateMovement(dt)
       this.updateWeapon(dt, t)
       this.updateShooting(t)
@@ -1212,7 +1607,8 @@ export class Game {
     // FPS
     this.fpsFrames++
     if (t - this.fpsT > 1) {
-      useGame.getState().setHud({ fps: Math.round(this.fpsFrames / (t - this.fpsT)) })
+      const fpsNow = Math.round(this.fpsFrames / (t - this.fpsT))
+      useGame.getState().setHud({ fps: fpsNow })
       this.fpsFrames = 0
       this.fpsT = t
     }
@@ -1535,10 +1931,10 @@ export class Game {
     const bobX = Math.cos(this.bobT) * bobAmp * 0.6
     const bobY = Math.abs(Math.sin(this.bobT)) * bobAmp
 
-    // sacudida (trauma)
+    // sacudida (trauma) — amplitud reducida al 45 %
     const sh = this.trauma * this.trauma
-    const shakeP = (Math.random() - 0.5) * 0.05 * sh
-    const shakeR = (Math.random() - 0.5) * 0.04 * sh
+    const shakeP = (Math.random() - 0.5) * 0.022 * sh
+    const shakeR = (Math.random() - 0.5) * 0.018 * sh
 
     this.camera.position.set(
       this.pos.x + bobX,
@@ -1553,10 +1949,10 @@ export class Game {
     this.camera.updateProjectionMatrix()
     this.adsAmt += ((this.ads && !this.dead && !this.reloading ? 1 : 0) - this.adsAmt) * Math.min(1, dt * 9)
 
-    // recuperación del retroceso
+    // recuperación del retroceso (más rápida)
     const rec = WEAPONS[this.weapon].recoilRecover
-    this.recoilP *= Math.max(0, 1 - rec * dt * 6)
-    this.recoilY *= Math.max(0, 1 - rec * dt * 6)
+    this.recoilP *= Math.max(0, 1 - rec * dt * 8)
+    this.recoilY *= Math.max(0, 1 - rec * dt * 8)
     if (t * 1000 - this.lastShotTime > 380) {
       this.sprayIdx = Math.max(0, this.sprayIdx - dt * 18)
     }
@@ -1590,7 +1986,7 @@ export class Game {
       this.vmGroup = null
       this.vmMuzzle = null
     }
-    const { group, muzzle } = buildWeaponModel(id)
+    const { group, muzzle } = buildGLBWeapon(id) ?? buildWeaponModel(id)
     this.vmGroup = group
     this.vmMuzzle = muzzle
     this.vmHolder.add(group)
@@ -1844,7 +2240,8 @@ export class Game {
     this.sprayIdx++
     this.vmKick = 1
     this.lastShotTime = now
-    this.trauma = Math.min(1, this.trauma + (w.id === 'awp338' ? 0.35 : w.id === 'breacher' ? 0.3 : 0.12))
+    // sacudida de cámara muy contenida (la mira ya no "vuela")
+    this.trauma = Math.min(1, this.trauma + (w.id === 'awp338' ? 0.2 : w.id === 'breacher' ? 0.16 : 0.06))
 
     // sonido de bomba para la escopeta
     if (this.weapon === 'breacher') {
@@ -1888,7 +2285,8 @@ export class Game {
     const mapHit = mapHits[0]
     const mapDist = mapHit ? mapHit.distance : Infinity
 
-    // 2) jugadores remotos (enemigos vivos)
+    // 2) jugadores remotos (enemigos vivos — en TODOS CONTRA TODOS, todos)
+    const ffa = useGame.getState().round?.mode === 'ffa'
     const ray = this.bulletRay
     ray.set(eye, dir)
     let bestPlayer: string | null = null
@@ -1898,7 +2296,8 @@ export class Game {
 
     for (const [id] of this.remotes.map) {
       const st = this.remotes.map.get(id)!.state
-      if (!st || st.dead || st.team === this.team) continue
+      if (!st || st.dead) continue
+      if (!ffa && st.team === this.team) continue
       const boxes = cache.get(id)
       if (!boxes) continue
       const parts: ['head' | 'body' | 'legs', THREE.Box3][] = [
@@ -2300,6 +2699,8 @@ export class Game {
       if (st.id === this.net.id) continue
       this.remotes.upsert(st, t)
     }
+    // objetivos de modo (banderas / zonas)
+    this.updateObjectiveViews(snap.round)
     // pociones
     const seenP = new Set<string>()
     for (const pk of snap.pickups ?? []) {
@@ -2338,7 +2739,8 @@ export class Game {
       }
     }
     // ronda
-    useGame.getState().setHud({ round: snap.round })
+    const me = snap.players.find(p => p.id === this.net.id)
+    useGame.getState().setHud({ round: snap.round, carryingFlag: !!me?.flag })
   }
 
   private updateJumpPadFX(dt: number): void {
@@ -2484,14 +2886,14 @@ export class Game {
     if (w.sniper && this.adsAmt > 0.7 && !this.dead) {
       this.drawScope(ctx, W, H)
     } else if (!this.dead && s.phase === 'playing') {
-      // crosshair dinámico
+      // crosshair compacto y estable (v4: mucho más pequeño y con poca apertura)
       const spread = this.currentSpread()
-      const gap = 6 + spread * 46
-      const len = 9
-      ctx.strokeStyle = 'rgba(80,255,120,0.95)'
-      ctx.lineWidth = 2
-      ctx.shadowColor = 'rgba(0,0,0,0.9)'
-      ctx.shadowBlur = 2
+      const gap = (4 + spread * 7) * (1 - this.adsAmt * 0.4)
+      const len = 6.5
+      ctx.strokeStyle = 'rgba(140,255,160,0.92)'
+      ctx.lineWidth = 1.6
+      ctx.shadowColor = 'rgba(0,0,0,0.85)'
+      ctx.shadowBlur = 1.5
       ctx.beginPath()
       // 4 líneas
       ctx.moveTo(cx - gap - len, cy); ctx.lineTo(cx - gap, cy)
@@ -2705,6 +3107,26 @@ export class Game {
       ctx.beginPath()
       ctx.arc(O + gv.group.position.x * S, O + gv.group.position.z * S, 3, 0, Math.PI * 2)
       ctx.fill()
+    }
+
+    // banderas (CTF)
+    for (const [key, fv] of this.flagViews) {
+      ctx.fillStyle = key === 'a' ? '#f59e0b' : '#22c55e'
+      const x = O + fv.group.position.x * S, y = O + fv.group.position.z * S
+      ctx.fillRect(x - 3, y - 3, 6, 6)
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(x - 3, y - 3, 6, 6)
+    }
+
+    // zonas de dominación
+    for (const zv of this.zoneViews) {
+      const mat = zv.ring.material as THREE.MeshBasicMaterial
+      ctx.strokeStyle = `#${mat.color.getHexString()}`
+      ctx.lineWidth = 1.6
+      ctx.beginPath()
+      ctx.arc(O + zv.letter.position.x * S, O + zv.letter.position.z * S, GAME.DOM_ZONE_RADIUS * S, 0, Math.PI * 2)
+      ctx.stroke()
     }
 
     // remotos

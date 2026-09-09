@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Looking at the 3D tree in the image, **the leaf quads still show white edges/borders** - they do not look clean yet.\n\nYou can clearly see that each individual leaf quad has a visible white/light-colored border around its perimeter, creating a \"sticker\" or \"cutout\" appearance where the edges of the texture are showing. This is especially noticeable on the outer leaves of the canopy where they contrast against the dark background, but the white borders are present throughout the foliage.\n\nThis is a common issue with alpha-tested or cutout leaf textures where:\n- The texture has white/opaque pixels at the very edges of the leaf shape\n- The alpha channel doesn't fully extend to the texture borders\n- Or there's a filtering/mipmapping issue causing the edge pixels to bleed\n\nTo fix this, you would typically need to:\n1. Ensure the texture's alpha channel extends to the edge pixels (or add a slight padding)\n2. Check that the leaf UVs aren't sampling the border pixels of the texture\n3. Verify the material is using proper alpha testing/cutoff values\n\nThe tree definitely still needs work to eliminate those white borders for a clean look.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788922756,
+  "id": "20260909105907514278d1b61a462b",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909105907514278d1b61a462b",
+  "usage": {
+    "completion_tokens": 242,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1090,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1332
+  }
+}

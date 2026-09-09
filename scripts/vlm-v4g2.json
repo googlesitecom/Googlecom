@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) **Yes**, a first-person weapon is visible. It looks like a **plain dark block** (specifically a simple, low-poly black gun model).\n2) **No**, the crosshair is not visible in this screenshot.\n3) **No**, that specific HUD layout is not present. The visible HUD elements are a compass/minimap in the bottom-left corner and some Spanish text at the top and bottom center.\n4) The environment looks like a **sandy, desert-like town or city** with blocky buildings, streets, and simple geometric trees.\n5) **No**, there are no enemy soldiers visible.\n6) The overall graphics quality impression is **empty plain / basic/low-poly** (resembling a Roblox or early 3D game), definitely not a high-fidelity city like Warzone.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788926007,
+  "id": "2026090911532214cde2571c7a48a1",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026090911532214cde2571c7a48a1",
+  "usage": {
+    "completion_tokens": 171,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1182,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1353
+  }
+}

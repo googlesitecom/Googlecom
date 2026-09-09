@@ -9,7 +9,7 @@ import type { Game } from './engine'
 import { useGame } from './store'
 import {
   GAME, generateRoomCode, peerIdForRoom,
-  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind,
+  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode,
 } from './shared'
 
 export type NetMode = 'solo' | 'host' | 'guest'
@@ -19,6 +19,7 @@ export interface ConnectOpts {
   roomCode?: string
   fillBots?: number
   difficulty?: BotDifficulty
+  gameMode?: GameMode
 }
 
 interface InputMsg {
@@ -54,9 +55,9 @@ export class NetClient {
     s.setPhase('connecting')
     s.setHud({ netStatus: 'connecting', netError: '', ping: 0 })
     if (opts.mode === 'solo') {
-      this.connectSolo(name, opts.difficulty ?? 'normal')
+      this.connectSolo(name, opts.difficulty ?? 'normal', opts.gameMode ?? 'escaramuza')
     } else if (opts.mode === 'host') {
-      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0)
+      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0, opts.gameMode ?? 'escaramuza')
     } else {
       this.connectGuest(name, opts.roomCode ?? '')
     }
@@ -65,7 +66,7 @@ export class NetClient {
   // ------------------------------------------------------------
   // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
   // ------------------------------------------------------------
-  private startSimWorker(difficulty: BotDifficulty, bots: number): void {
+  private startSimWorker(difficulty: BotDifficulty, bots: number, gameMode: GameMode): void {
     const worker = new Worker(new URL('./sim-worker.ts', import.meta.url))
     this.worker = worker
     worker.onmessage = (ev: MessageEvent) => {
@@ -77,7 +78,7 @@ export class NetClient {
       // reenviar al invitado P2P (broadcast o dirigido a él)
       if (!msg.to || msg.to === GUEST_ID) this.forwardToGuest({ e: msg.e, d: msg.d })
     }
-    this.sendToSim({ e: 'init', d: { difficulty, bots } })
+    this.sendToSim({ e: 'init', d: { difficulty, bots, mode: gameMode } })
   }
 
   private sendToSim(msg: unknown): void {
@@ -99,9 +100,9 @@ export class NetClient {
   // ------------------------------------------------------------
   // MODO SOLO — simulación local con bots (en worker)
   // ------------------------------------------------------------
-  private connectSolo(name: string, difficulty: BotDifficulty): void {
+  private connectSolo(name: string, difficulty: BotDifficulty, gameMode: GameMode): void {
     this.id = HOST_ID
-    this.startSimWorker(difficulty, Math.floor(GAME.BOT_COUNT / 2))
+    this.startSimWorker(difficulty, Math.floor(GAME.BOT_COUNT / 2), gameMode)
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
     useGame.getState().setHud({ netStatus: 'connected' })
   }
@@ -109,11 +110,11 @@ export class NetClient {
   // ------------------------------------------------------------
   // MODO ANFITRIÓN — sala 1v1 por PeerJS + worker
   // ------------------------------------------------------------
-  private connectHost(name: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number): void {
+  private connectHost(name: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode): void {
     this.id = HOST_ID
     // sincronizar el código de sala con el store (puede haberse regenerado)
     if (useGame.getState().roomCode !== code) useGame.getState().setHud({ roomCode: code })
-    this.startSimWorker(difficulty, fill)
+    this.startSimWorker(difficulty, fill, gameMode)
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
     useGame.getState().setHud({ netStatus: 'waiting' })
 
@@ -183,7 +184,7 @@ export class NetClient {
         this.peer = null
         const newCode = generateRoomCode()
         useGame.getState().setHud({ roomCode: newCode })
-        this.connectHost(name, newCode, fill, difficulty, attempt + 1)
+        this.connectHost(name, newCode, fill, difficulty, attempt + 1, gameMode)
       } else if (type === 'unavailable-id') {
         useGame.getState().addAnnouncement('No se pudo crear la sala, inténtalo de nuevo', 'info')
       } else {
@@ -513,6 +514,21 @@ export class NetClient {
       case 'playerLeft': {
         const d = data as { name: string }
         store.addAnnouncement(`${d.name} abandonó`, 'info')
+        break
+      }
+      case 'flagEvent': {
+        const d = data as { flag: 'a' | 'b'; type: string; x?: number; z?: number; carrier?: string }
+        game.onFlagEvent(d.flag, d.type, d.x, d.z)
+        break
+      }
+      case 'zoneEvent': {
+        const d = data as { zone: 'A' | 'B' | 'C'; owner: 'A' | 'B' | null }
+        game.onZoneEvent(d.zone, d.owner)
+        break
+      }
+      case 'captureFX': {
+        const d = data as { x: number; z: number; team: 'A' | 'B' }
+        game.onCaptureFX(d.x, d.z, d.team)
         break
       }
       default:

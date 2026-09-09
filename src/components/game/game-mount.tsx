@@ -29,6 +29,7 @@ export function GameMount() {
       roomCode: st.roomCode,
       fillBots: st.fillBots,
       difficulty: st.botDifficulty,
+      gameMode: st.gameMode,
     })
     if (process.env.NODE_ENV === 'development') {
       ;(window as unknown as Record<string, unknown>).__game = game

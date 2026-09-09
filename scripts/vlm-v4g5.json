@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the image provided, here are the answers to your questions:\n\n1.  **Weapon in hand:** **Blocky** (low-poly, stylized white pistol model, not a realistic high-fidelity weapon).\n2.  **Crosshair:** Yes, a small **4-line crosshair with a dot** is visible at the center of the screen.\n3.  **HUD:**\n    *   **Health + Shield:** Bottom-left (green heart bar for health, blue shield icon below it).\n    *   **Ammo:** Bottom-right (\"P9 COMPACTO\" with \"7 / 90\" ammo count).\n    *   **Scores:** Top-center (Team scores \"ESCUADRÓN ÁMBAR\" 3 vs \"VERDE\" 2).\n    *   **Minimap:** Top-left (square tactical map showing layout and player positions).\n4.  **Environment:** **Stone/brick walls** forming a maze-like structure, with a sandy/dirt ground texture. There are also some blocky green bushes/trees visible in the background to the left. It does not look like a typical city street or asphalt environment; it resembles a custom map or arena.\n5.  **Bots/Soldiers:** **No**, there are no visible enemy soldiers or bots in this specific frame.\n6.  **Glitches:** There appears to be a visual issue or \"glitch\" where thin white vertical lines (resembling sticks or untextured geometry) are protruding from the ground near the wooden crate and around the player's feet. Additionally, there is a red notification at the bottom-left that says \"**1 Issue**\".",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788926602,
+  "id": "20260909120311feea19d52da544ae",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909120311feea19d52da544ae",
+  "usage": {
+    "completion_tokens": 340,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 819,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1159
+  }
+}

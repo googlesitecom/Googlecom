@@ -81,7 +81,10 @@ export function Scoreboard() {
         </div>
 
         <div className="px-6 py-2 bg-stone-900/60 border-t border-stone-800 text-[11px] text-stone-500 flex justify-between">
-          <span>Objetivo de ronda: {GAME.ROUND_KILLS} eliminaciones de equipo</span>
+          <span>{round?.mode === 'bandera' ? 'Objetivo: 3 capturas de bandera'
+            : round?.mode === 'dominacion' ? 'Objetivo: 150 puntos de dominación'
+            : round?.mode === 'ffa' ? `Objetivo: ${GAME.FFA_KILLS} bajas individuales`
+            : `Objetivo de ronda: ${GAME.ROUND_KILLS} eliminaciones de equipo`}</span>
           <span>
             Tu equipo: <span style={{ color: TEAM_INFO[team].color }}>{team === 'A' ? 'ÁMBAR' : 'VERDE'}</span>
           </span>

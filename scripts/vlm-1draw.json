@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the screenshot provided, here is the exact description:\n\n**The Screen Content:**\nIt shows a **rendered 3D world**, not a black or empty screen. The environment consists of:\n*   **Buildings/Structures:** High, tan-colored brick or concrete walls forming an alleyway or courtyard. There is also a dark grey industrial structure on the left and wooden crates.\n*   **Streets/Ground:** A sandy or dirt ground surface with low-poly green bushes, small white posts, and some trees in the background.\n*   **HUD (Heads-Up Display):** The interface is fully visible and includes:\n    *   **Top Left:** A minimap labeled \"ESCUADRÓN ÁMBAR\" (Squad Amber).\n    *   **Top Center:** Scoreboard showing \"ÁMBAR 1\" vs \"VERDE 2\", a timer at 2:58 (\"BONDA 1\"), and player lists on the right (Lobo, Puma, Zorro, Halcón).\n    *   **Bottom Left:** Health bar (green, full at 100), armor bar (blue, empty), and inventory icons (showing \"1 Issue\").\n    *   **Bottom Center:** A prompt reading \"ZONA DE COMPRA – presiona B\" (Buy Zone - press B).\n    *   **Bottom Right:** Ammo counter for a \"P9 COMPACTO\" showing \"15 / 90\".\n\n**First-Person Weapon:**\n**Yes**, the first-person weapon is clearly visible. It is a **black handgun** (identified by the HUD as a P9 Compacto) held in the lower right-center of the screen. You can see the slide, grip, and barrel of the gun pointing towards the right side of the alley.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788928937,
+  "id": "20260909124201b63a4d2eeb6940ab",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260909124201b63a4d2eeb6940ab",
+  "usage": {
+    "completion_tokens": 371,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 926,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1297
+  }
+}
