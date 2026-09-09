@@ -265,3 +265,27 @@ Stage Summary:
 - https://googlesitecom.github.io/Googlecom/ JUGABLE end-to-end (verificado en navegador real contra la URL pública)
 - README con enlace de juego; gh-pages desplegable con un comando (token por entorno)
 - Recordatorio: el PAT del usuario quedó expuesto en el chat → recomendar rotarlo
+
+---
+Task ID: 9
+Agent: Super Z (agente principal)
+Task: Subir a GitHub listo para jugar (mensaje #12) — completar los arreglos del mensaje #11 (pistola al revés, armas hacia atrás, bots que no mueren, strafe frenético, lag) que quedaron a medias cuando la sesión anterior se quedó sin contexto, y desplegar
+
+Work Log:
+- RECUPERACIÓN: el commit b4eec4f tenía los arreglos pero FALTABA el método updateLampLights (tsc error TS2339: la sesión anterior se cortó antes de escribirlo) → añadido (pool de 6 luces recolocadas en las farolas más cercanas cada 0,5 s, selección parcial in-place sin asignaciones, arrays scratch reutilizados)
+- VERIFICACIÓN DE ARMAS (triple):
+  - Numérica (verify-new-cal.mjs sobre los vértices en espacio-mundo con la cal nueva): 4/4 CORRECTAS (largo=Z, boca fina en −Z, frente alto=miras arriba, atrás baja=empuñadura abajo)
+  - Página /calibra + VLM en vivo: 4/4 CORRECTAS (boca alineada con −Z, miras arriba, empuñadura abajo) — disipé la contradicción del análisis anterior (verify-weapons-three.mjs medía la cal ANTIGUA: era el diagnóstico, no un fallo nuevo)
+  - EN JUEGO real (dev): pistola en primera persona apunta ADELANTE, miras arriba, empuñadura abajo, NO volteada (VLM sobre recorte ampliado ×2)
+- VERIFICACIÓN BOTS MUEREN: script determinista scripts/debug-hits.ts — handlePlayerShot→handleHits (el orden exacto que rompía el lastShotAt antiguo): 4 disparos de p9 al cuerpo = 33+33+33+1 → BOT MUERTO ✓ (el "3/20 con daño" inicial era la protección de spawn de 2,5 s; tras expirar, 100 % de impactos registra daño)
+- VERIFICACIÓN STRAFE: código de combate confirmado (1,9 m/s lateral máximo vs 3,9 antes, giros cada 1,2–2,8 s vs 0,7–1,6, 30 % plantado, francotirador inmóvil, ×0,4 a larga distancia) — la medición bruta 2,3 m/s incluye rotación-yaw y patrulla, no strafe puro
+- VERIFICACIÓN MAPA TRAS LA FUSIÓN: muros sólidos con textura, pasto/flores visibles, consola limpia — comparado con las VLM del despliegue verificado de la tarea 8: aspecto idéntico (misma base de muros de piedra al aparecer)
+- tsc limpio (solo errores ajenos en skills/), eslint limpio en los 3 archivos tocados
+- BUILD estático (NEXT_PUBLIC_BASE_PATH=/Googlecom, 42 MB) + despliegue gh-pages (93e6d44, .nojekyll) + push main (ddb6862→b7b8273)
+- VERIFICACIÓN EN VIVO de https://googlesitecom.github.io/Googlecom/: partida real jugada en el sitio público — pistola bien orientada, HUD completo, mapa íntegro; chunks desplegados contienen lastHitsAt/lampLightNext/mergeGeometries (fixes confirmados en el CDN)
+- Estado de Pages: built, source gh-pages/
+
+Stage Summary:
+- https://googlesitecom.github.io/Googlecom/ JUGABLE con TODOS los arreglos del mensaje #11 en vivo
+- v4.2: armas orientadas (pistola ry=−π/2 medida por vértices, SMG ry=+π/2 signo corregido), bots mueren (lastHitsAt), strafe sereno, ~2000→~20 draw calls y 23→11 luces puntuales SIN borrar gráficos ni modelos
+- Pendiente: recomendar al usuario ROTAR el PAT (expuesto en el chat)
