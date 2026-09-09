@@ -160,3 +160,49 @@ Stage Summary:
 - Tienda funcional de nuevo (coords de spawn corregidas) con aviso contextual
 - Mapa con 4 mecánicas nuevas: pasto con viento, tirolinas, plataformas de salto y barriles explosivos + deslizamiento
 - Rendimiento sin regresión (peor render 9 ms)
+
+---
+Task ID: 6
+Agent: Super Z (agente principal)
+Task: Mapa más ordenado con edificios con interior, más pasto y vegetación, menú estilo Fortnite con pestañas y cambio de controles (+ remates de la sesión cortada anterior)
+
+Work Log:
+- ESTADO INICIAL: el commit b69b9a0 de la sesión cortada dejaba el proyecto SIN COMPILAR (endCinematic inexistente, throwGrenade llamados con kind sin implementar, humo a medias, menú sin tocar) → reparado primero
+- MAPA REORGANIZADO (shared.ts, 380→796 cajas):
+  - Helpers nuevos: wallL (muro con puerta + banda de ventanas practiables: zócalo 0..1,45 + hueco + franja superior), BR (caja en coords locales rotadas N/E/S/O), smallHouse 9×8 (salón+dormitorio con tabique y puerta, sofá/mesa/estante/cama/mesita/bidón, tejado con pretiles), bigHouse 11×9 DOS PLANTAS (escalera interior de 8 peldaños junto a la pared este, forjado con hueco sobre la escalera, muros con ventanas amplias en la 2.ª planta, mobiliario en ambas, tejado accesible con escalera exterior de 14 peldaños y pretil con hueco), barracks 8×5,4 (literas+taquilla)
+  - Colonia residencial NE/SO: 3 casas + casa grande 2P por cuadrante (8 edificios nuevos), calles anchas E-O (z=±26) y N-S (x=±30), parque con árboles/bancos/fuente, mobiliario urbano ordenado (contenedor de residuos, muretes, parada)
+  - Depósito de contenedores NO/SE: 2 filas alineadas de 4 contenedores con pasillos de 8,5 m, uno apilado (se sube con saltador), torre por depósito
+  - Barracón con interior dentro del recinto del radar; plaza del mercado con jardineras alineadas
+  - ELIMINADO todo el desorden: muros en L del barrio industrial, ruinas y barreras simétricas sueltas, cobertura amontonada de la plaza
+  - Reposicionados: 26 árboles, 18 farolas, 12 barriles explosivos, 4 tirolinas (2 nuevas desde los tejados de las casas grandes → radar/gasolinera), 6 saltadores, 12 pociones (dentro de casas y barracón), 9 neones (COLONIA/DEPÓSITO), 10 charcos
+  - WAYPOINTS reescritos (177, incl. 36 interiores generados por las funciones de construcción) — map-check: 177/177 alcanzables, 0 aislados, spawns y pociones despejadas, SIN ERRORES (scripts/wp-blockers.ts para depurar bloqueos)
+- MENÚ ESTILO FORTNITE (menus.tsx reescrito):
+  - Pestañas JUGAR · CONTROLES · AJUSTES · INFORMACIÓN (comprimidas en diagonal, activa amarilla), fondo azul profundo con rayos diagonales + orbes de resplandor + retícula, logo itálico, CTA amarillo grande
+  - CONTROLES: 16 teclas reasignables (clic → "PULSA UNA TECLA" → keydown), conflictos liberados automáticamente (store.setKeybind), ESC cancela, RESTAURAR POR DEFECTO, persistencia en localStorage (fzc-settings), fijos de ratón + mapa completo del mando
+  - El menú de PAUSA reutiliza los mismos paneles (Controles/Ajustes/Info) → se puede reasignar también en partida
+  - JUGAR: selector de modo en tarjetas + config inline (dificultad, bots de relleno, código) + panel de novedades de temporada
+  - HUD: aviso de tienda con la tecla rebindada real (keyLabel), contador de granadas de humo ×N
+- GRANADAS DE HUMO de extremo a extremo: engine.throwGrenade(kind) (aviso si no hay, HUD), net (kind por P2P y worker), sim-worker (GrenadeCmd.kind), sim ya tenía handleGrenadeThrow(...,kind) y smokeSpawn; net.dispatchLocal 'smokeSpawn' → engine.onSmokeSpawn (cortina de 14 sprites con makeSmokeTexture: despliegue 1,6 s → densa → disolución 3 s, deriva ascendente), buildGrenadeModel(g.kind) por granada, econ con smokes → setMoney(money, frags, smokes), dispose de las cortinas
+- CINEMÁTICA DE ENTRADA (struct existía pero nunca se activaba):
+  - startCinematic()/endCinematic() en el motor; curvas CatmullRomCurve3 espejadas por bando (A vuela desde el SE, B desde el NO) sobre mercado→gasolinera/radar→aproximación al spawn; 11 s
+  - drawOverlay: barras de cine que se deslizan + título FRONTERA CERO con fundido + subtítulo + "CLIC O CUALQUIER TECLA PARA OMITIR"; skip por keydown/mousedown; HUD (store.cineActive) y minimapa ocultos durante el vuelo; requestLock al terminar
+  - FIX CRÍTICO: dur estaba en ms pero updateCamera divide por dur*1000 → 3 horas de cinemática (cámara congelada en el aire); ahora dur=11 s
+- VEGETACIÓN: pasto 8200→14000 briznas (media 9000, baja 3200), matones más densos; arbustos InstancedMesh (170, icosahedro achatado, sombras) y flores silvestres (700, 4 colores, 2 quads cruzados) — 3 draw calls nuevos
+  - FIX CRÍTICO ENCONTRADO EN CONSOLA: el shader del pasto usaba uTime SIN declarar el uniform en el GLSL → THREE.WebGLProgram fallaba y EL PASTO NO SE RENDERIZABA (llevaba así desde la sesión del viento) → declarado con #include <common> replace; verificado: 0 errores de shader y pasto visible (VLM)
+- VERIFICACIÓN (agent-browser + VLM, 12 capturas scripts/v8-*.png):
+  - Menú: 4 pestañas visibles, CTA amarillo, sin defectos (VLM)
+  - Rebind E→F: botón cambia a F, localStorage persiste, conflicto F→recarga libera la otra acción ✓
+  - Cinemática: barras + vista aérea + omisión con tecla (fin + pointer lock) ✓; con el fix de dur: 11 s exactos y cámara vuelve al jugador ✓
+  - Interior de casa: muros, puerta, ventana practiable, sin clipping (VLM) ✓
+  - Humo: comprar (smokes 0→2) → lanzar H (→1) → cortina visible bloqueando visión (VLM) ✓
+  - Pasto: visible en el parque tras el fix del shader (VLM) ✓
+  - Fuego sostenido 4 s: 45 frames, sin congelaciones; consola limpia de errores de juego
+  - tsc sin errores, eslint limpio, map-check SIN ERRORES
+- Commit 8093fe8 y push a github.com/googlesitecom/Googlecom (rama main, token del usuario sin guardarlo en .git/config)
+
+Stage Summary:
+- Mapa ordenado por distritos con 13 edificios con interior (6 casas + 2 casas de dos plantas + barracón + mercado + 2 almacenes + gasolinera + tienda del radar)
+- Menú Fortnite con pestañas y reasignación de teclas funcional y persistente (también en pausa)
+- Granadas de humo operativas de principio a fin; cinemática de entrada de 11 s omitible
+- 3 bugs críticos corregidos: compilación rota del commit anterior, shader del pasto (no se renderizaba), duración de la cinemática
+- Proyecto publicado en GitHub (8093fe8)
