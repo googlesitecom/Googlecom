@@ -1,0 +1,847 @@
+     1→     1→// ============================================================
+     2→     2→// FRONTERA CERO — Configuración compartida cliente/servidor
+     3→     3→// Mapa 140×140, pociones de escudo (estilo Fortnite), armas
+     4→     4→// ============================================================
+     5→     5→
+     6→     6→export const GAME = {
+     7→     7→  TICK: 33,              // ms por tick de simulación (30 Hz)
+     8→     8→  SNAPSHOT_EVERY: 2,     // snapshot cada 2 ticks (15 Hz)
+     9→     9→  INPUT_RATE: 50,        // cliente envía input cada 50 ms (20 Hz)
+    10→    10→  INTERP_DELAY: 120,     // ms de interpolación de jugadores remotos
+    11→    11→  ROUND_TIME: 240,       // segundos por ronda
+    12→    12→  ROUND_KILLS: 30,       // kills de equipo para ganar la ronda
+    13→    13→  ROUNDS_TO_WIN: 5,      // rondas para ganar la partida
+    14→    14→  RESPAWN_TIME: 3.0,     // segundos hasta reaparecer
+    15→    15→  SPAWN_PROTECT: 2.5,    // segundos de protección al aparecer
+    16→    16→  BUY_RADIUS: 8,         // metros de la zona de compra
+    17→    17→  START_MONEY: 1000,
+    18→    18→  MAX_MONEY: 16000,
+    19→    19→  KILL_REWARD: 300,
+    20→    20→  HS_REWARD: 100,
+    21→    21→  WIN_REWARD: 2500,
+    22→    22→  LOSE_REWARD: 1900,
+    23→    23→  BOT_COUNT: 8,
+    24→    24→  GRAVITY: 14.0,
+    25→    25→  MAP_HALF: 70,
+    26→    26→  // sistema de vida estilo Fortnite
+    27→    27→  PICKUP_RADIUS: 1.7,    // metros para recoger un objeto
+    28→    28→  PICKUP_RESPAWN: 32,    // segundos hasta reaparecer una poción
+    29→    29→  REGEN_DELAY: 8,        // segundos sin recibir daño para regenerar vida
+    30→    30→  REGEN_HP: 1.2,         // HP por segundo regenerado
+    31→    31→} as const
+    32→    32→
+    33→    33→// Dificultad de los bots (escala reacción, puntería y daño)
+    34→    34→export type BotDifficulty = 'facil' | 'normal' | 'dificil' | 'experto'
+    35→    35→export const BOT_SKILL: Record<BotDifficulty, {
+    36→    36→  react: [number, number]
+    37→    37→  aimSpeed: number
+    38→    38→  hitBase: number
+    39→    39→  aimErr: number
+    40→    40→  burstPause: [number, number]
+    41→    41→  seeDist: number
+    42→    42→  dmg: number             // multiplicador de daño que infligen los bots
+    43→    43→  settle: number           // ms que tarda en "asentar" la puntería tras reaccionar
+    44→    44→}> = {
+    45→    45→  // Rebalanceo: en FÁCIL los bots fallan mucho (hitBase bajo, error de apuntado
+    46→    46→  // grande, reacción lenta y tardan ~2.6 s en asentar la mira)
+    47→    47→  facil:   { react: [900, 1600], aimSpeed: 3.2, hitBase: 0.24, aimErr: 0.40, burstPause: [750, 1400], seeDist: 38, dmg: 0.38, settle: 2600 },
+    48→    48→  normal:  { react: [550, 950],  aimSpeed: 6.0, hitBase: 0.42, aimErr: 0.24, burstPause: [420, 850],  seeDist: 50, dmg: 0.48, settle: 1500 },
+    49→    49→  dificil: { react: [300, 520],  aimSpeed: 9.0, hitBase: 0.58, aimErr: 0.12, burstPause: [240, 450],  seeDist: 62, dmg: 0.56, settle: 850 },
+    50→    50→  experto: { react: [190, 330],  aimSpeed: 12.0, hitBase: 0.72, aimErr: 0.06, burstPause: [160, 310],  seeDist: 70, dmg: 0.64, settle: 500 },
+    51→    51→}
+    52→    52→
+    53→    53→export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
+    54→    54→  facil: 'FÁCIL', normal: 'NORMAL', dificil: 'DIFÍCIL', experto: 'EXPERTO',
+    55→    55→}
+    56→    56→
+    57→    57→export type Team = 'A' | 'B'
+    58→    58→export type WeaponId =
+    59→    59→  | 'knife' | 'p9' | 'aguila' | 'mp9' | 'breacher' | 'ar47' | 'cr4' | 'awp338'
+    60→    60→export type BodyPart = 'head' | 'body' | 'legs'
+    61→    61→export type HitPart = BodyPart
+    62→    62→
+    63→    63→export const TEAM_INFO: Record<Team, { name: string; color: string; accent: string }> = {
+    64→    64→  A: { name: 'ESCUADRÓN ÁMBAR', color: '#f59e0b', accent: '#fbbf24' },
+    65→    65→  B: { name: 'ESCUADRÓN VERDE', color: '#22c55e', accent: '#4ade80' },
+    66→    66→}
+    67→    67→
+    68→    68→// ------------------------------------------------------------
+    69→    69→// ARMAS
+    70→    70→// ------------------------------------------------------------
+    71→    71→export interface WeaponConfig {
+    72→    72→  id: WeaponId
+    73→    73→  name: string
+    74→    74→  slot: 'primary' | 'secondary' | 'melee' | 'grenade'
+    75→    75→  price: number
+    76→    76→  damage: number          // daño base por bala (cuerpo, sin escudo, cerca)
+    77→    77→  headMult: number
+    78→    78→  legMult: number
+    79→    79→  rpm: number             // disparos por minuto
+    80→    80→  auto: boolean
+    81→    81→  pellets: number         // perdigones (escopeta = 8)
+    82→    82→  mag: number
+    83→    83→  reserve: number
+    84→    84→  reloadTime: number      // segundos
+    85→    85→  spreadBase: number      // grados de dispersión base
+    86→    86→  spreadMove: number      // dispersión extra al moverse (grados a máx velocidad)
+    87→    87→  spreadAir: number       // dispersión extra en el aire
+    88→    88→  recoilV: number         // kick vertical por disparo (grados)
+    89→    89→  recoilH: number         // deriva horizontal por disparo (grados)
+    90→    90→  recoilRecover: number   // velocidad de recuperación (0..1)
+    91→    91→  sprayInacc: number      // dispersión extra por bala sostenida (grados/bala)
+    92→    92→  zoomFov: number         // FOV al apuntar (0 = sin ADS especial)
+    93→    93→  sniper: boolean         // mira telescópica con overlay
+    94→    94→  moveMult: number        // multiplicador de velocidad al portarla
+    95→    95→  falloffStart: number    // inicio de caída de daño (m)
+    96→    96→  falloffEnd: number      // fin de caída (m)
+    97→    97→  falloffMin: number      // multiplicador mínimo de daño a distancia
+    98→    98→  sound: 'pistol' | 'deagle' | 'smg' | 'shotgun' | 'rifle' | 'sniper'
+    99→    99→}
+   100→   100→
+   101→   101→export const WEAPONS: Record<WeaponId, WeaponConfig> = {
+   102→   102→  knife: {
+   103→   103→    id: 'knife', name: 'Cuchillo Táctico', slot: 'melee', price: 0,
+   104→   104→    damage: 55, headMult: 2.0, legMult: 1.0,
+   105→   105→    rpm: 120, auto: false, pellets: 1, mag: 0, reserve: 0, reloadTime: 0,
+   106→   106→    spreadBase: 0, spreadMove: 0, spreadAir: 0,
+   107→   107→    recoilV: 0.6, recoilH: 0.2, recoilRecover: 0.9, sprayInacc: 0,
+   108→   108→    zoomFov: 0, sniper: false, moveMult: 1.08,
+   109→   109→    falloffStart: 100, falloffEnd: 100, falloffMin: 1, sound: 'pistol',
+   110→   110→  },
+   111→   111→  p9: {
+   112→   112→    id: 'p9', name: 'P9 Compacto', slot: 'secondary', price: 0,
+   113→   113→    damage: 33, headMult: 4.0, legMult: 0.75,
+   114→   114→    rpm: 400, auto: false, pellets: 1, mag: 15, reserve: 90, reloadTime: 2.2,
+   115→   115→    spreadBase: 0.35, spreadMove: 1.6, spreadAir: 3.5,
+   116→   116→    recoilV: 1.1, recoilH: 0.45, recoilRecover: 0.85, sprayInacc: 0.10,
+   117→   117→    zoomFov: 62, sniper: false, moveMult: 1.02,
+   118→   118→    falloffStart: 18, falloffEnd: 55, falloffMin: 0.68, sound: 'pistol',
+   119→   119→  },
+   120→   120→  aguila: {
+   121→   121→    id: 'aguila', name: 'Águila .50', slot: 'secondary', price: 700,
+   122→   122→    damage: 58, headMult: 4.0, legMult: 0.80,
+   123→   123→    rpm: 267, auto: false, pellets: 1, mag: 7, reserve: 35, reloadTime: 2.2,
+   124→   124→    spreadBase: 0.55, spreadMove: 2.4, spreadAir: 5,
+   125→   125→    recoilV: 3.2, recoilH: 0.8, recoilRecover: 0.75, sprayInacc: 0.25,
+   126→   126→    zoomFov: 60, sniper: false, moveMult: 1.0,
+   127→   127→    falloffStart: 20, falloffEnd: 60, falloffMin: 0.7, sound: 'deagle',
+   128→   128→  },
+   129→   129→  mp9: {
+   130→   130→    id: 'mp9', name: 'MP-9 Vecto', slot: 'primary', price: 1250,
+   131→   131→    damage: 26, headMult: 3.0, legMult: 0.75,
+   132→   132→    rpm: 750, auto: true, pellets: 1, mag: 30, reserve: 120, reloadTime: 2.3,
+   133→   133→    spreadBase: 0.5, spreadMove: 0.9, spreadAir: 4.5,
+   134→   134→    recoilV: 0.65, recoilH: 0.5, recoilRecover: 0.9, sprayInacc: 0.07,
+   135→   135→    zoomFov: 60, sniper: false, moveMult: 1.04,
+   136→   136→    falloffStart: 14, falloffEnd: 45, falloffMin: 0.6, sound: 'smg',
+   137→   137→  },
+   138→   138→  breacher: {
+   139→   139→    id: 'breacher', name: 'Breacher-12', slot: 'primary', price: 1800,
+   140→   140→    damage: 12, headMult: 2.0, legMult: 0.9,
+   141→   141→    rpm: 68, auto: false, pellets: 8, mag: 6, reserve: 32, reloadTime: 3.0,
+   142→   142→    spreadBase: 3.2, spreadMove: 1.2, spreadAir: 4,
+   143→   143→    recoilV: 4.5, recoilH: 1.0, recoilRecover: 0.7, sprayInacc: 0.2,
+   144→   144→    zoomFov: 66, sniper: false, moveMult: 0.97,
+   145→   145→    falloffStart: 8, falloffEnd: 22, falloffMin: 0.28, sound: 'shotgun',
+   146→   146→  },
+   147→   147→  ar47: {
+   148→   148→    id: 'ar47', name: "AR-47 «Cóndor»", slot: 'primary', price: 2700,
+   149→   149→    damage: 36, headMult: 4.0, legMult: 0.75,
+   150→   150→    rpm: 600, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 2.5,
+   151→   151→    spreadBase: 0.35, spreadMove: 2.6, spreadAir: 6,
+   152→   152→    recoilV: 1.35, recoilH: 0.75, recoilRecover: 0.8, sprayInacc: 0.12,
+   153→   153→    zoomFov: 55, sniper: false, moveMult: 0.94,
+   154→   154→    falloffStart: 25, falloffEnd: 70, falloffMin: 0.75, sound: 'rifle',
+   155→   155→  },
+   156→   156→  cr4: {
+   157→   157→    id: 'cr4', name: 'Carabina CR-4', slot: 'primary', price: 2900,
+   158→   158→    damage: 33, headMult: 4.0, legMult: 0.75,
+   159→   159→    rpm: 666, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 3.1,
+   160→   160→    spreadBase: 0.3, spreadMove: 2.2, spreadAir: 5,
+   161→   161→    recoilV: 1.0, recoilH: 0.5, recoilRecover: 0.85, sprayInacc: 0.09,
+   162→   162→    zoomFov: 55, sniper: false, moveMult: 0.95,
+   163→   163→    falloffStart: 28, falloffEnd: 75, falloffMin: 0.78, sound: 'rifle',
+   164→   164→  },
+   165→   165→  awp338: {
+   166→   166→    id: 'awp338', name: 'FR-338 Tirador', slot: 'primary', price: 4750,
+   167→   167→    damage: 115, headMult: 2.5, legMult: 0.85,
+   168→   168→    rpm: 41, auto: false, pellets: 1, mag: 5, reserve: 30, reloadTime: 3.7,
+   169→   169→    spreadBase: 0.2, spreadMove: 5.0, spreadAir: 8,
+   170→   170→    recoilV: 5.0, recoilH: 1.2, recoilRecover: 0.65, sprayInacc: 0,
+   171→   171→    zoomFov: 9, sniper: true, moveMult: 0.85,
+   172→   172→    falloffStart: 200, falloffEnd: 300, falloffMin: 1, sound: 'sniper',
+   173→   173→  },
+   174→   174→}
+   175→   175→
+   176→   176→export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke'; name: string; price: number; desc: string; cat: string }[] = [
+   177→   177→  { id: 'w:aguila', weapon: 'aguila', name: 'Águila .50', price: 700, desc: 'Pistola de alto calibre', cat: 'Pistolas' },
+   178→   178→  { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'SMG rápida y ágil', cat: 'SMG' },
+   179→   179→  { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Escopeta de caño corto', cat: 'Escopetas' },
+   180→   180→  { id: 'w:ar47', weapon: 'ar47', name: 'AR-47 «Cóndor»', price: 2700, desc: 'Rifle de asalto 7.62', cat: 'Rifles' },
+   181→   181→  { id: 'w:cr4', weapon: 'cr4', name: 'Carabina CR-4', price: 2900, desc: 'Rifle de asalto 5.56', cat: 'Rifles' },
+   182→   182→  { id: 'w:awp338', weapon: 'awp338', name: 'FR-338 Tirador', price: 4750, desc: 'Francotirador letal', cat: 'Francotirador' },
+   183→   183→  { id: 'e:shield', equip: 'shield', name: 'Escudo Completo', price: 1000, desc: 'Sube el escudo a 100', cat: 'Equipamiento' },
+   184→   184→  { id: 'e:frag', equip: 'frag', name: 'Granada MOLO', price: 300, desc: 'Máx. 2 unidades', cat: 'Equipamiento' },
+   185→   185→  { id: 'e:smoke', equip: 'smoke', name: 'Granada de Humo', price: 200, desc: 'Cortina de humo 12 s · máx. 2', cat: 'Equipamiento' },
+   186→   186→]
+   187→   187→
+   188→   188→// ------------------------------------------------------------
+   189→   189→// TECLAS CONFIGURABLES (rebindable en el menú)
+   190→   190→// ------------------------------------------------------------
+   191→   191→export type ActionId =
+   192→   192→  | 'fwd' | 'back' | 'left' | 'right'
+   193→   193→  | 'sprint' | 'crouch' | 'jump'
+   194→   194→  | 'reload' | 'grenadeFrag' | 'grenadeSmoke'
+   195→   195→  | 'buy' | 'lastWeapon' | 'zipline'
+   196→   196→  | 'slot1' | 'slot2' | 'slot3'
+   197→   197→
+   198→   198→export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
+   199→   199→  fwd: 'KeyW',
+   200→   200→  back: 'KeyS',
+   201→   201→  left: 'KeyA',
+   202→   202→  right: 'KeyD',
+   203→   203→  sprint: 'ShiftLeft',
+   204→   204→  crouch: 'ControlLeft',
+   205→   205→  jump: 'Space',
+   206→   206→  reload: 'KeyR',
+   207→   207→  grenadeFrag: 'KeyG',
+   208→   208→  grenadeSmoke: 'KeyH',
+   209→   209→  buy: 'KeyB',
+   210→   210→  lastWeapon: 'KeyQ',
+   211→   211→  zipline: 'KeyE',
+   212→   212→  slot1: 'Digit1',
+   213→   213→  slot2: 'Digit2',
+   214→   214→  slot3: 'Digit3',
+   215→   215→}
+   216→   216→
+   217→   217→export const ACTION_LABELS: Record<ActionId, string> = {
+   218→   218→  fwd: 'Avanzar',
+   219→   219→  back: 'Retroceder',
+   220→   220→  left: 'Izquierda',
+   221→   221→  right: 'Derecha',
+   222→   222→  sprint: 'Esprintar',
+   223→   223→  crouch: 'Agacharse',
+   224→   224→  jump: 'Saltar',
+   225→   225→  reload: 'Recargar',
+   226→   226→  grenadeFrag: 'Granada MOLO',
+   227→   227→  grenadeSmoke: 'Granada de humo',
+   228→   228→  buy: 'Tienda',
+   229→   229→  lastWeapon: 'Arma anterior',
+   230→   230→  zipline: 'Interactuar / Tirolina',
+   231→   231→  slot1: 'Arma principal',
+   232→   232→  slot2: 'Arma secundaria',
+   233→   233→  slot3: 'Cuchillo',
+   234→   234→}
+   235→   235→
+   236→   236→/** Convierte un KeyboardEvent.code a etiqueta legible (KeyW → W, Digit1 → 1…) */
+   237→   237→export function keyLabel(code: string): string {
+   238→   238→  if (!code) return '—'
+   239→   239→  if (code.startsWith('Key')) return code.slice(3)
+   240→   240→  if (code.startsWith('Digit')) return code.slice(5)
+   241→   241→  if (code.startsWith('Numpad')) return 'NUM ' + code.slice(6)
+   242→   242→  if (code.startsWith('Arrow')) {
+   243→   243→    const names: Record<string, string> = { Up: '↑', Down: '↓', Left: '←', Right: '→' }
+   244→   244→    return names[code.slice(5)] ?? code
+   245→   245→  }
+   246→   246→  const names: Record<string, string> = {
+   247→   247→    Space: 'ESPACIO', ShiftLeft: 'MAYÚS IZQ', ShiftRight: 'MAYÚS DER',
+   248→   248→    ControlLeft: 'CTRL IZQ', ControlRight: 'CTRL DER',
+   249→   249→    AltLeft: 'ALT', AltRight: 'ALT GR', Enter: 'ENTER', Tab: 'TAB',
+   250→   250→    CapsLock: 'BLOQ MAYÚS', Backquote: '`', Minus: '-', Equal: '=',
+   251→   251→    BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+   252→   252→    Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+   253→   253→  }
+   254→   254→  return names[code] ?? code.toUpperCase()
+   255→   255→}
+   256→   256→
+   257→   257→export const WEAPON_LIST = Object.values(WEAPONS)
+   258→   258→
+   259→   259→export function weaponIndex(id: WeaponId): number {
+   260→   260→  return WEAPON_LIST.findIndex(w => w.id === id)
+   261→   261→}
+   262→   262→export function weaponByIndex(i: number): WeaponId {
+   263→   263→  return WEAPON_LIST[i]?.id ?? 'p9'
+   264→   264→}
+   265→   265→
+   266→   266→/** Daño efectivo de un arma (sin escudo: la absorción la aplica la simulación) */
+   267→   267→export function computeDamage(w: WeaponConfig, part: BodyPart, distance: number): number {
+   268→   268→  let dmg = w.damage
+   269→   269→  if (part === 'head') dmg *= w.headMult
+   270→   270→  else if (part === 'legs') dmg *= w.legMult
+   271→   271→  if (distance > w.falloffStart) {
+   272→   272→    const t = Math.min(1, (distance - w.falloffStart) / Math.max(1, w.falloffEnd - w.falloffStart))
+   273→   273→    dmg *= 1 - (1 - w.falloffMin) * t
+   274→   274→  }
+   275→   275→  return Math.round(dmg)
+   276→   276→}
+   277→   277→
+   278→   278→// ------------------------------------------------------------
+   279→   279→// OBJETOS DE CURACIÓN (estilo Fortnite)
+   280→   280→// ------------------------------------------------------------
+   281→   281→export type PickupKind = 'medkit' | 'bandage' | 'shieldSmall' | 'shieldBig'
+   282→   282→
+   283→   283→export const PICKUP_INFO: Record<PickupKind, { name: string; hp: number; shield: number; color: number }> = {
+   284→   284→  medkit:      { name: 'Botiquín',            hp: 50, shield: 0,  color: 0xef4444 },
+   285→   285→  bandage:     { name: 'Vendaje',             hp: 15, shield: 0,  color: 0xfca5a5 },
+   286→   286→  shieldSmall: { name: 'Poción de Escudo S',  hp: 0,  shield: 25, color: 0x38bdf8 },
+   287→   287→  shieldBig:   { name: 'Poción de Escudo G',  hp: 0,  shield: 50, color: 0x0ea5e9 },
+   288→   288→}
+   289→   289→
+   290→   290→export interface PickupSpot { kind: PickupKind; x: number; z: number }
+   291→   291→
+   292→   292→/** Posiciones de pociones/botiquines por el mapa (se recogen al acercarse) */
+   293→   293→export const PICKUP_SPOTS: PickupSpot[] = [
+   294→   294→  // mercado central
+   295→   295→  { kind: 'bandage', x: 0, z: 5 },
+   296→   296→  { kind: 'shieldSmall', x: 0, z: -5 },
+   297→   297→  // almacenes
+   298→   298→  { kind: 'shieldBig', x: 0, z: -44 },
+   299→   299→  { kind: 'medkit', x: 0, z: 44 },
+   300→   300→  // gasolinera / radar
+   301→   301→  { kind: 'shieldSmall', x: -49.5, z: 0 },
+   302→   302→  { kind: 'shieldBig', x: 44, z: 4 },
+   303→   303→  // barrios NE / SW
+   304→   304→  { kind: 'bandage', x: 34, z: -26 },
+   305→   305→  { kind: 'shieldSmall', x: -34, z: 26 },
+   306→   306→  // patios NW / SE
+   307→   307→  { kind: 'shieldSmall', x: -32, z: -30 },
+   308→   308→  { kind: 'bandage', x: 32, z: 30 },
+   309→   309→  // junto a los autobuses
+   310→   310→  { kind: 'medkit', x: 19, z: 0 },
+   311→   311→  { kind: 'shieldBig', x: -19, z: 0 },
+   312→   312→  // flancos de torres
+   313→   313→  { kind: 'shieldSmall', x: 3, z: -26 },
+   314→   314→  { kind: 'bandage', x: -3, z: 26 },
+   315→   315→]
+   316→   316→
+   317→   317→export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
+   318→   318→
+   319→   319→// ------------------------------------------------------------
+   320→   320→// MAPA — cajas AABB (y = centro). Unidad: metros. 140×140
+   321→   321→// ------------------------------------------------------------
+   322→   322→export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive'
+   323→   323→
+   324→   324→export interface MapBox {
+   325→   325→  x: number; y: number; z: number
+   326→   326→  w: number; h: number; d: number
+   327→   327→  mat: MatKey
+   328→   328→}
+   329→   329→
+   330→   330→function box(x: number, y: number, z: number, w: number, h: number, d: number, mat: MatKey): MapBox {
+   331→   331→  return { x, y, z, w, h, d, mat }
+   332→   332→}
+   333→   333→
+   334→   334→const MAP: MapBox[] = []
+   335→   335→function B(...a: Parameters<typeof box>) { MAP.push(box(...a)) }
+   336→   336→
+   337→   337→// --- Perímetro 140×140 (muros de 6.5 m) ---
+   338→   338→B(0, 3.25, -70.5, 142, 6.5, 1.5, 'sand')
+   339→   339→B(0, 3.25, 70.5, 142, 6.5, 1.5, 'sand')
+   340→   340→B(-70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
+   341→   341→B(70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
+   342→   342→for (const v of [-64, -48, -32, -16, 0, 16, 32, 48, 64]) {
+   343→   343→  B(v, 3.6, -70.5, 2.4, 7.2, 2.4, 'concrete')
+   344→   344→  B(v, 3.6, 70.5, 2.4, 7.2, 2.4, 'concrete')
+   345→   345→  B(-70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+   346→   346→  B(70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+   347→   347→}
+   348→   348→
+   349→   349→// --- Muros con puerta central (edificios genéricos) ---
+   350→   350→/** Muro a lo largo del eje `ax`, en la coordenada fija `at`, desde `from` hasta `to`, con puerta centrada de ancho 2·gateHalf */
+   351→   351→function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: number, T: number, mat: MatKey, gateHalf = 1.6, doorH = 0) {
+   352→   352→  const lo = Math.min(from, to), hi = Math.max(from, to)
+   353→   353→  const mid = (lo + hi) / 2
+   354→   354→  const mk = (c: number, len: number) => {
+   355→   355→    if (len <= 0.05) return
+   356→   356→    if (ax === 'x') B(c, H / 2, at, len, H, T, mat)
+   357→   357→    else B(at, H / 2, c, T, H, len, mat)
+   358→   358→  }
+   359→   359→  mk((lo + (mid - gateHalf)) / 2, (mid - gateHalf) - lo)
+   360→   360→  mk((hi + (mid + gateHalf)) / 2, hi - (mid + gateHalf))
+   361→   361→  // dintel sobre la puerta (doorH = altura libre de la puerta)
+   362→   362→  if (gateHalf > 0 && H > doorH + 0.6) {
+   363→   363→    const lintelH = H - Math.max(doorH, 0.01)
+   364→   364→    if (lintelH > 0.15) {
+   365→   365→      if (ax === 'x') B(mid, H - lintelH / 2, at, gateHalf * 2, lintelH, T, mat)
+   366→   366→      else B(at, H - lintelH / 2, mid, T, lintelH, gateHalf * 2, mat)
+   367→   367→    }
+   368→   368→  }
+   369→   369→}
+   370→   370→
+   371→   371→// --- Mercado Central (0,0) 22×22, puertas de 3.2 m en cada lado ---
+   372→   372→const MW = 11, MH = 4.6, MT = 0.6, MG = 1.6
+   373→   373→for (const side of [-1, 1]) {
+   374→   374→  // Norte (z = -MW) y Sur (z = +MW)
+   375→   375→  const segW = MW - MG
+   376→   376→  B(-(MG + segW / 2), MH / 2, -MW, segW, MH, MT, 'sand')
+   377→   377→  B(MG + segW / 2, MH / 2, -MW, segW, MH, MT, 'sand')
+   378→   378→  B(-(MG + segW / 2), MH / 2, MW, segW, MH, MT, 'sand')
+   379→   379→  B(MG + segW / 2, MH / 2, MW, segW, MH, MT, 'sand')
+   380→   380→  B(0, MH - 0.5, -MW, MG * 2, 1, MT, 'sand')
+   381→   381→  B(0, MH - 0.5, MW, MG * 2, 1, MT, 'sand')
+   382→   382→  // Este (x = MW) y Oeste (x = -MW)
+   383→   383→  B(MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
+   384→   384→  B(MW, MH / 2, MG + segW / 2, MT, MH, segW, 'sand')
+   385→   385→  B(-MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
+   386→   386→  B(-MW, MH / 2, MG + segW / 2, MT, MH, segW, 'sand')
+   387→   387→  B(MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
+   388→   388→  B(-MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
+   389→   389→}
+   390→   390→// pilares de esquina e interiores
+   391→   391→for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+   392→   392→  B(sx * 10.6, MH / 2, sz * 10.6, 1, MH, 1, 'concrete')
+   393→   393→  B(sx * 6.5, MH / 2, sz * 6.5, 0.7, MH, 0.7, 'concrete')
+   394→   394→}
+   395→   395→// puestos interiores (escondites)
+   396→   396→for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+   397→   397→  B(sx * 4.5, 0.6, sz * 1.8, 1.2, 1.2, 1.2, 'crate')
+   398→   398→  B(sx * 4.5, 1.8, sz * 1.8, 1.2, 1.2, 1.2, 'crate')
+   399→   399→  B(sx * 2.0, 0.45, sz * 5.2, 0.7, 0.9, 0.7, 'barrel')
+   400→   400→}
+   401→   401→// techo con parapeto (hueco en N/S donde llegan las escaleras)
+   402→   402→B(0, MH + 0.15, 0, 23, 0.3, 23, 'roof')
+   403→   403→B(4.15, MH + 0.45, -11.35, 14.9, 0.4, 0.3, 'concrete')   // parapeto N (hueco a la izquierda)
+   404→   404→B(-4.15, MH + 0.45, 11.35, 14.9, 0.4, 0.3, 'concrete')  // parapeto S (hueco a la derecha)
+   405→   405→B(11.35, MH + 0.45, 0, 0.3, 0.4, 23, 'concrete')
+   406→   406→B(-11.35, MH + 0.45, 0, 0.3, 0.4, 23, 'concrete')
+   407→   407→// escaleras exteriores N y S (suben al techo, sin tapar las puertas)
+   408→   408→for (let i = 0; i < 9; i++) {
+   409→   409→  const h = 0.5 * (i + 1)
+   410→   410→  B(-11 + 0.9 * i, h / 2, -12.9, 1.0, h, 1.6, 'concrete')
+   411→   411→  B(11 - 0.9 * i, h / 2, 12.9, 1.0, h, 1.6, 'concrete')
+   412→   412→}
+   413→   413→
+   414→   414→// --- Torres de vigilancia (genéricas) ---
+   415→   415→function tower(cx: number, cz: number, stairsFrom: number): void {
+   416→   416→  B(cx, 1.6, cz, 2.0, 3.2, 2.0, 'concrete')
+   417→   417→  B(cx, 3.5, cz, 4.4, 0.3, 4.4, 'concrete')
+   418→   418→  B(cx, 3.9, cz - 2.1, 4.4, 0.55, 0.3, 'metalOrange')
+   419→   419→  B(cx, 3.9, cz + 2.1, 4.4, 0.55, 0.3, 'metalOrange')
+   420→   420→  B(cx - 2.1, 3.9, cz, 0.3, 0.55, 4.4, 'metalOrange')
+   421→   421→  B(cx + 2.1, 3.9, cz, 0.3, 0.55, 4.4, 'metalOrange')
+   422→   422→  for (let i = 0; i < 7; i++) {
+   423→   423→    const h = 0.5 * (i + 1)
+   424→   424→    const z = cz + stairsFrom * (6.0 - i * 0.62)
+   425→   425→    B(cx, h / 2 - 0.02, z, 1.6, h, 0.62, 'concrete')
+   426→   426→  }
+   427→   427→}
+   428→   428→tower(0, -26, 1)    // torre norte (escaleras al sur)
+   429→   429→tower(0, 26, -1)    // torre sur (escaleras al norte)
+   430→   430→
+   431→   431→// --- Almacenes (0,±44) 26×17 con puertas frontal y laterales ---
+   432→   432→function warehouse(cz: number, faceTo: number): void {
+   433→   433→  const XW = 13, ZW = 8.5, H = 5.5, TW = 0.6, G = 2.4
+   434→   434→  // pared trasera
+   435→   435→  B(0, H / 2, cz - faceTo * ZW, XW * 2, H, TW, 'metalBlue')
+   436→   436→  // pared frontal con puerta central
+   437→   437→  const fz = cz + faceTo * ZW
+   438→   438→  const seg = XW - G
+   439→   439→  B(-(G + seg / 2), H / 2, fz, seg, H, TW, 'metalBlue')
+   440→   440→  B(G + seg / 2, H / 2, fz, seg, H, TW, 'metalBlue')
+   441→   441→  B(0, H - 0.55, fz, G * 2, 1.1, TW, 'metalBlue')
+   442→   442→  // laterales con puertas
+   443→   443→  for (const sx of [-1, 1]) {
+   444→   444→    const segZ = ZW - G
+   445→   445→    B(sx * XW, H / 2, cz - (G + segZ / 2), TW, H, segZ, 'metalBlue')
+   446→   446→    B(sx * XW, H / 2, cz + (G + segZ / 2), TW, H, segZ, 'metalBlue')
+   447→   447→    B(sx * XW, H - 0.55, cz, TW, 1.1, G * 2, 'metalBlue')
+   448→   448→  }
+   449→   449→  // techo
+   450→   450→  B(0, H + 0.15, cz, XW * 2 + 1.6, 0.3, ZW * 2 + 1.6, 'roof')
+   451→   451→  // carga interior
+   452→   452→  B(5, 1.2, cz - faceTo * 2, 2.5, 2.4, 6, 'metalGreen')
+   453→   453→  B(-6, 0.6, cz - faceTo * 4, 1.4, 1.2, 1.4, 'crate')
+   454→   454→  B(-6, 1.8, cz - faceTo * 4, 1.4, 1.2, 1.4, 'crate')
+   455→   455→  B(2.5, 0.45, cz + faceTo * 4, 0.7, 0.9, 0.7, 'barrel')
+   456→   456→  B(9, 0.45, cz + faceTo * 5, 0.7, 0.9, 0.7, 'barrel')
+   457→   457→  // muelle de carga frente a la puerta (bajo: se sube con un paso)
+   458→   458→  B(0, 0.225, fz + faceTo * 1.4, 7, 0.45, 2, 'concrete')
+   459→   459→}
+   460→   460→warehouse(-44, 1)   // almacén norte (puerta al sur)
+   461→   461→warehouse(44, -1)   // almacén sur (puerta al norte)
+   462→   462→
+   463→   463→// --- Gasolinera Oeste (-44,0): tienda + marquesina con bombas ---
+   464→   464→gatedWall('x', -4, -54.5, -44.5, 3.6, 0.5, 'sand', 0, 0)       // pared norte tienda (sin puerta)
+   465→   465→gatedWall('x', 4, -54.5, -44.5, 3.6, 0.5, 'sand', 1.5, 2.6)    // pared sur tienda (puerta al sur)
+   466→   466→gatedWall('z', -54.5, -4, 4, 3.6, 0.5, 'sand', 0, 0)           // pared oeste (sin puerta)
+   467→   467→gatedWall('z', -44.5, -4, 4, 3.6, 0.5, 'sand', 1.5, 2.6)       // pared este (puerta a la marquesina)
+   468→   468→B(-49.5, 3.75, 0, 10.8, 0.3, 8.8, 'roof')                      // techo tienda
+   469→   469→B(-52.5, 0.55, 0, 1.2, 1.1, 3, 'crate')                        // mostrador
+   470→   470→B(-49.5, 0.6, 3, 3, 1.2, 0.9, 'crate')                         // estantería
+   471→   471→B(-49.5, 0.6, -3, 3, 1.2, 0.9, 'crate')                        // estantería
+   472→   472→B(-39, 4.4, 0, 14, 0.5, 12, 'roof')                            // marquesina
+   473→   473→for (const px of [-45.5, -32.5]) for (const pz of [-5, 5]) B(px, 2.1, pz, 0.5, 4.2, 0.5, 'concrete')
+   474→   474→B(-39, 0.6, -2.2, 1.2, 1.2, 1.2, 'metalRed')                   // bomba
+   475→   475→B(-39, 0.6, 2.2, 1.2, 1.2, 1.2, 'metalRed')                    // bomba
+   476→   476→B(-39, 1.8, 2.2, 1.2, 1.2, 1.2, 'metalRed')                    // bomba apilada
+   477→   477→B(-46, 0.45, -7, 0.7, 0.9, 0.7, 'barrel')                      // bidones
+   478→   478→B(-47.6, 0.45, -7.4, 0.7, 0.9, 0.7, 'barrel')
+   479→   479→B(-46.8, 0.45, -8.6, 0.7, 0.9, 0.7, 'barrel')
+   480→   480→
+   481→   481→// --- Estación de Radar Este (44,0): compuesto amurallado ---
+   482→   482→gatedWall('z', 33, -10, 10, 2.6, 0.5, 'concrete', 2.2, 2.1)    // muro oeste con puerta
+   483→   483→gatedWall('z', 55, -10, 10, 2.6, 0.5, 'concrete', 0, 0)        // muro este
+   484→   484→gatedWall('x', -10, 33, 55, 2.6, 0.5, 'concrete', 0, 0)        // muro norte
+   485→   485→gatedWall('x', 10, 33, 55, 2.6, 0.5, 'concrete', 2.2, 2.1)     // muro sur con puerta
+   486→   486→B(48, 1.5, -3, 3, 3, 3, 'concrete')                            // base del radar
+   487→   487→B(48, 3.2, -3, 4, 0.4, 4, 'metalOrange')                       // plataforma radar
+   488→   488→B(48, 4.2, -3, 0.4, 1.6, 0.4, 'metalGrey')                     // antena
+   489→   489→B(37, 0.7, 4, 1.4, 1.4, 1.4, 'crate')                          // generadores
+   490→   490→B(40, 0.7, 5, 1.4, 1.4, 1.4, 'crate')
+   491→   491→B(52, 0.6, 3, 1.2, 1.2, 1.2, 'crate')
+   492→   492→// trinchera exterior junto a la puerta oeste (con hueco central)
+   493→   493→for (const z of [-4, -2.2, 2.2, 4]) B(28.5, 0.4, z, 3, 0.8, 0.6, 'sandbag')
+   494→   494→
+   495→   495→// --- Barrio industrial NE / SW (callejones con escondites) ---
+   496→   496→for (const [sx, sz] of [[1, -1], [-1, 1]] as [number, number][]) {
+   497→   497→  // muros en L que forman callejones
+   498→   498→  B(sx * 34, 1.4, sz * 20, 12, 2.8, 0.5, 'sand')
+   499→   499→  B(sx * 39, 1.4, sz * 26, 0.5, 2.8, 12, 'sand')
+   500→   500→  B(sx * 30, 1.4, sz * 32, 0.5, 2.8, 14, 'sand')
+   501→   501→  B(sx * 36, 1.4, sz * 38, 12, 2.8, 0.5, 'sand')
+   502→   502→  B(sx * 44, 1.4, sz * 34, 0.5, 2.8, 10, 'sand')
+   503→   503→  // contenedores con vista
+   504→   504→  B(sx * 30, 1.2, sz * 24, 6, 2.4, 2.5, 'metalRed')
+   505→   505→  B(sx * 44, 1.2, sz * 24, 2.5, 2.4, 6, 'metalBlue')
+   506→   506→  B(sx * 44, 3.6, sz * 24, 2.5, 2.4, 6, 'metalBlue')
+   507→   507→  // escalera de cajas para subir al contenedor apilado
+   508→   508→  for (let i = 0; i < 4; i++) {
+   509→   509→    const h = 0.5 * (i + 1)
+   510→   510→    B(sx * 44, h / 2, sz * (18.8 - 0.9 * i), 1.4, h, 0.9, 'crate')
+   511→   511→  }
+   512→   512→  // ruinas y cobertura suelta
+   513→   513→  B(sx * 24, 1.1, sz * 40, 8, 2.2, 0.45, 'sand')
+   514→   514→  B(sx * 50, 1.1, sz * 22, 0.45, 2.2, 6, 'sand')
+   515→   515→  B(sx * 27, 0.6, sz * 33, 1.2, 1.2, 1.2, 'crate')
+   516→   516→  B(sx * 28.4, 0.6, sz * 33.4, 1.2, 1.2, 1.2, 'crate')
+   517→   517→  B(sx * 27.7, 1.8, sz * 33.2, 1.2, 1.2, 1.2, 'crate')
+   518→   518→  B(sx * 37, 0.45, sz * 42, 0.7, 0.9, 0.7, 'barrel')
+   519→   519→  B(sx * 50, 0.45, sz * 30, 0.7, 0.9, 0.7, 'barrel')
+   520→   520→  B(sx * 41, 0.4, sz * 28, 3, 0.8, 0.6, 'sandbag')
+   521→   521→}
+   522→   522→
+   523→   523→// --- Patio de contenedores NW / SE (filas con pasillos) ---
+   524→   524→for (const [sx, sz] of [[-1, -1], [1, 1]] as [number, number][]) {
+   525→   525→  B(sx * 24, 1.2, sz * 22, 2.5, 2.4, 6, 'metalGreen')
+   526→   526→  B(sx * 24, 3.6, sz * 22, 2.5, 2.4, 6, 'metalGreen')
+   527→   527→  B(sx * 32, 1.2, sz * 20, 6, 2.4, 2.5, 'metalOrange')
+   528→   528→  B(sx * 40, 1.2, sz * 22, 2.5, 2.4, 6, 'metalRed')
+   529→   529→  B(sx * 48, 1.2, sz * 24, 6, 2.4, 2.5, 'metalBlue')
+   530→   530→  B(sx * 28, 1.2, sz * 34, 2.5, 2.4, 6, 'metalBlue')
+   531→   531→  B(sx * 36, 1.2, sz * 36, 2.5, 2.4, 6, 'metalRed')
+   532→   532→  B(sx * 44, 1.2, sz * 34, 6, 2.4, 2.5, 'metalGreen')
+   533→   533→  B(sx * 52, 1.2, sz * 34, 2.5, 2.4, 6, 'metalOrange')
+   534→   534→  // torre de vigilancia del patio
+   535→   535→  tower(sx * 44, sz * 46, -sz)
+   536→   536→  // cobertura suelta
+   537→   537→  B(sx * 34, 0.6, sz * 28, 1.2, 1.2, 1.2, 'crate')
+   538→   538→  B(sx * 35.4, 0.6, sz * 28.4, 1.2, 1.2, 1.2, 'crate')
+   539→   539→  B(sx * 34.7, 1.8, sz * 28.2, 1.2, 1.2, 1.2, 'crate')
+   540→   540→  B(sx * 30, 0.45, sz * 40, 0.7, 0.9, 0.7, 'barrel')
+   541→   541→  B(sx * 46, 0.4, sz * 40, 3, 0.8, 0.6, 'sandbag')
+   542→   542→}
+   543→   543→
+   544→   544→// --- Carril central: autobuses abandonados ---
+   545→   545→for (const sx of [-1, 1]) {
+   546→   546→  B(sx * 16, 1.3, 0, 2.4, 2.6, 6.5, 'metalBlue')
+   547→   547→  B(sx * 16, 1.05, sx * 3.9, 2.2, 2.1, 1.3, 'metalBlue')
+   548→   548→  B(sx * 19.5, 0.6, 3.2, 1.2, 1.2, 1.2, 'crate')
+   549→   549→}
+   550→   550→
+   551→   551→// --- Cobertura de plaza (esquinas del mercado) ---
+   552→   552→for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+   553→   553→  B(sx * 10, 0.7, sz * 10, 4.5, 1.4, 0.5, 'concrete')
+   554→   554→  B(sx * 8, 0.4, sz * 16, 3, 0.8, 0.6, 'sandbag')
+   555→   555→  B(sx * 16, 0.4, sz * 8, 3, 0.8, 0.6, 'sandbag')
+   556→   556→  B(sx * 6.5, 0.45, sz * 13, 0.7, 0.9, 0.7, 'barrel')
+   557→   557→  B(sx * 13, 0.45, sz * 6.5, 0.7, 0.9, 0.7, 'barrel')
+   558→   558→}
+   559→   559→
+   560→   560→// --- Barreras y ruinas simétricas en calles ---
+   561→   561→for (const [sx, sz] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+   562→   562→  B(sx * 26, 0.55, sz * 12, 3, 1.1, 0.5, 'concrete')
+   563→   563→  B(sx * 12, 0.55, sz * 26, 3, 1.1, 0.5, 'concrete')
+   564→   564→  B(sx * 20, 0.55, sz * 20, 3, 1.1, 0.5, 'concrete')
+   565→   565→  B(sx * 42, 1.0, sz * 8, 0.45, 2.0, 3.5, 'sand')
+   566→   566→  B(sx * 8, 1.0, sz * 42, 3.5, 2.0, 0.45, 'sand')
+   567→   567→  B(sx * 54, 0.55, sz * 14, 3, 1.1, 0.5, 'concrete')
+   568→   568→  B(sx * 14, 0.55, sz * 54, 3, 1.1, 0.5, 'concrete')
+   569→   569→  B(sx * 56, 0.6, sz * 24, 1.2, 1.2, 1.2, 'crate')
+   570→   570→  B(sx * 24, 0.6, sz * 56, 1.2, 1.2, 1.2, 'crate')
+   571→   571→}
+   572→   572→
+   573→   573→// --- Árboles (tronco con colisión; copa es decorativa) ---
+   574→   574→export const TREES: [number, number][] = [
+   575→   575→  [60, 8], [-60, -8], [-60, 8], [60, -8],
+   576→   576→  [8, 60], [-8, -60], [-8, 60], [8, -60],
+   577→   577→  [54, -40], [-54, 40],
+   578→   578→]
+   579→   579→for (const [tx, tz] of TREES) B(tx, 2.1, tz, 0.5, 4.2, 0.5, 'wood')
+   580→   580→
+   581→   581→// --- Farolas (poste con colisión; luz y cabezal decorativos) ---
+   582→   582→export const LAMPS: [number, number][] = [
+   583→   583→  [12, 12], [-12, -12], [12, -12], [-12, 12],
+   584→   584→  [20, 4], [-20, -4], [20, -4], [-20, 4],
+   585→   585→  [4, 26], [-4, -26], [4, -26], [-4, 26],
+   586→   586→  [-39, 6.5], [39, -6.5],
+   587→   587→]
+   588→   588→for (const [lx, lz] of LAMPS) B(lx, 2.6, lz, 0.35, 5.2, 0.35, 'metalGrey')
+   589→   589→
+   590→   590→// --- Cajas cerca de spawns (cobertura inicial) ---
+   591→   591→B(-66, 0.6, -54, 1.2, 1.2, 1.2, 'crate')
+   592→   592→B(-54, 0.6, -66, 1.2, 1.2, 1.2, 'crate')
+   593→   593→B(-60, 0.4, -58, 3, 0.8, 0.6, 'sandbag')
+   594→   594→B(66, 0.6, 54, 1.2, 1.2, 1.2, 'crate')
+   595→   595→B(54, 0.6, 66, 1.2, 1.2, 1.2, 'crate')
+   596→   596→B(60, 0.4, 58, 3, 0.8, 0.6, 'sandbag')
+   597→   597→
+   598→   598→// --- Barriles explosivos (explotan al dispararles, con respawn) ---
+   599→   599→export interface ExplosiveBarrel { x: number; z: number }
+   600→   600→export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
+   601→   601→  { x: 4.2, z: 6.8 }, { x: -4.2, z: -6.8 },       // mercado central
+   602→   602→  { x: -36.8, z: 0.8 }, { x: -41.2, z: -0.8 },    // gasolinera (junto a las bombas)
+   603→   603→  { x: 3.4, z: -34.6 }, { x: -3.4, z: 34.6 },     // almacenes
+   604→   604→  { x: 36.5, z: -30.5 }, { x: -36.5, z: 30.5 },   // callejones del barrio
+   605→   605→  { x: 28, z: 26 }, { x: -28, z: -26 },           // patios de contenedores
+   606→   606→  { x: 14, z: -14 }, { x: -14, z: 14 },           // plaza
+   607→   607→]
+   608→   608→for (const eb of EXPLODING_BARRELS) B(eb.x, 0.5, eb.z, 0.74, 1.0, 0.74, 'explosive')
+   609→   609→
+   610→   610→// --- Tirolinas (usar E junto al ancla para descender) ---
+   611→   611→export interface ZiplineSpec { from: [number, number, number]; to: [number, number, number] }
+   612→   612→export const ZIPLINES: ZiplineSpec[] = [
+   613→   613→  { from: [0, 5.0, 11.4], to: [16, 3.55, 0] },      // techo mercado → autobús
+   614→   614→  { from: [0, 5.0, -11.4], to: [-16, 3.55, 0] },    // techo mercado → autobús
+   615→   615→  { from: [44, 5.0, -24.5], to: [54, 2.3, 6] },     // contenedor barrio NE → estación radar
+   616→   616→  { from: [-44, 5.0, 24.5], to: [-50, 2.1, 12] },   // contenedor barrio SO → llano
+   617→   617→]
+   618→   618→
+   619→   619→// --- Plataformas de salto (impulso vertical automático) ---
+   620→   620→export interface JumpPadSpec { x: number; z: number }
+   621→   621→export const JUMP_PADS: JumpPadSpec[] = [
+   622→   622→  { x: -27, z: -25 },  // patio NO (sube a los contenedores)
+   623→   623→  { x: 30, z: 28 },    // patio SE
+   624→   624→  { x: -2.5, z: -20.5 }, // torre norte
+   625→   625→  { x: 2.5, z: 20.5 },  // torre sur
+   626→   626→  { x: 34, z: 4 },      // radar
+   627→   627→  { x: -34, z: -4 },    // gasolinera
+   628→   628→]
+   629→   629→
+   630→   630→export const MAP_BOXES: MapBox[] = MAP
+   631→   631→
+   632→   632→// --- Spawns ---
+   633→   633→export const SPAWN_A: [number, number, number] = [-62, 0, -62]
+   634→   634→export const SPAWN_B: [number, number, number] = [62, 0, 62]
+   635→   635→export function spawnPoint(team: Team, i: number): [number, number, number] {
+   636→   636→  const base = team === 'A' ? SPAWN_A : SPAWN_B
+   637→   637→  const a = (i * 2.399) % (Math.PI * 2)
+   638→   638→  const r = 1.5 + (i % 3) * 1.2
+   639→   639→  return [base[0] + Math.cos(a) * r, 0, base[2] + Math.sin(a) * r]
+   640→   640→}
+   641→   641→
+   642→   642→// ------------------------------------------------------------
+   643→   643→// GEOMETRÍA — rayo vs AABB (método slab)
+   644→   644→// ------------------------------------------------------------
+   645→   645→export interface AABB { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number }
+   646→   646→
+   647→   647→export function boxToAABB(b: MapBox): AABB {
+   648→   648→  return {
+   649→   649→    minX: b.x - b.w / 2, maxX: b.x + b.w / 2,
+   650→   650→    minY: b.y - b.h / 2, maxY: b.y + b.h / 2,
+   651→   651→    minZ: b.z - b.d / 2, maxZ: b.z + b.d / 2,
+   652→   652→  }
+   653→   653→}
+   654→   654→
+   655→   655→export const MAP_AABBS: AABB[] = MAP_BOXES.map(boxToAABB)
+   656→   656→
+   657→   657→/** ¿Choca el segmento p→q con alguna caja? (para línea de visión) */
+   658→   658→export function segmentBlocked(px: number, py: number, pz: number, qx: number, qy: number, qz: number, boxes: AABB[] = MAP_AABBS): boolean {
+   659→   659→  const dx = qx - px, dy = qy - py, dz = qz - pz
+   660→   660→  for (let i = 0; i < boxes.length; i++) {
+   661→   661→    const b = boxes[i]
+   662→   662→    let tmin = 0, tmax = 1
+   663→   663→    // X
+   664→   664→    if (Math.abs(dx) < 1e-9) {
+   665→   665→      if (px < b.minX || px > b.maxX) continue
+   666→   666→    } else {
+   667→   667→      let t1 = (b.minX - px) / dx, t2 = (b.maxX - px) / dx
+   668→   668→      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+   669→   669→      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2)
+   670→   670→      if (tmin > tmax) continue
+   671→   671→    }
+   672→   672→    // Y
+   673→   673→    if (Math.abs(dy) < 1e-9) {
+   674→   674→      if (py < b.minY || py > b.maxY) continue
+   675→   675→    } else {
+   676→   676→      let t1 = (b.minY - py) / dy, t2 = (b.maxY - py) / dy
+   677→   677→      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+   678→   678→      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2)
+   679→   679→      if (tmin > tmax) continue
+   680→   680→    }
+   681→   681→    // Z
+   682→   682→    if (Math.abs(dz) < 1e-9) {
+   683→   683→      if (pz < b.minZ || pz > b.maxZ) continue
+   684→   684→    } else {
+   685→   685→      let t1 = (b.minZ - pz) / dz, t2 = (b.maxZ - pz) / dz
+   686→   686→      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+   687→   687→      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2)
+   688→   688→      if (tmin > tmax) continue
+   689→   689→    }
+   690→   690→    return true
+   691→   691→  }
+   692→   692→  return false
+   693→   693→}
+   694→   694→
+   695→   695→// ------------------------------------------------------------
+   696→   696→// WAYPOINTS para bots (grafo con LOS a 0.5 m)
+   697→   697→// ------------------------------------------------------------
+   698→   698→export const WAYPOINTS: [number, number][] = [
+   699→   699→  // perímetro r62
+   700→   700→  [-62, -62], [-44, -62], [-22, -62], [0, -62], [22, -62], [44, -62], [62, -62],
+   701→   701→  [62, -44], [62, -22], [62, 0], [62, 22], [62, 44], [62, 62],
+   702→   702→  [44, 62], [22, 62], [0, 62], [-22, 62], [-44, 62], [-62, 62],
+   703→   703→  [-62, 44], [-62, 22], [-62, 0], [-62, -22], [-62, -44],
+   704→   704→  // anillo 46
+   705→   705→  [0, -46], [18, -46], [36, -46], [46, -36], [46, -18], [44, 0], [46, 18], [46, 36], [36, 46], [18, 46],
+   706→   706→  [0, 46], [-18, 46], [-36, 46], [-46, 36], [-46, 18], [-42, 0], [-46, -18], [-46, -36], [-36, -46], [-18, -46],
+   707→   707→  // anillo 30 con esquinas esquivadas
+   708→   708→  [0, -30], [11, -30], [22, -30], [26, -26], [30, -11], [30, 0], [30, 11], [26, 26], [22, 30], [11, 30],
+   709→   709→  [0, 30], [-11, 30], [-22, 30], [-26, 26], [-30, 11], [-30, 0], [-30, -11], [-26, -26], [-22, -30], [-11, -30],
+   710→   710→  // ejes intermedios
+   711→   711→  [22, 0], [-22, 0],
+   712→   712→  // mercado central (interior y puertas)
+   713→   713→  [0, 0], [0, -9], [0, 9], [9, 0], [-9, 0], [0, -16], [0, 16], [14, 0], [-14, 0],
+   714→   714→  // flancos de torres
+   715→   715→  [4, -21], [-4, 21], [4, 21], [-4, -21],
+   716→   716→  // conectores de plaza (rodean las escaleras del mercado)
+   717→   717→  [8, -13], [-8, 13],
+   718→   718→  // almacén norte / sur
+   719→   719→  [0, -31.5], [0, -44], [9, -40], [-9, -40], [17, -44], [-17, -44],
+   720→   720→  [0, 31.5], [0, 44], [9, 40], [-9, 40], [17, 44], [-17, 44],
+   721→   721→  // gasolinera oeste
+   722→   722→  [-49.5, 0], [-39, 0], [-39, 8.5], [-39, -6], [-28, 0],
+   723→   723→  // radar este
+   724→   724→  [28, 0], [38, 0], [44, 4], [48, 6], [44, 13],
+   725→   725→  // barrio NE
+   726→   726→  [34, -23], [38, -32], [46, -30], [33, -34], [24, -26], [36, -18], [31, -22], [26, -21.5],
+   727→   727→  // barrio SW
+   728→   728→  [-34, 23], [-38, 32], [-46, 30], [-33, 34], [-24, 26], [-36, 18], [-31, 22], [-26, 21.5],
+   729→   729→  // patio NW
+   730→   730→  [-30, -26], [-38, -28], [-32, -32], [-26, -30],
+   731→   731→  // patio SE
+   732→   732→  [30, 26], [38, 28], [32, 32], [26, 30],
+   733→   733→  // carril central (autobuses)
+   734→   734→  [13, 0], [-13, 0], [21, 4], [-21, -4],
+   735→   735→]
+   736→   736→
+   737→   737→/** Aristas del grafo de waypoints (calculadas con LOS a altura de rodilla 0.5 m) */
+   738→   738→export const WAYPOINT_EDGES: number[][] = WAYPOINTS.map(() => [])
+   739→   739→{
+   740→   740→  const MAXD = 22
+   741→   741→  for (let i = 0; i < WAYPOINTS.length; i++) {
+   742→   742→    for (let j = i + 1; j < WAYPOINTS.length; j++) {
+   743→   743→      const dx = WAYPOINTS[i][0] - WAYPOINTS[j][0]
+   744→   744→      const dz = WAYPOINTS[i][1] - WAYPOINTS[j][1]
+   745→   745→      const dist = Math.hypot(dx, dz)
+   746→   746→      if (dist > MAXD) continue
+   747→   747→      if (!segmentBlocked(WAYPOINTS[i][0], 0.5, WAYPOINTS[i][1], WAYPOINTS[j][0], 0.5, WAYPOINTS[j][1])) {
+   748→   748→        WAYPOINT_EDGES[i].push(j)
+   749→   749→        WAYPOINT_EDGES[j].push(i)
+   750→   750→      }
+   751→   751→    }
+   752→   752→  }
+   753→   753→}
+   754→   754→
+   755→   755→// ------------------------------------------------------------
+   756→   756→// DECORACIÓN (sin colisión — la dibuja el motor)
+   757→   757→// ------------------------------------------------------------
+   758→   758→export interface NeonSpec { text: string; x: number; y: number; z: number; ry: number; color: string; w: number }
+   759→   759→export const NEONS: NeonSpec[] = [
+   760→   760→  { text: 'MERCADO', x: 11.6, y: 3.6, z: 0, ry: Math.PI / 2, color: '#22d3ee', w: 6 },
+   761→   761→  { text: 'MERCADO', x: -11.6, y: 3.6, z: 0, ry: -Math.PI / 2, color: '#22d3ee', w: 6 },
+   762→   762→  { text: 'GAS', x: -53.8, y: 3.9, z: -4, ry: Math.PI / 2, color: '#f87171', w: 3 },
+   763→   763→  { text: '24H', x: -44.2, y: 2.9, z: 2.2, ry: Math.PI / 2, color: '#fbbf24', w: 2.2 },
+   764→   764→  { text: 'RADAR', x: 44, y: 2.1, z: 10.6, ry: Math.PI, color: '#4ade80', w: 4.5 },
+   765→   765→  { text: 'BAR', x: 34, y: 2.4, z: -19.6, ry: 0, color: '#f472b6', w: 3 },
+   766→   766→  { text: 'BAR', x: -34, y: 2.4, z: 19.6, ry: Math.PI, color: '#f472b6', w: 3 },
+   767→   767→]
+   768→   768→
+   769→   769→export interface PuddleSpec { x: number; z: number; r: number }
+   770→   770→export const PUDDLES: PuddleSpec[] = [
+   771→   771→  { x: 8, z: 14, r: 1.6 }, { x: -8, z: -14, r: 1.4 },
+   772→   772→  { x: 18, z: -3, r: 1.8 }, { x: -18, z: 3, r: 1.5 },
+   773→   773→  { x: 38, z: -30, r: 1.6 }, { x: -38, z: 30, r: 1.4 },
+   774→   774→  { x: -30, z: -26, r: 1.2 }, { x: 30, z: 26, r: 1.2 },
+   775→   775→  { x: -42, z: 5, r: 1.6 }, { x: 42, z: -5, r: 1.4 },
+   776→   776→]
+   777→   777→
+   778→   778→// ------------------------------------------------------------
+   779→   779→// PROTOCOLO DE RED
+   780→   780→// ------------------------------------------------------------
+   781→   781→export interface NetPlayerState {
+   782→   782→  id: string
+   783→   783→  name: string
+   784→   784→  team: Team
+   785→   785→  bot: boolean
+   786→   786→  x: number; y: number; z: number
+   787→   787→  yaw: number
+   788→   788→  pitch: number
+   789→   789→  hp: number
+   790→   790→  armor: number          // escudo (0..100) — nombre de campo heredado del protocolo
+   791→   791→  weapon: WeaponId
+   792→   792→  dead: boolean
+   793→   793→  crouch: boolean
+   794→   794→  speed: number
+   795→   795→  kills: number
+   796→   796→  deaths: number
+   797→   797→  money: number
+   798→   798→  streak: number
+   799→   799→  aiming: boolean        // apuntando/disparando (pose de tiro)
+   800→   800→  sprint: boolean        // esprintando (animación de correr estilo Fortnite)
+   801→   801→}
+   802→   802→
+   803→   803→export type GrenadeKind = 'frag' | 'smoke'
+   804→   804→export interface NetGrenade { id: string; x: number; y: number; z: number; team: Team; kind: GrenadeKind }
+   805→   805→
+   806→   806→export interface NetRoundState {
+   807→   807→  phase: 'live' | 'ended' | 'matchend'
+   808→   808→  timeLeft: number
+   809→   809→  roundNumber: number
+   810→   810→  scoresA: number   // kills ronda actual equipo A
+   811→   811→  scoresB: number
+   812→   812→  roundWinsA: number
+   813→   813→  roundWinsB: number
+   814→   814→}
+   815→   815→
+   816→   816→export interface NetSnapshot {
+   817→   817→  t: number
+   818→   818→  players: NetPlayerState[]
+   819→   819→  grenades: NetGrenade[]
+   820→   820→  pickups: NetPickup[]
+   821→   821→  round: NetRoundState
+   822→   822→}
+   823→   823→
+   824→   824→export interface NetKillEvent {
+   825→   825→  killer: string; killerName: string; killerTeam: Team
+   826→   826→  victim: string; victimName: string; victimTeam: Team
+   827→   827→  weapon: WeaponId; headshot: boolean
+   828→   828→  killerStreak: number
+   829→   829→  multi?: number
+   830→   830→}
+   831→   831→
+   832→   832→export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Puma', 'Oso', 'Jaguar', 'Serpiente', 'Tigre', 'Águila', 'Coyote', 'León', 'Pantera', 'Búho', 'Araña']
+   833→   833→
+   834→   834→// ------------------------------------------------------------
+   835→   835→// SALAS P2P (PeerJS)
+   836→   836→// ------------------------------------------------------------
+   837→   837→export const PEER_APP_PREFIX = 'fzcero2'
+   838→   838→export function peerIdForRoom(code: string): string {
+   839→   839→  return `${PEER_APP_PREFIX}-${code.toLowerCase()}`
+   840→   840→}
+   841→   841→const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+   842→   842→export function generateRoomCode(): string {
+   843→   843→  let s = ''
+   844→   844→  for (let i = 0; i < 5; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]
+   845→   845→  return s
+   846→   846→}
+   847→   847→
