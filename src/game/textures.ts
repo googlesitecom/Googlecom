@@ -231,6 +231,41 @@ export function makeWorldTextures(): Record<MatKey, THREE.Texture> {
     T.barrel = toTexture(c, 1)
   }
 
+  // --- Barril explosivo (rojo con franjas de peligro) ---
+  {
+    const [c, ctx] = makeCanvas(256)
+    ctx.fillStyle = '#a8322a'
+    ctx.fillRect(0, 0, 256, 256)
+    // franjas diagonales amarillas (zona central de advertencia)
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, 96, 256, 64)
+    ctx.clip()
+    ctx.strokeStyle = '#d8a418'
+    ctx.lineWidth = 18
+    for (let i = -4; i < 10; i++) {
+      ctx.beginPath()
+      ctx.moveTo(i * 40 - 30, 176)
+      ctx.lineTo(i * 40 + 34, 76)
+      ctx.stroke()
+    }
+    ctx.restore()
+    // bandas metálicas
+    ctx.fillStyle = 'rgba(50,20,16,0.75)'
+    ctx.fillRect(0, 40, 256, 14)
+    ctx.fillRect(0, 202, 256, 14)
+    // óxido y desgaste
+    splotches(ctx, 256, 14, '#6e1f18', 30, 0.4)
+    splotches(ctx, 256, 8, '#c25446', 24, 0.3)
+    // texto "PELIGRO"
+    ctx.fillStyle = 'rgba(30,12,10,0.8)'
+    ctx.font = 'bold 30px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText('PELIGRO', 128, 24)
+    noiseOverlay(ctx, 256, 16, 0)
+    T.explosive = toTexture(c, 1)
+  }
+
   // --- Techo ---
   {
     const [c, ctx] = makeCanvas(256)

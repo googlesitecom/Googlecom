@@ -5,7 +5,7 @@
 // ============================================================
 import {
   GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, PICKUP_SPOTS, computeDamage, spawnPoint, segmentBlocked,
-  WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL,
+  WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL, SPAWN_A, SPAWN_B,
   type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind,
   type NetPlayerState, type NetGrenade, type NetPickup, type NetRoundState, type NetKillEvent, type NetSnapshot,
 } from './shared'
@@ -87,6 +87,7 @@ function dist3(ax: number, ay: number, az: number, bx: number, by: number, bz: n
 }
 function clamp(v: number, a: number, b: number): number { return Math.max(a, Math.min(b, v)) }
 function rand(a: number, b: number): number { return a + Math.random() * (b - a) }
+function round2(v: number): number { return Math.round(Number(v) * 100) / 100 }
 
 function eye(p: SimPlayer): [number, number, number] { return [p.x, p.y + 1.55, p.z] }
 
@@ -264,11 +265,11 @@ export class GameSim {
   // ------------------------------------------------------------
   // Economía / compra
   // ------------------------------------------------------------
-  private spawnX(team: Team): number { return team === 'A' ? -48 : 48 }
-  private spawnZ(team: Team): number { return team === 'A' ? -48 : 48 }
+  private spawnX(team: Team): number { return team === 'A' ? SPAWN_A[0] : SPAWN_B[0] }
+  private spawnZ(team: Team): number { return team === 'A' ? SPAWN_A[2] : SPAWN_B[2] }
 
   private inBuyZone(p: SimPlayer): boolean {
-    return Math.hypot(p.x - this.spawnX(p.team), p.z - this.spawnZ(p.team)) < GAME.BUY_RADIUS + 2
+    return Math.hypot(p.x - this.spawnX(p.team), p.z - this.spawnZ(p.team)) < GAME.BUY_RADIUS + 2.5
   }
 
   private botBuy(p: SimPlayer): void {
@@ -852,6 +853,39 @@ export class GameSim {
       const dmg = computeDamage(w, h.part, dist)
       const dx = p.x - victim.x, dz = p.z - victim.z
       this.applyDamage(p, victim, dmg, h.part, data.weapon, [dx, dz])
+    }
+  }
+
+  /** Disparo de un jugador humano (solo visual: traza + animación de disparo para los demás) */
+  handlePlayerShot(p: SimPlayer, origin: [number, number, number], hit: [number, number, number]): void {
+    if (p.dead) return
+    p.lastShotAt = now()
+    this.emit('shotFired', {
+      playerId: p.id,
+      origin: [round2(origin[0]), round2(origin[1]), round2(origin[2])],
+      hit: [round2(hit[0]), round2(hit[1]), round2(hit[2])],
+      weapon: p.weapon,
+    })
+  }
+
+  /** Explosión de barril disparado por un jugador (daño de área + FX para todos) */
+  handleBarrelShot(p: SimPlayer, pos: [number, number, number]): void {
+    if (p.dead) return
+    this.emit('barrelExplode', {
+      playerId: p.id,
+      pos: [round2(pos[0]), round2(pos[1]), round2(pos[2])],
+    })
+    const RADIUS = 5.5
+    for (const victim of this.players.values()) {
+      if (victim.dead) continue
+      const d = dist3(pos[0], pos[1], pos[2], victim.x, victim.y + 1, victim.z)
+      if (d > RADIUS) continue
+      const blocked = segmentBlocked(pos[0], pos[1] + 0.2, pos[2], victim.x, victim.y + 1, victim.z, MAP_AABBS)
+      let dmg = 96 * (1 - d / RADIUS) * (blocked ? 0.3 : 1)
+      dmg = Math.round(dmg)
+      if (dmg < 6) continue
+      const dx = pos[0] - victim.x, dz = pos[2] - victim.z
+      this.applyDamage(p, victim, dmg, 'body', 'knife', [dx, dz])
     }
   }
 

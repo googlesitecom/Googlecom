@@ -7,9 +7,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
-  PICKUP_INFO,
+  PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey,
 } from './shared'
 import { AudioEngine } from './audio'
@@ -28,9 +29,31 @@ interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
 
 interface WeaponRuntime { mag: number; reserve: number }
 
+interface BarrelView {
+  mesh: THREE.Mesh
+  x: number; z: number
+  alive: boolean
+  respawnAt: number
+}
+
+interface ZiplineView {
+  from: THREE.Vector3
+  to: THREE.Vector3
+  dir: THREE.Vector3
+  len: number
+}
+
+interface JumpPadView {
+  x: number; z: number
+  ring: THREE.Mesh
+  glow: THREE.Sprite
+  phase: number
+}
+
 const PRIMARY_PREF: WeaponId[] = ['awp338', 'cr4', 'ar47', 'breacher', 'mp9']
 const SECONDARY_PREF: WeaponId[] = ['aguila', 'p9']
 const HALF_W = 0.36
+const UP_AXIS = new THREE.Vector3(0, 1, 0)
 const EYE_STAND = 1.62
 const EYE_CROUCH = 1.14
 const BASE_FOV = 75
@@ -49,6 +72,7 @@ const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
   crate: { roughness: 0.8, metalness: 0.0 },
   barrel: { roughness: 0.45, metalness: 0.5 },
   roof: { roughness: 0.65, metalness: 0.3 },
+  explosive: { roughness: 0.42, metalness: 0.45 },
 }
 
 export class Game {
@@ -146,6 +170,22 @@ export class Game {
   // pociones visibles
   private pickupViews = new Map<string, PickupView>()
 
+  // ---- mecánicas del mapa ----
+  private barrels: BarrelView[] = []
+  private ziplines: ZiplineView[] = []
+  private jumpPads: JumpPadView[] = []
+  /** tirolina en uso (índice) o null */
+  private ziplineIdx = -1
+  private ziplineT = 0
+  /** deslizamiento (slide) */
+  private slideT = 0
+  private slideDir = new THREE.Vector3()
+  /** aviso contextual ([E] tirolina) */
+  interactHint = ''
+  // pasto instanciado (viento)
+  private grassUniform = { value: 0 }
+  private grassMesh: THREE.InstancedMesh | null = null
+
   // minimapa / mundo
   private shootables: THREE.Object3D[] = []
   private raycaster = new THREE.Raycaster()
@@ -195,7 +235,7 @@ export class Game {
     this.buildSky()
     this.buildEnvironment()
     this.buildLights(quality)
-    this.buildMap()
+    this.buildMap(quality)
     this.buildMinimapStatic()
 
     this.effects = new Effects(this.scene)
@@ -307,7 +347,7 @@ export class Game {
     this.scene.add(fill)
   }
 
-  private buildMap(): void {
+  private buildMap(quality: 'baja' | 'media' | 'alta'): void {
     const texs = makeWorldTextures()
 
     // suelo (ligeramente satinado para reflejar el cielo del atardecer)
@@ -328,13 +368,19 @@ export class Game {
 
     // cajas del mapa (UVs escaladas por cara para densidad de texel constante)
     const geoCache = new Map<string, THREE.BufferGeometry>()
+    let barrelSeq = 0
     for (const b of MAP_BOXES) {
       let mesh: THREE.Mesh
-      if (b.mat === 'barrel') {
+      if (b.mat === 'barrel' || b.mat === 'explosive') {
         const key = `b${b.h}`
         let geo = geoCache.get(key)
         if (!geo) { geo = new THREE.CylinderGeometry(0.36, 0.36, b.h, 12); geoCache.set(key, geo) }
-        mesh = new THREE.Mesh(geo, mats.get('barrel')!)
+        mesh = new THREE.Mesh(geo, mats.get(b.mat)!)
+        if (b.mat === 'explosive') {
+          mesh.userData.barrelIdx = barrelSeq
+          this.barrels.push({ mesh, x: b.x, z: b.z, alive: true, respawnAt: 0 })
+          barrelSeq++
+        }
       } else {
         const key = `${b.w}|${b.h}|${b.d}`
         let geo = geoCache.get(key)
@@ -358,6 +404,11 @@ export class Game {
 
     // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
     this.buildDecor(texs)
+
+    // ---- mecánicas del mapa: pasto, tirolinas, plataformas de salto ----
+    this.buildGrass(quality)
+    this.buildZiplines()
+    this.buildJumpPads()
 
     // marcas de spawn (zonas de compra)
     for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
@@ -513,6 +564,197 @@ export class Game {
   }
 
   // ----------------------------------------------------------
+  // Pasto instanciado (1 draw call, viento en el vertex shader)
+  // ----------------------------------------------------------
+  private buildGrass(quality: 'baja' | 'media' | 'alta'): void {
+    const bladeH = 0.55
+    // dos quads cruzados por brizna
+    const plane = new THREE.PlaneGeometry(0.095, bladeH)
+    plane.translate(0, bladeH / 2, 0)
+    const plane2 = plane.clone()
+    plane2.rotateY(Math.PI / 2)
+    const geo = mergeGeometries([plane, plane2])!
+    const mat = new THREE.MeshLambertMaterial({
+      color: 0xffffff, side: THREE.DoubleSide, fog: true,
+    })
+    // viento: balanceo en el vertex shader usando la fase por instancia
+    mat.onBeforeCompile = shader => {
+      shader.uniforms.uTime = this.grassUniform
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        #ifdef USE_INSTANCING
+          float gwx = instanceMatrix[3][0];
+          float gwz = instanceMatrix[3][2];
+          float gph = gwx * 0.35 + gwz * 0.41;
+          float gsway = sin(uTime * 1.7 + gph) * 0.5 + sin(uTime * 2.6 + gph * 1.7) * 0.5;
+          float ghFac = max(0.0, position.y) / ${bladeH.toFixed(2)};
+          transformed.x += gsway * 0.085 * ghFac;
+          transformed.z += cos(uTime * 1.3 + gph) * 0.045 * ghFac;
+        #endif`,
+      )
+    }
+
+    const count = quality === 'alta' ? 8200 : quality === 'media' ? 5200 : 2200
+    const mesh = new THREE.InstancedMesh(geo, mat, count)
+    mesh.frustumCulled = false
+    const m = new THREE.Matrix4()
+    const q = new THREE.Quaternion()
+    const sc = new THREE.Vector3()
+    const pos = new THREE.Vector3()
+    const col = new THREE.Color()
+    let placed = 0
+    // matones alrededor de puntos abiertos (evitando AABBs y charcos)
+    const clumps = Math.floor(count / 72)
+    for (let c = 0; c < clumps && placed < count; c++) {
+      const cx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+      const cz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+      // cerca de árboles: matones más densos y verdes
+      let nearTree = 0
+      for (const [tx, tz] of TREES) {
+        const d = Math.hypot(tx - cx, tz - cz)
+        if (d < 18) { nearTree = Math.max(nearTree, 1 - d / 18); break }
+      }
+      if (this.grassBlocked(cx, cz, 1.4)) continue
+      const per = 46 + Math.floor(Math.random() * 30) + Math.floor(nearTree * 26)
+      for (let i = 0; i < per && placed < count; i++) {
+        const a = Math.random() * Math.PI * 2
+        const r = Math.pow(Math.random(), 0.6) * 1.5
+        const gx = cx + Math.cos(a) * r
+        const gz = cz + Math.sin(a) * r
+        if (this.grassBlocked(gx, gz, 0.45)) continue
+        pos.set(gx, 0, gz)
+        q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
+        const hS = 0.65 + Math.random() * 0.75 + nearTree * 0.25
+        sc.set(1, hS, 1)
+        m.compose(pos, q, sc)
+        mesh.setMatrixAt(placed, m)
+        // tonos de pasto seco del desierto (más verde cerca de árboles)
+        const t = Math.random()
+        col.setRGB(
+          0.42 + t * 0.13 + nearTree * 0.05,
+          0.48 + t * 0.15 + nearTree * 0.14,
+          0.24 + t * 0.09,
+        )
+        mesh.setColorAt(placed, col)
+        placed++
+      }
+    }
+    // rellenar hasta el total con briznas sueltas si faltó
+    while (placed < count) {
+      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
+      if (this.grassBlocked(gx, gz, 0.45)) { mesh.setMatrixAt(placed, m.makeScale(0, 0, 0)); placed++; continue }
+      pos.set(gx, 0, gz)
+      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
+      sc.set(1, 0.6 + Math.random() * 0.6, 1)
+      m.compose(pos, q, sc)
+      mesh.setMatrixAt(placed, m)
+      col.setRGB(0.44 + Math.random() * 0.1, 0.46 + Math.random() * 0.12, 0.25 + Math.random() * 0.07)
+      mesh.setColorAt(placed, col)
+      placed++
+    }
+    mesh.count = placed
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    mesh.instanceMatrix.needsUpdate = true
+    this.grassMesh = mesh
+    this.scene.add(mesh)
+  }
+
+  /** ¿hay un obstáculo o charco en (x,z)? (para no plantar pasto dentro/debajo) */
+  private grassBlocked(x: number, z: number, margin: number): boolean {
+    for (let i = 0; i < MAP_AABBS.length; i++) {
+      const b = MAP_AABBS[i]
+      if (b.minY > 0.6) continue // encima del suelo (techos) no importa
+      if (x > b.minX - margin && x < b.maxX + margin && z > b.minZ - margin && z < b.maxZ + margin) {
+        if (b.maxY > 0.25) return true
+      }
+    }
+    for (const p of PUDDLES) {
+      if (Math.hypot(p.x - x, p.z - z) < p.r + 0.3) return true
+    }
+    return false
+  }
+
+  // ----------------------------------------------------------
+  // Tirolinas: cable + anclas + agarre con E
+  // ----------------------------------------------------------
+  private buildZiplines(): void {
+    const cableMat = new THREE.MeshStandardMaterial({ color: 0x2a2c2e, roughness: 0.35, metalness: 0.85 })
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x4a4235, roughness: 0.8, metalness: 0.2 })
+    for (const z of ZIPLINES) {
+      const from = new THREE.Vector3(...z.from)
+      const to = new THREE.Vector3(...z.to)
+      const dir = to.clone().sub(from)
+      const len = dir.length()
+      dir.normalize()
+      // cable (cilindro orientado)
+      const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 6), cableMat)
+      cable.position.copy(from).addScaledVector(dir, len / 2)
+      cable.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+      cable.castShadow = true
+      this.scene.add(cable)
+      // postes en los extremos
+      for (const [end, up] of [[from, 0.5], [to, 0.35]] as [THREE.Vector3, number][]) {
+        const base = end.clone(); base.y = 0
+        const h = Math.max(0.5, end.y - base.y + up)
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, h, 8), postMat)
+        post.position.set(end.x, base.y + h / 2, end.z)
+        post.castShadow = true
+        this.scene.add(post)
+      }
+      // polea colgante al inicio (señal visual)
+      const pulley = new THREE.Mesh(
+        new THREE.TorusGeometry(0.09, 0.03, 8, 14),
+        new THREE.MeshStandardMaterial({ color: 0xd8a418, roughness: 0.4, metalness: 0.8 }),
+      )
+      pulley.position.copy(from).addScaledVector(dir, 0.25)
+      pulley.position.y -= 0.12
+      this.scene.add(pulley)
+      this.ziplines.push({ from, to, dir, len })
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Plataformas de salto (impulso automático al pisarlas)
+  // ----------------------------------------------------------
+  private buildJumpPads(): void {
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0x1f2326, roughness: 0.5, metalness: 0.6 })
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+    const sparkTex = makeSparkTexture()
+    for (const p of JUMP_PADS) {
+      const g = new THREE.Group()
+      g.position.set(p.x, 0, p.z)
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.5, 0.14, 20), baseMat)
+      base.position.y = 0.07
+      base.castShadow = true
+      base.receiveShadow = true
+      g.add(base)
+      const ring = new THREE.Mesh(new THREE.RingGeometry(1.0, 1.22, 26), ringMat)
+      ring.rotation.x = -Math.PI / 2
+      ring.position.y = 0.145
+      g.add(ring)
+      // chevrones de "salto"
+      const chevMat = new THREE.MeshBasicMaterial({ color: 0xffb054, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+      for (let i = 0; i < 3; i++) {
+        const chev = new THREE.Mesh(new THREE.RingGeometry(0.18 + i * 0.14, 0.24 + i * 0.14, 3), chevMat)
+        chev.rotation.x = -Math.PI / 2
+        chev.rotation.z = Math.PI / 6
+        chev.position.y = 0.15
+        g.add(chev)
+      }
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: sparkTex, color: 0xff9a3a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
+      }))
+      glow.position.y = 0.5
+      glow.scale.setScalar(2.4)
+      g.add(glow)
+      this.scene.add(g)
+      this.jumpPads.push({ x: p.x, z: p.z, ring, glow, phase: Math.random() * Math.PI * 2 })
+    }
+  }
+
+  // ----------------------------------------------------------
   // Eventos de entrada
   // ----------------------------------------------------------
   private bindEvents(): void {
@@ -602,6 +844,7 @@ export class Game {
       case 'KeyR': this.startReload(); break
       case 'KeyG': this.throwGrenade(); break
       case 'KeyQ': this.switchTo(this.lastWeapon); break
+      case 'KeyE': this.tryAttachZipline(); break
       case 'Digit1': {
         const p = PRIMARY_PREF.find(w => this.owned.includes(w))
         if (p) this.switchTo(p)
@@ -769,7 +1012,11 @@ export class Game {
   // ----------------------------------------------------------
   openBuyMenu(): void {
     const s = useGame.getState()
-    if (!s.buyZone || this.dead) return
+    if (this.dead) return
+    if (!s.buyZone) {
+      s.addAnnouncement('La tienda solo funciona en tu base (anillo de color)', 'info')
+      return
+    }
     s.setHud({ buyOpen: true })
     document.exitPointerLock()
   }
@@ -827,6 +1074,11 @@ export class Game {
     // pociones flotantes
     this.updatePickupViews(dt, t)
 
+    // mecánicas del mapa: viento del pasto, barriles, saltadores
+    this.grassUniform.value = t
+    this.updateBarrels()
+    this.updateJumpPadFX(dt)
+
     // HUD canvas
     this.drawOverlay(t)
     if (performance.now() - this.minimapT > 100) {
@@ -880,12 +1132,25 @@ export class Game {
 
   private updateMovement(dt: number): void {
     const s = useGame.getState()
+
+    // ---- tirolina en curso: movimiento guiado por el cable ----
+    if (this.ziplineIdx >= 0) {
+      this.updateZiplineRide(dt)
+      this.updateBuyZone()
+      return
+    }
+
     const inputActive = s.phase === 'playing' && !this.dead && this.inputsLive
+
+    // sprint del frame ANTERIOR (para detectar el inicio del deslizamiento:
+    // agacharse apaga this.sprinting en el mismo frame, hay que recordarlo)
+    const wasSprint = this.sprinting
 
     const w = WEAPONS[this.weapon]
     const wantCrouch = inputActive && (this.keys.has('ControlLeft') || this.keys.has('KeyC') || this.padCrouch)
     const canStand = !this.collides(this.pos.x, this.pos.y, this.pos.z, 1.8)
-    this.crouching = wantCrouch || (!canStand && this.pos.y < 3)
+    const sliding = this.slideT > 0
+    this.crouching = wantCrouch || sliding || (!canStand && this.pos.y < 3)
 
     const wantSprint = inputActive && (this.keys.has('ShiftLeft') || this.padSprint) && !this.crouching && !this.ads
     const movingFwd = this.keys.has('KeyW') || this.padIz > 0.5
@@ -898,6 +1163,16 @@ export class Game {
     }
     if (this.crouching) speed *= 0.5
     if (this.adsAmt > 0.3) speed *= 0.65
+
+    // ---- deslizamiento (agacharse corriendo) ----
+    this.slideT = Math.max(0, this.slideT - dt)
+    const hSpeedNow = Math.hypot(this.vel.x, this.vel.z)
+    if (inputActive && wantCrouch && wasSprint && this.onGround && this.slideT <= 0 && hSpeedNow > 5.4) {
+      this.slideT = 0.85
+      this.vel.x *= 1.34
+      this.vel.z *= 1.34
+      this.audio.land()
+    }
 
     // dirección de input (teclado + mando)
     let ix = 0, iz = 0
@@ -917,9 +1192,9 @@ export class Game {
     const dirX = ix * cos - iz * sin
     const dirZ = -ix * sin - iz * cos
 
-    // aceleración / fricción
-    const accel = this.onGround ? 12 : 2.2
-    const fric = this.onGround ? 10 : 0.3
+    // aceleración / fricción (durante el deslizamiento: poca fricción para conservar impulso)
+    const accel = this.onGround ? (sliding ? 1.7 : 12) : 2.2
+    const fric = this.onGround ? (sliding ? 1.3 : 10) : 0.3
     this.vel.x += (dirX * speed - this.vel.x) * Math.min(1, accel * dt)
     this.vel.z += (dirZ * speed - this.vel.z) * Math.min(1, accel * dt)
     if (len === 0 && this.onGround) {
@@ -928,11 +1203,17 @@ export class Game {
       this.vel.z *= damp
     }
 
-    // salto / gravedad
-    if (inputActive && (this.keys.has('Space') || this.consumePadJump()) && this.onGround && !this.crouching) {
-      this.vel.y = 5.6
-      this.onGround = false
-      this.audio.jump()
+    // salto / gravedad (con salto-agarre de tirolina y salto-deslizamiento)
+    const wantJump = inputActive && (this.keys.has('Space') || this.consumePadJump())
+    if (wantJump && this.onGround && (!this.crouching || sliding)) {
+      if (this.tryAttachZipline()) {
+        // agarrado a la tirolina
+      } else {
+        this.vel.y = sliding ? 6.2 : 5.6
+        this.slideT = 0
+        this.onGround = false
+        this.audio.jump()
+      }
     }
     this.vel.y -= GAME.GRAVITY * dt
 
@@ -998,6 +1279,20 @@ export class Game {
     this.pos.x = Math.max(-lim, Math.min(lim, this.pos.x))
     this.pos.z = Math.max(-lim, Math.min(lim, this.pos.z))
 
+    // ---- plataformas de salto (impulso automático al pisarlas) ----
+    if (this.onGround && this.pos.y < 0.45) {
+      for (const pad of this.jumpPads) {
+        if (Math.hypot(this.pos.x - pad.x, this.pos.z - pad.z) < 1.5) {
+          this.vel.y = 12
+          this.onGround = false
+          this.slideT = 0
+          this.audio.jump()
+          pad.glow.scale.setScalar(3.6)
+          break
+        }
+      }
+    }
+
     // bob y pasos
     const hSpeed = Math.hypot(this.vel.x, this.vel.z)
     if (this.onGround && hSpeed > 0.5) {
@@ -1013,14 +1308,93 @@ export class Game {
     }
     this.sprintAmt += ((this.sprinting && hSpeed > 4 ? 1 : 0) - this.sprintAmt) * Math.min(1, dt * 8)
 
-    // zona de compra
+    // zona de compra + pista de interacción
+    this.updateBuyZone()
+    this.updateInteractHint()
+
+    // parámetros calculados (no usados directamente)
+  }
+
+  /** Zona de compra (anillo de la base) */
+  private updateBuyZone(): void {
     const sp = this.team === 'A' ? SPAWN_A : SPAWN_B
     const inZone = Math.hypot(this.pos.x - sp[0], this.pos.z - sp[2]) < GAME.BUY_RADIUS
     if (inZone !== useGame.getState().buyZone) {
       useGame.getState().setHud({ buyZone: inZone })
     }
+  }
 
-    // parámetros calculados (no usados directamente)
+  /** Aviso contextual: tirolina cerca */
+  private updateInteractHint(): void {
+    this.interactHint = ''
+    if (this.ziplineIdx >= 0 || this.dead) return
+    if (performance.now() < this.ziplineCooldownUntil) return
+    for (const z of this.ziplines) {
+      const d = Math.hypot(z.from.x - this.pos.x, z.from.z - this.pos.z)
+      if (d < 2.6 && Math.abs(this.pos.y - z.from.y) < 2.6) {
+        this.interactHint = '[E / ESPACIO] TIROLINA'
+        return
+      }
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Tirolinas (montar/descender)
+  // ----------------------------------------------------------
+  private ziplineCooldownUntil = 0
+
+  private tryAttachZipline(): boolean {
+    if (this.ziplineIdx >= 0 || this.dead) return false
+    if (performance.now() < this.ziplineCooldownUntil) return false
+    for (let i = 0; i < this.ziplines.length; i++) {
+      const z = this.ziplines[i]
+      const d = Math.hypot(z.from.x - this.pos.x, z.from.z - this.pos.z)
+      if (d < 2.4 && Math.abs(this.pos.y - z.from.y) < 2.6) {
+        this.ziplineIdx = i
+        this.ziplineT = 0
+        this.crouching = false
+        this.slideT = 0
+        this.vel.set(0, 0, 0)
+        this.audio.throwSound()
+        return true
+      }
+    }
+    return false
+  }
+
+  private updateZiplineRide(dt: number): void {
+    const z = this.ziplines[this.ziplineIdx]
+    if (!z) { this.ziplineIdx = -1; return }
+    // soltar con salto
+    const wantOff = this.keys.has('Space') || this.consumePadJump()
+    if (wantOff && this.ziplineT > 0.06) {
+      this.detachZipline(false)
+      return
+    }
+    const SPEED = 10.5
+    this.ziplineT += (SPEED / z.len) * dt
+    const t = Math.min(1, this.ziplineT)
+    const cx = z.from.x + z.dir.x * z.len * t
+    const cy = z.from.y + z.dir.y * z.len * t
+    const cz = z.from.z + z.dir.z * z.len * t
+    this.pos.set(cx, cy - 0.85, cz)
+    this.vel.set(z.dir.x * SPEED, z.dir.y * SPEED, z.dir.z * SPEED)
+    this.onGround = false
+    // viento en la cara: pasos suaves como sonido de deslizamiento
+    this.bobT += dt * 6
+    if (t >= 1) this.detachZipline(true)
+  }
+
+  private detachZipline(atEnd: boolean): void {
+    const z = this.ziplines[this.ziplineIdx]
+    this.ziplineIdx = -1
+    this.ziplineCooldownUntil = performance.now() + 1400
+    this.onGround = false
+    if (z) {
+      const keep = atEnd ? 8.5 : 4
+      this.vel.set(z.dir.x * keep, z.dir.y * keep - (atEnd ? 1 : 2.5), z.dir.z * keep)
+    }
+    this.audio.jump()
   }
 
   // ----------------------------------------------------------
@@ -1070,7 +1444,9 @@ export class Game {
     this.camera.rotation.order = 'YXZ'
     this.camera.rotation.y = this.yaw + this.recoilY + shakeR * 0.4
     this.camera.rotation.x = Math.max(-1.5, Math.min(1.5, this.pitch + this.recoilP + shakeP - this.deathT * 0.8))
-    this.camera.rotation.z = shakeR + (this.dead ? this.deathT * 0.6 : 0) + Math.cos(this.bobT * 0.5) * bobAmp * 0.2
+    // inclinación sutil al deslizarse
+    const slideRoll = this.slideT > 0 ? Math.min(1, this.slideT * 2.5) * 0.1 : 0
+    this.camera.rotation.z = shakeR + slideRoll + (this.dead ? this.deathT * 0.6 : 0) + Math.cos(this.bobT * 0.5) * bobAmp * 0.2
   }
 
   // ----------------------------------------------------------
@@ -1282,6 +1658,10 @@ export class Game {
     // caché de hitboxes: UNA vez por disparo, no por perdigón
     const hbCache = this.buildHitboxCache()
 
+    // punto final del disparo para la traza de red
+    let shotEnd = eye.clone().addScaledVector(forward, 60)
+    let shotEndSet = false
+
     for (let i = 0; i < pellets; i++) {
       const r = (spread * Math.PI / 180) * Math.sqrt(Math.random())
       const ang = Math.random() * Math.PI * 2
@@ -1295,8 +1675,13 @@ export class Game {
         // castBullet ya trazó el rayo completo (far 200) y no tocó nada
         continue
       }
+      if (!shotEndSet) { shotEnd = hit.point.clone(); shotEndSet = true }
       // efecto local
       this.effects.tracer(this.muzzleWorld(), hit.point)
+      if (hit.barrel !== undefined) {
+        this.igniteBarrel(hit.barrel)
+        continue
+      }
       if (hit.player) {
         this.effects.impact(hit.point, dir.clone().negate(), true)
         hits.push({ target: hit.player, part: hit.part, dist: hit.dist, point: hit.point })
@@ -1304,6 +1689,12 @@ export class Game {
         this.effects.impact(hit.point, hit.normal ?? dir.clone().negate())
       }
     }
+
+    // enviar el disparo a la red (traza + animación de disparo para los demás)
+    this.net.sendShot(
+      [Math.round(eye.x * 100) / 100, Math.round(eye.y * 100) / 100, Math.round(eye.z * 100) / 100],
+      [Math.round(shotEnd.x * 100) / 100, Math.round(shotEnd.y * 100) / 100, Math.round(shotEnd.z * 100) / 100],
+    )
 
     // enviar aciertos al servidor (de una vez: válido para escopeta)
     if (hits.length > 0) {
@@ -1363,7 +1754,7 @@ export class Game {
   /** Raycast local: mapa + hitboxes de jugadores remotos (hitboxes cacheadas) */
   private castBullet(eye: THREE.Vector3, dir: THREE.Vector3, maxDist: number,
     hbCache?: Map<string, { head: THREE.Box3; body: THREE.Box3; legs: THREE.Box3 } | null>): {
-    player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3
+    player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3; barrel?: number
   } | null {
     const cache = hbCache ?? this.buildHitboxCache()
 
@@ -1408,12 +1799,17 @@ export class Game {
     }
     if (mapHit) {
       const normal = mapHit.face ? mapHit.face.normal.clone().transformDirection(mapHit.object.matrixWorld) : dir.clone().negate()
-      return { player: null, part: 'body', dist: mapHit.distance, point: mapHit.point, normal }
+      const barrelIdx = (mapHit.object.userData as { barrelIdx?: number }).barrelIdx
+      return { player: null, part: 'body', dist: mapHit.distance, point: mapHit.point, normal, barrel: barrelIdx }
     }
     return null
   }
 
-  private processHit(hit: { player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3 }, dir: THREE.Vector3): void {
+  private processHit(hit: { player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3; barrel?: number }, dir: THREE.Vector3): void {
+    if (hit.barrel !== undefined) {
+      this.igniteBarrel(hit.barrel)
+      return
+    }
     if (hit.player) {
       this.net.sendHits('knife', [{ target: hit.player, part: hit.part, dist: hit.dist }])
       this.effects.impact(hit.point, dir.clone().negate(), true)
@@ -1583,7 +1979,11 @@ export class Game {
   }
 
   onShotFired(playerId: string, origin: [number, number, number], hit: [number, number, number], weapon: WeaponId): void {
-    const from = new THREE.Vector3(...origin)
+    // animación de disparo del tirador (patada de brazos/arma)
+    this.remotes.notifyShot(playerId)
+    // el fogonazo y la traza salen de la boca del cañón del modelo si existe
+    const muzzle = this.remotes.getMuzzleWorld(playerId)
+    const from = muzzle ?? new THREE.Vector3(...origin)
     const to = new THREE.Vector3(...hit)
     const d = from.distanceTo(this.camera.position)
     if (d > 130) return
@@ -1595,6 +1995,74 @@ export class Game {
     const st = this.remotes.map.get(playerId)?.state
     if (st && st.team !== this.team) {
       this.pings.push({ x: origin[0], z: origin[2], t: performance.now() })
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Barriles explosivos
+  // ----------------------------------------------------------
+  /** El jugador local revienta un barril: FX local + daño autoritativo en el servidor */
+  private igniteBarrel(idx: number): void {
+    const b = this.barrels[idx]
+    if (!b || !b.alive) return
+    b.alive = false
+    b.respawnAt = performance.now() + 28000
+    b.mesh.visible = false
+    b.mesh.position.y = -80   // fuera del raycast hasta reaparecer
+    const pos = new THREE.Vector3(b.x, 0.55, b.z)
+    this.explodeBarrelFX(pos)
+    this.net.sendBarrel([b.x, 0.55, b.z])
+    // reacción en cadena: barriles cercanos estallan con retardo
+    for (let i = 0; i < this.barrels.length; i++) {
+      if (i === idx) continue
+      const o = this.barrels[i]
+      if (!o.alive) continue
+      if (Math.hypot(o.x - b.x, o.z - b.z) < 3.6) {
+        setTimeout(() => { if (!this.disposed) this.igniteBarrel(i) }, 150 + Math.random() * 220)
+      }
+    }
+  }
+
+  private explodeBarrelFX(pos: THREE.Vector3): void {
+    this.effects.explosion(pos)
+    this.audio.explosion(this.camera.position.distanceTo(pos))
+    // empujón al jugador local si está cerca
+    const dp = Math.hypot(this.pos.x - pos.x, this.pos.z - pos.z, (this.pos.y + 1 - pos.y) * 0.7)
+    if (dp < 6 && !this.dead) {
+      const k = 1 - dp / 6
+      const push = new THREE.Vector3(this.pos.x - pos.x, 0, this.pos.z - pos.z)
+      if (push.lengthSq() < 0.01) push.set(Math.random() - 0.5, 0, Math.random() - 0.5)
+      push.normalize()
+      this.vel.addScaledVector(push, k * 7)
+      this.vel.y += k * 3.5
+      this.trauma = Math.min(1, this.trauma + k * 0.55)
+    } else {
+      this.trauma = Math.min(1, this.trauma + 0.15)
+    }
+  }
+
+  /** Explosión de barril causada por otro jugador (evento de red) */
+  onBarrelExplode(pos: [number, number, number]): void {
+    this.explodeBarrelFX(new THREE.Vector3(...pos))
+    // ocultar el barril correspondiente también localmente
+    for (const b of this.barrels) {
+      if (b.alive && Math.hypot(b.x - pos[0], b.z - pos[2]) < 0.9) {
+        b.alive = false
+        b.respawnAt = performance.now() + 28000
+        b.mesh.visible = false
+        b.mesh.position.y = -80
+      }
+    }
+  }
+
+  private updateBarrels(): void {
+    const t = performance.now()
+    for (const b of this.barrels) {
+      if (!b.alive && t >= b.respawnAt) {
+        b.alive = true
+        b.mesh.visible = true
+        b.mesh.position.y = 0.5
+      }
     }
   }
 
@@ -1643,6 +2111,18 @@ export class Game {
     }
     // ronda
     useGame.getState().setHud({ round: snap.round })
+  }
+
+  private updateJumpPadFX(dt: number): void {
+    for (const p of this.jumpPads) {
+      p.phase += dt * 2.4
+      const pulse = 0.5 + 0.32 * Math.sin(p.phase)
+      const target = 2.2 + Math.sin(p.phase * 1.3) * 0.4
+      // el glow decae hacia su tamaño normal tras el impulso
+      p.glow.scale.setScalar(p.glow.scale.x + (target - p.glow.scale.x) * Math.min(1, dt * 5))
+      const mat = p.ring.material as THREE.MeshBasicMaterial
+      mat.opacity = pulse
+    }
   }
 
   /** Modelo flotante de una poción/botiquín */
@@ -1785,6 +2265,22 @@ export class Game {
       ctx.stroke()
     }
 
+    // pista de interacción (tirolina)
+    if (this.interactHint && s.phase === 'playing' && !this.dead) {
+      const pulse = 0.75 + 0.25 * Math.sin(now / 180)
+      ctx.font = 'bold 20px "Courier New", monospace'
+      ctx.textAlign = 'center'
+      const tw = ctx.measureText(this.interactHint).width
+      const bx = cx - tw / 2 - 14, by = H * 0.62
+      ctx.fillStyle = `rgba(12,14,10,${0.55 * pulse + 0.3})`
+      ctx.fillRect(bx, by, tw + 28, 34)
+      ctx.strokeStyle = `rgba(216,164,24,${pulse})`
+      ctx.lineWidth = 2
+      ctx.strokeRect(bx, by, tw + 28, 34)
+      ctx.fillStyle = `rgba(255,205,120,${pulse})`
+      ctx.fillText(this.interactHint, cx, by + 23)
+    }
+
     // números de daño
     ctx.textAlign = 'center'
     ctx.font = 'bold 18px "Courier New", monospace'
@@ -1904,6 +2400,27 @@ export class Game {
     ctx.beginPath(); ctx.arc(O + SPAWN_A[0] * S, O + SPAWN_A[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
     ctx.strokeStyle = 'rgba(34,197,94,0.5)'
     ctx.beginPath(); ctx.arc(O + SPAWN_B[0] * S, O + SPAWN_B[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+    // barriles explosivos (puntos rojos)
+    ctx.fillStyle = 'rgba(220,60,40,0.85)'
+    for (const b of EXPLODING_BARRELS) {
+      ctx.beginPath()
+      ctx.arc(O + b.x * S, O + b.z * S, 2.2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    // tirolinas (líneas)
+    ctx.strokeStyle = 'rgba(190,200,210,0.55)'
+    ctx.lineWidth = 1.4
+    for (const z of ZIPLINES) {
+      ctx.beginPath()
+      ctx.moveTo(O + z.from[0] * S, O + z.from[2] * S)
+      ctx.lineTo(O + z.to[0] * S, O + z.to[2] * S)
+      ctx.stroke()
+    }
+    // plataformas de salto (cuadrados naranjas)
+    ctx.fillStyle = 'rgba(255,140,26,0.9)'
+    for (const p of JUMP_PADS) {
+      ctx.fillRect(O + p.x * S - 2.5, O + p.z * S - 2.5, 5, 5)
+    }
     this.mapStatic = c
   }
 

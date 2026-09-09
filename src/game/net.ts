@@ -330,6 +330,24 @@ export class NetClient {
     this.sendToSim({ e: 'grenadeThrow', d: { id: this.id, data: { pos, vel } } })
   }
 
+  /** Disparo del jugador local (para que los demás vean traza + animación de disparo) */
+  sendShot(origin: [number, number, number], hit: [number, number, number]): void {
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'playerShot', d: { origin, hit } })
+      return
+    }
+    this.sendToSim({ e: 'playerShot', d: { id: this.id, data: { origin, hit } } })
+  }
+
+  /** El jugador local ha reventado un barril explosivo (daño de área autoritativo) */
+  sendBarrel(pos: [number, number, number]): void {
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'barrelShot', d: { pos } })
+      return
+    }
+    this.sendToSim({ e: 'barrelShot', d: { id: this.id, data: { pos } } })
+  }
+
   disconnect(): void {
     this.disposed = true
     if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
@@ -412,6 +430,12 @@ export class NetClient {
       case 'grenadeExplode': {
         const d = data as { pos: [number, number, number] }
         game.onGrenadeExplode(d.pos)
+        break
+      }
+      case 'barrelExplode': {
+        const d = data as { playerId: string; pos: [number, number, number] }
+        if (d.playerId === this.id) break   // el tirador ya reprodujo el efecto localmente
+        game.onBarrelExplode(d.pos)
         break
       }
       case 'damageFX': {

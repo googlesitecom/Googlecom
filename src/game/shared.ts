@@ -246,7 +246,7 @@ export interface NetPickup { id: string; kind: PickupKind; x: number; z: number;
 // ------------------------------------------------------------
 // MAPA — cajas AABB (y = centro). Unidad: metros. 140×140
 // ------------------------------------------------------------
-export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof'
+export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive'
 
 export interface MapBox {
   x: number; y: number; z: number
@@ -521,6 +521,38 @@ B(-60, 0.4, -58, 3, 0.8, 0.6, 'sandbag')
 B(66, 0.6, 54, 1.2, 1.2, 1.2, 'crate')
 B(54, 0.6, 66, 1.2, 1.2, 1.2, 'crate')
 B(60, 0.4, 58, 3, 0.8, 0.6, 'sandbag')
+
+// --- Barriles explosivos (explotan al dispararles, con respawn) ---
+export interface ExplosiveBarrel { x: number; z: number }
+export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
+  { x: 4.2, z: 6.8 }, { x: -4.2, z: -6.8 },       // mercado central
+  { x: -36.8, z: 0.8 }, { x: -41.2, z: -0.8 },    // gasolinera (junto a las bombas)
+  { x: 3.4, z: -34.6 }, { x: -3.4, z: 34.6 },     // almacenes
+  { x: 36.5, z: -30.5 }, { x: -36.5, z: 30.5 },   // callejones del barrio
+  { x: 28, z: 26 }, { x: -28, z: -26 },           // patios de contenedores
+  { x: 14, z: -14 }, { x: -14, z: 14 },           // plaza
+]
+for (const eb of EXPLODING_BARRELS) B(eb.x, 0.5, eb.z, 0.74, 1.0, 0.74, 'explosive')
+
+// --- Tirolinas (usar E junto al ancla para descender) ---
+export interface ZiplineSpec { from: [number, number, number]; to: [number, number, number] }
+export const ZIPLINES: ZiplineSpec[] = [
+  { from: [0, 5.0, 11.4], to: [16, 3.55, 0] },      // techo mercado → autobús
+  { from: [0, 5.0, -11.4], to: [-16, 3.55, 0] },    // techo mercado → autobús
+  { from: [44, 5.0, -24.5], to: [54, 2.3, 6] },     // contenedor barrio NE → estación radar
+  { from: [-44, 5.0, 24.5], to: [-50, 2.1, 12] },   // contenedor barrio SO → llano
+]
+
+// --- Plataformas de salto (impulso vertical automático) ---
+export interface JumpPadSpec { x: number; z: number }
+export const JUMP_PADS: JumpPadSpec[] = [
+  { x: -27, z: -25 },  // patio NO (sube a los contenedores)
+  { x: 30, z: 28 },    // patio SE
+  { x: -2.5, z: -20.5 }, // torre norte
+  { x: 2.5, z: 20.5 },  // torre sur
+  { x: 34, z: 4 },      // radar
+  { x: -34, z: -4 },    // gasolinera
+]
 
 export const MAP_BOXES: MapBox[] = MAP
 
