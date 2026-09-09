@@ -232,3 +232,36 @@ Stage Summary:
 - 4 modos de juego completos y verificados (equipos · FFA · bandera · dominación)
 - Disparar/apuntar reasignables (teclado+ratón) y mando 100 % reasignable con correr en L3
 - Modelos GLB (armas+árbol) y texturas (pared/piso/cielo) del repositorio integrados con normalización automática y fallback procedural
+
+---
+Task ID: 8
+Agent: Super Z (agente principal)
+Task: Arreglar las armas GLB volteadas y sin texturas, y subir todo a GitHub para jugar con GitHub Pages
+
+Work Log:
+- DIAGNÓSTICO con inspección del JSON de los GLB (scripts/inspect-glb-json.mjs):
+  1) Pistola.glb usaba KHR_materials_pbrSpecularGlossiness (extensión legada que Three.js r185 NO carga): la textura difusa estaba DENTRO de la extensión → material sin mapa
+  2) El auto-orientador por perfil de grosor era frágil: la pistola quedaba boca abajo y mirando atrás, el sniper apuntaba hacia +Z
+  3) Smg.glb tiene 2 materiales pero todas las mallas se fusionaban con el primero → media arma sin su textura
+  4) GitHub Pages solo sirve estáticos y el proyecto era output: standalone (servidor) + Pages apuntaba a main (el código fuente) → nada jugable
+- PARCHE de Pistola.glb (scripts/patch-pistola.mjs): reescrito el chunk JSON del GLB moviendo diffuseTexture de la extensión a pbrMetallicRoughness.baseColorTexture + conversión specular/glossiness → metallic/roughness; extensiones limpias (2.84 MB)
+- ANÁLISIS numérico del espacio-mundo (scripts/analyze-weapons.mjs): vértices reales transformados por la cadena de nodos → eje largo, extremo fino (boca) y masa vertical por arma
+- REESCRITA la sección de armas de assets.ts:
+  - Calibración DETERMINISTA por archivo (rotaciones fijas medidas): pistola rz=π+ry=π/2, smg ry=−π/2, rifle identidad, sniper ry=π
+  - Meshes POR MATERIAL (merge dentro de cada material, no entre materiales) con toNonIndexed para mezclar mallas indexadas/no
+  - Materiales moderados: metalness ≤0.4, roughness 0.42-0.78, envMapIntensity 0.85 (Sketchfab exporta metallic=1 roughness=1 que apaga la difusa)
+  - SIGHT_Y=0.06 alinea la línea de mira con la convención de los viewmodels procedurales (las poses hip/ADS existentes funcionan sin retoques)
+- Página /calibra (src/app/calibra/page.tsx): 4 armas × 2 vistas (frontal/lateral) con marcadores de boca/empuñadura y flechas de ejes; iteración con VLM: 1ª pasada → pistola al revés y boca abajo; con rz=π+ry=π/2 → 4/4 correctas (boca −Z, miras arriba, esfera roja en la punta, texturas reales)
+- BUG DESCUBIERTO en la vegetación: las flores salían BLANCAS — MeshBasicMaterial + instanceColor NO aplica el color por instancia en Three r185 (Lambert y Standard sí; verificado con página de aislamiento + muestreo de píxeles) → flores a MeshLambertMaterial
+- Pasto más verde (paleta 0.42/0.48/0.24 → 0.30/0.44/0.18): los tonos pajizos claros se leían como palos pálidos en la distancia
+- EXPORT ESTÁTICO para GitHub Pages: output: export + basePath/assetPrefix /Googlecom (variable NEXT_PUBLIC_BASE_PATH, solo en build de Pages), ASSET_BASE en shared.ts prefija models/textures/soldier.glb, api de demo eliminada, metadatos del juego (título ES, logo local), build:pages en package.json
+- DESPLIEGUE: build estático (42 MB) → rama huérfana gh-pages con .nojekyll (sin él Jekyll ignoraría _next/) vía scripts/deploy-gh-pages.sh; Pages re-apuntado de main → gh-pages (PUT API) + build solicitado
+- PUSH PROTECTION de GitHub bloqueó un push (el script de despliegue llevaba el PAT en claro) → token movido a variable de entorno GITHUB_PUSH_URL y commit reescrito
+- VERIFICACIÓN en la URL pública real (https://googlesitecom.github.io/Googlecom/): menú completo → partida → viewmodel = mesh único MeshStandardMaterial+map (pistola GLB realista apuntando al frente), bots con arma GLB v=4284 +map en la mano, muros con Pared.jpg, flores de color (amarillo 255,245,142 / rosa / púrpura), 0.07 % de píxeles "palo blanco" (antes la escena estaba llena), HUD completo, worker de simulación operativo, Ronda 1 con bots combatendo (ÁMBAR 8 - VERDE 1)
+
+Stage Summary:
+- Armas GLB corregidas de raíz: pistola con su textura real (parche de extensión), orientación calibrada y verificada visualmente 4/4, Smg con sus 2 materiales intactos
+- Flores de color (bug de MeshBasicMaterial+instanceColor) y pasto más verde
+- https://googlesitecom.github.io/Googlecom/ JUGABLE end-to-end (verificado en navegador real contra la URL pública)
+- README con enlace de juego; gh-pages desplegable con un comando (token por entorno)
+- Recordatorio: el PAT del usuario quedó expuesto en el chat → recomendar rotarlo
