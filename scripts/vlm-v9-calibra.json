@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Basándome estrictamente en la imagen proporcionada y las reglas de calibración indicadas (ROJO = −Z = Frente, VERDE = +X = Empuñadura), aquí está el análisis detallado para cada arma:\n\n### 1. Pistola (P9) - Fila 1\n*   **Alineación de la esfera (boca):** **SÍ**. La esfera roja ubicada en la boca del cañón (vista lateral derecha) está perfectamente alineada con el eje de la flecha ROJA, que apunta hacia la izquierda (dirección −Z).\n*   **Orientación de miras/corredera:** **ARRIBA**. En la vista frontal (izquierda), la corredera y las miras se encuentran en la parte superior del arma, apuntando hacia arriba en posición erguida/natural.\n*   **Empuñadura/Culata:** **SÍ**. La empuñadura (y el resto del armazón) desciende hacia abajo desde el eje del cañón.\n\n### 2. Subfusil P90 (MP9) - Fila 2\n*   **Alineación de la esfera (boca):** **SÍ**. La esfera roja en el extremo derecho del arma (vista lateral) coincide con la dirección de la flecha ROJA (−Z).\n*   **Orientación de miras:** **ARRIBA**. Las miras frontales y traseras están situadas en la parte superior del chasis del arma, orientadas hacia arriba.\n*   **Empuñadura/Culata:** **SÍ**. La empuñadura vertical y la culata integrada se extienden hacia abajo respecto al cañón.\n\n### 3. Rifle M16 (AR47) - Fila 3\n*   **Alineación de la esfera (boca):** **SÍ**. La esfera roja en la punta del cañón (derecha) está alineada con la flecha ROJA que indica el frente (−Z).\n*   **Orientación de miras:** **ARRIBA**. El carry handle (alza) y el punto de mira frontal están claramente en la parte superior, apuntando hacia arriba.\n*   **Empuñadura/Culata:** **SÍ**. Tanto la empuñadura de pistola como la culata (stock) se proyectan hacia abajo desde el cuerpo principal del rifle.\n\n### 4. Sniper (AWP338) - Fila 4\n*   **Alineación de la esfera (boca):** **SÍ**. La esfera roja en la boca del cañón largo (derecha) sigue la dirección de la flecha ROJA (−Z).\n*   **Orientación de miras:** **ARRIBA**. El visor/óptica y las miras mecánicas están montados en la parte superior del receptor.\n*   **Empuñadura/Culata:** **SÍ**. La empuñadura de pistola y la culata ajustable descienden hacia la parte inferior del modelo.\n\n---\n\n### Tabla Resumen\n\n| Arma | ¿Esfera alineada con Flecha Roja (−Z)? | ¿Miras apuntan ARRIBA? | ¿Empuñadura/Culata baja? | Estado |\n| :--- | :---: | :---: | :---: | :---: |\n| **Pistola (P9)** | SÍ | ARRIBA | SÍ | **CORRECTA** |\n| **Subfusil (MP9)** | SÍ | ARRIBA | SÍ | **CORRECTA** |\n| **Rifle M16 (AR47)** | SÍ | ARRIBA | Sí | **CORRECTA** |\n| **Sniper (AWP338)** | SÍ | ARRIBA | SÍ | **CORRECTA** |\n\n**Conclusión:** Todas las armas mostradas en la página de calibración cumplen con los criterios de alineación de ejes y orientación natural establecidos.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788985194,
+  "id": "202609100419349646066114204795",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609100419349646066114204795",
+  "usage": {
+    "completion_tokens": 922,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 914,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1836
+  }
+}

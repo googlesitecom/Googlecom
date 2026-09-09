@@ -234,6 +234,9 @@ export class Game {
   private lampLights: THREE.PointLight[] = []
   private lampPos: [number, number][] = []
   private lampLightNext = 0
+  // scratch reutilizado por updateLampLights (sin asignaciones por frame)
+  private lampOrder: number[] = []
+  private lampDist: number[] = []
 
   // ----------------------------------------------------------
   // Inicialización
@@ -1576,6 +1579,38 @@ export class Game {
 
   buy(itemId: string): void {
     this.net.buy(itemId)
+  }
+
+  /**
+   * Pool de luces de farola: recoloca las 6 luces en las farolas más
+   * cercanas al jugador. Sin raíces ni asignaciones (distancias al
+   * cuadrado + selección parcial in-place sobre arrays reutilizados).
+   */
+  private updateLampLights(p: THREE.Vector3): void {
+    const lamps = this.lampPos
+    const n = lamps.length
+    const lights = this.lampLights
+    if (!n || !lights.length) return
+    const order = this.lampOrder
+    const dist = this.lampDist
+    order.length = n
+    dist.length = n
+    for (let i = 0; i < n; i++) {
+      const dx = lamps[i][0] - p.x
+      const dz = lamps[i][1] - p.z
+      dist[i] = dx * dx + dz * dz
+      order[i] = i
+    }
+    const k = Math.min(lights.length, n)
+    for (let i = 0; i < k; i++) {
+      let best = i
+      for (let j = i + 1; j < n; j++) if (dist[order[j]] < dist[order[best]]) best = j
+      if (best !== i) { const tmp = order[i]; order[i] = order[best]; order[best] = tmp }
+    }
+    for (let i = 0; i < k; i++) {
+      const li = order[i]
+      lights[i].position.set(lamps[li][0], 4.85, lamps[li][1])
+    }
   }
 
   // ----------------------------------------------------------
