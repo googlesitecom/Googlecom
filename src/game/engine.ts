@@ -790,7 +790,9 @@ export class Game {
     const plane2 = plane.clone()
     plane2.rotateY(Math.PI / 2)
     const geo = mergeGeometries([plane, plane2])!
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, fog: true })
+    // Lambert (NO Basic): instanceColor no se aplica en MeshBasicMaterial
+    // (las flores salían blancas); con Lambert el color por instancia funciona
+    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide, fog: true })
     const mesh = new THREE.InstancedMesh(geo, mat, count)
     const m = new THREE.Matrix4()
     const q = new THREE.Quaternion()

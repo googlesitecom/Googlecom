@@ -4,6 +4,14 @@
 // pociones de escudo (estilo Fortnite), armas y controles
 // ============================================================
 
+/**
+ * Prefijo de ruta para los assets estáticos (public/).
+ * Vacío en desarrollo; en el despliegue de GitHub Pages el sitio
+ * se sirve bajo /Googlecom/, así que el build de Pages define
+ * NEXT_PUBLIC_BASE_PATH=/Googlecom y aquí se usa como prefijo.
+ */
+export const ASSET_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
+
 export const GAME = {
   TICK: 33,              // ms por tick de simulación (30 Hz)
   SNAPSHOT_EVERY: 2,     // snapshot cada 2 ticks (15 Hz)

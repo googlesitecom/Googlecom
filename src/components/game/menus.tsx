@@ -731,7 +731,7 @@ export function ConnectingScreen() {
               <p className="text-slate-500 text-sm mt-2">Desplegando operadores IA en el mapa…</p>
             </div>
           )}
-          <div className="text-slate-600 text-xs font-bold tracking-widest">FRONTERA CERO · v3.0</div>
+          <div className="text-slate-600 text-xs font-bold tracking-widest">FRONTERA CERO · v4.1</div>
         </div>
       )}
     </div>

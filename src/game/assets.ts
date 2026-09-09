@@ -2,44 +2,73 @@
 // FRONTERA CERO — Assets del usuario (GLB + texturas)
 // Armas reales (Pistola/Smg/Rifle/sniper.glb), árbol (Arbol.glb)
 // y texturas (Pared/Piso/Cielo.jpg) subidos al repositorio.
-// Normalización automática: escala, orientación (cañón → -Z) y
-// punto de empuñadura en el origen. Fallback: modelos procedurales.
+//
+// CALIBRACIÓN DETERMINISTA: cada archivo tiene una rotación fija
+// (medida sobre los vértices en espacio-mundo) que deja el arma
+// con la boca del cañón hacia -Z, las miras hacia +Y y la
+// empuñadura en el origen. Se verifica visualmente (página
+// /calibra + VLM), no se auto-detecta en runtime.
+//
+// TEXTURAS: los meshes se agrupan POR MATERIAL (la Smg tiene 2)
+// para que cada parte conserve su textura real. Fallback
+// procedural si falta un archivo.
 // ============================================================
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import type { WeaponId } from './shared'
+import { ASSET_BASE } from './shared'
 
 // ------------------------------------------------------------
 // Especificaciones de las armas GLB (subidas por el usuario)
 // ------------------------------------------------------------
+interface WeaponCalib {
+  /** rotaciones horneadas en la geometría, en radianes (orden: Z, Y, X) */
+  rz?: number
+  ry?: number
+  rx?: number
+}
+
 interface WeaponFileSpec {
   file: string
   /** longitud objetivo del arma completa en metros (culata→boca) */
   length: number
   /** fracción de la longitud desde la culata donde está la empuñadura */
   gripFrac: number
+  /** calibración fija medida sobre el espacio-mundo horneado */
+  cal: WeaponCalib
 }
+
+const HALF_PI = Math.PI / 2
 
 /** Por arma: qué archivo GLB usar. breacher/knife siguen siendo procedurales. */
 const WEAPON_FILES: Partial<Record<WeaponId, WeaponFileSpec>> = {
-  p9:      { file: 'Pistola.glb', length: 0.24, gripFrac: 0.16 },
-  aguila:  { file: 'Pistola.glb', length: 0.30, gripFrac: 0.16 },
-  mp9:     { file: 'Smg.glb',     length: 0.55, gripFrac: 0.28 },
-  ar47:    { file: 'Rifle.glb',   length: 0.97, gripFrac: 0.33 },
-  cr4:     { file: 'Rifle.glb',   length: 0.90, gripFrac: 0.30 },
-  awp338:  { file: 'sniper.glb',  length: 1.22, gripFrac: 0.30 },
+  // Pistola: tumbada a lo largo de X con la boca en X− y el lomo hacia −Y
+  // (boca abajo) → media vuelta sobre Z y alineación a −Z (verificado con VLM)
+  p9:      { file: 'Pistola.glb', length: 0.24, gripFrac: 0.24, cal: { rz: Math.PI, ry: HALF_PI } },
+  aguila:  { file: 'Pistola.glb', length: 0.30, gripFrac: 0.24, cal: { rz: Math.PI, ry: HALF_PI } },
+  // Smg (P90): tumbada a lo largo de X (boca en X−)
+  mp9:     { file: 'Smg.glb',     length: 0.55, gripFrac: 0.30, cal: { ry: -HALF_PI } },
+  // Rifle (M16): ya apunta a −Z en espacio-mundo, boca en Z−
+  ar47:    { file: 'Rifle.glb',   length: 0.97, gripFrac: 0.34, cal: {} },
+  cr4:     { file: 'Rifle.glb',   length: 0.90, gripFrac: 0.31, cal: {} },
+  // Sniper: apunta a +Z en espacio-mundo (boca en Z+) → media vuelta
+  awp338:  { file: 'sniper.glb',  length: 1.22, gripFrac: 0.33, cal: { ry: Math.PI } },
 }
 
-/** geometrías fusionadas por archivo + materiales ya preparados */
-interface WeaponCacheEntry {
-  /** geometría fusionada (todas las mallas, transformada al espacio local del arma SIN escalar) */
+/** parte de arma lista para instanciar (una por material del GLB) */
+interface WeaponPart {
   geo: THREE.BufferGeometry
-  /** material (uno solo tras fusionar; los GLB de armas usan 1-2 materiales) */
   mat: THREE.Material
+}
+
+interface WeaponCacheEntry {
+  /** partes por material, rotación ya horneada (boca → −Z) */
+  parts: WeaponPart[]
   /** longitud de la bbox en el eje del cañón, en unidades del modelo */
   rawLen: number
-  /** rotación ya horneada en la geometría: eje largo alineado a Z con la boca en -Z */
+  /** bbox combinada tras la calibración (espacio local del arma) */
+  bb: THREE.Box3
 }
 
 const weaponCache = new Map<string, WeaponCacheEntry>()
@@ -128,9 +157,9 @@ export function preloadAssets(): Promise<void> {
     })
 
   tasks.push(
-    loadTex('/textures/Pared.jpg', null).then(t => { repoTextures.pared = t }),
-    loadTex('/textures/Piso.jpg', null).then(t => { repoTextures.piso = t }),
-    loadTex('/textures/Cielo.jpg', null).then(t => { repoTextures.cielo = t }),
+    loadTex(`${ASSET_BASE}/textures/Pared.jpg`, null).then(t => { repoTextures.pared = t }),
+    loadTex(`${ASSET_BASE}/textures/Piso.jpg`, null).then(t => { repoTextures.piso = t }),
+    loadTex(`${ASSET_BASE}/textures/Cielo.jpg`, null).then(t => { repoTextures.cielo = t }),
   )
 
   // ---- armas (una entrada por archivo distinto) ----
@@ -139,10 +168,11 @@ export function preloadAssets(): Promise<void> {
     tasks.push(
       new Promise<void>(resolve => {
         loader.load(
-          `/models/${file}`,
+          `${ASSET_BASE}/models/${file}`,
           gltf => {
             try {
-              const entry = buildWeaponCacheEntry(gltf.scene)
+              const specs = Object.values(WEAPON_FILES).filter(w => w.file === file)
+              const entry = buildWeaponCacheEntry(gltf.scene, specs[0].cal)
               if (entry) weaponCache.set(file, entry)
             } catch (e) {
               console.warn('FRONTERA CERO: no se pudo preparar', file, e)
@@ -160,7 +190,7 @@ export function preloadAssets(): Promise<void> {
   tasks.push(
     new Promise<void>(resolve => {
       loader.load(
-        '/models/Arbol.glb',
+        `${ASSET_BASE}/models/Arbol.glb`,
         gltf => {
           try {
             treeTemplate = buildTreeTemplate(gltf.scene)
@@ -197,119 +227,94 @@ function collectMeshes(root: THREE.Object3D): { geo: THREE.BufferGeometry; mat: 
     if (!(o instanceof THREE.Mesh)) return
     const geo = o.geometry.clone()
     geo.applyMatrix4(o.matrixWorld)
-    // normalizar atributos para poder fusionar
-    for (const name of Object.keys(geo.attributes)) {
-      if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
-    }
-    if (!geo.attributes.normal) geo.computeVertexNormals()
-    if (!geo.attributes.uv) {
-      const n = geo.attributes.position.count
-      geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2))
-    }
     const mat = Array.isArray(o.material) ? o.material[0] : o.material
     out.push({ geo, mat })
   })
   return out
 }
 
-/** Perfil de grosor a lo largo de un eje: devuelve el grosor medio por tercio (inicio/centro/fin) */
-function axisThicknessProfile(geo: THREE.BufferGeometry, axis: 'x' | 'y' | 'z'): [number, number, number] {
-  const pos = geo.attributes.position as THREE.BufferAttribute
-  const n = pos.count
-  const step = Math.max(1, Math.floor(n / 4000))
-  const ai = axis === 'x' ? 0 : axis === 'y' ? 1 : 2
-  const bi = axis === 'x' ? 1 : 0
-  const ci = axis === 'z' ? 1 : 2
-  let min = Infinity, max = -Infinity
-  for (let i = 0; i < n; i += step) {
-    const v = pos.array as Float32Array
-    const a = v[i * 3 + ai]
-    if (a < min) min = a
-    if (a > max) max = a
+/** deja la geometría lista para fusionar: solo position/normal/uv, sin índice, con normales */
+function normalizeForMerge(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  let g = geo.index ? geo.toNonIndexed() : geo
+  for (const name of Object.keys(g.attributes)) {
+    if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name)
   }
-  const span = Math.max(0.001, max - min)
-  const third: number[][] = [[], [], []]
-  for (let i = 0; i < n; i += step) {
-    const v = pos.array as Float32Array
-    const a = v[i * 3 + ai]
-    const b = v[i * 3 + bi]
-    const c = v[i * 3 + ci]
-    const t = Math.min(0.999, Math.max(0, (a - min) / span))
-    third[Math.floor(t * 3)].push(Math.hypot(b, c))
+  if (!g.attributes.normal) g.computeVertexNormals()
+  if (!g.attributes.uv) {
+    const n = g.attributes.position.count
+    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2))
   }
-  return third.map(arr => (arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : 0)) as [number, number, number]
+  return g
+}
+
+/** material PBR razonable para un arma (los Sketchfab vienen metallic=1 roughness=1) */
+function fixWeaponMaterial(mat: THREE.Material): THREE.Material {
+  const std = mat as THREE.MeshStandardMaterial
+  if (std && std.isMeshStandardMaterial === true) {
+    if (std.map) {
+      std.map.colorSpace = THREE.SRGBColorSpace
+      // metal muy alto con envMap suave apaga la textura difusa → moderarlo
+      std.metalness = Math.min(std.metalness, 0.4)
+      std.roughness = Math.min(Math.max(std.roughness, 0.42), 0.78)
+      std.envMapIntensity = 0.85
+    } else {
+      // sin textura: acero pistoleño con reflejos del entorno
+      std.color = new THREE.Color(0x3a3e45)
+      std.metalness = 0.55
+      std.roughness = 0.35
+      std.envMapIntensity = 1.2
+    }
+    return std
+  }
+  // extensión no soportada → material metálico limpio
+  return new THREE.MeshStandardMaterial({ color: 0x3a3e45, roughness: 0.35, metalness: 0.55, envMapIntensity: 1.2 })
 }
 
 /**
- * Normaliza un arma GLB: fusiona mallas, orienta el cañón hacia -Z y
- * devuelve la geometría + material. La escala/traslación final se aplica
- * al construir cada instancia (por arma).
+ * Normaliza un arma GLB con calibración FIJA:
+ * - agrupa las mallas por material (cada una conserva su textura)
+ * - hornea la rotación de calibración (boca → −Z, culata → +Z)
+ * Devuelve las partes + longitud bruta. La escala/traslación final
+ * se aplica al construir cada instancia (por arma).
  */
-function buildWeaponCacheEntry(scene: THREE.Object3D): WeaponCacheEntry | null {
+function buildWeaponCacheEntry(scene: THREE.Object3D, cal: WeaponCalib): WeaponCacheEntry | null {
   const meshes = collectMeshes(scene)
   if (!meshes.length) return null
 
-  // fusionar todo en una geometría (los GLB de armas comparten material o son pocos)
-  const firstMat = meshes[0].mat
-  const geo = mergeGeometries(meshes.map(m => m.geo), false)!
+  // agrupar por material y fusionar cada grupo (mismos atributos, sin índice)
+  const byMat = new Map<string, { geos: THREE.BufferGeometry[]; mat: THREE.Material }>()
+  for (const m of meshes) {
+    const key = m.mat.uuid
+    let g = byMat.get(key)
+    if (!g) { g = { geos: [], mat: m.mat }; byMat.set(key, g) }
+    g.geos.push(normalizeForMerge(m.geo))
+  }
 
-  // bbox completa
-  geo.computeBoundingBox()
-  const bb = geo.boundingBox!
+  const parts: WeaponPart[] = []
+  for (const g of byMat.values()) {
+    const merged = g.geos.length === 1 ? g.geos[0] : mergeGeometries(g.geos, false)
+    if (!merged) continue
+    // horneado de la calibración (orden Z→Y→X)
+    if (cal.rz) merged.rotateZ(cal.rz)
+    if (cal.ry) merged.rotateY(cal.ry)
+    if (cal.rx) merged.rotateX(cal.rx)
+    merged.computeBoundingBox()
+    parts.push({ geo: merged, mat: fixWeaponMaterial(g.mat) })
+  }
+  if (!parts.length) return null
+
+  // bbox combinada
+  const bb = new THREE.Box3()
+  for (const p of parts) bb.union(p.geo.boundingBox!)
   const size = new THREE.Vector3()
   bb.getSize(size)
-  // eje largo
-  const axis: 'x' | 'y' | 'z' = size.x > size.y && size.x > size.z ? 'x' : size.y > size.z ? 'y' : 'z'
   const rawLen = Math.max(size.x, size.y, size.z)
 
-  // perfil de grosor para localizar la boca (extremo estrecho)
-  const prof = axisThicknessProfile(geo, axis)
-
-  // rotación que alinea el eje largo con Z
-  let rotY = 0
-  if (axis === 'x') rotY = Math.PI / 2   // +X → +Z
-  else if (axis === 'y') rotY = 0        // (no esperado; se endereza con rotX abajo)
-
-  // aplicar rotación Y provisional y volver a medir
-  if (rotY !== 0) {
-    geo.rotateY(rotY)
-    geo.computeBoundingBox()
-  }
-
-  // ¿dónde quedó la boca? muestrear de nuevo sobre Z
-  const profZ = axisThicknessProfile(geo, 'z')
-  const muzzleAtMinusZ = profZ[0] < profZ[2]
-  if (!muzzleAtMinusZ) {
-    geo.rotateY(Math.PI)   // boca → -Z (culata → +Z)
-  }
-
-  if (axis === 'y') {
-    // arma tumbada: levantarla (rotX -π/2 lleva +Y→ -Z)
-    geo.rotateX(-Math.PI / 2)
-  }
-
-  // material: asegurar PBR razonable (algunos vienen muy brillantes/opacos)
-  let mat = firstMat
-  const std = mat as THREE.MeshStandardMaterial
-  if (std && (std as THREE.MeshStandardMaterial).isMeshStandardMaterial !== undefined) {
-    if (std.metalness > 0.9) std.metalness = 0.85
-    if (std.roughness < 0.15) std.roughness = 0.35
-    // GLB sin textura (p.ej. KHR_materials_pbrSpecularGlossiness): acero
-    // pistoleño con reflejos del entorno para que no parezca un bloque pálido
-    if (!std.map) {
-      std.color = new THREE.Color(0x3a3e45)
-      std.metalness = 0.82
-      std.roughness = 0.32
-      std.envMapIntensity = 1.25
-    }
-  } else {
-    // extensión no soportada → material metálico limpio
-    mat = new THREE.MeshStandardMaterial({ color: 0x3a3e45, roughness: 0.32, metalness: 0.82, envMapIntensity: 1.25 })
-  }
-
-  geo.computeBoundingBox()
-  return { geo, mat, rawLen }
+  return { parts, rawLen, bb }
 }
+
+/** altura del punto de mira sobre el origen (convención de los modelos procedurales) */
+const SIGHT_Y = 0.06
 
 /**
  * Construye el modelo normalizado de un arma (para viewmodel y para remotos).
@@ -322,28 +327,32 @@ export function buildGLBWeapon(id: WeaponId): { group: THREE.Group; muzzle: THRE
   if (!entry) return null
 
   const group = new THREE.Group()
-  const mesh = new THREE.Mesh(entry.geo, entry.mat)
   // escala: del tamaño bruto al objetivo en metros
   const s = spec.length / entry.rawLen
-  mesh.scale.setScalar(s)
+  const bb = entry.bb
 
-  // alinear: la geometría ya tiene la boca en -Z. Recolocar para que la
-  // EMPUÑADURA quede en el origen del grupo (culata hacia +Z).
-  const bb = entry.geo.boundingBox!.clone()
   const zMin = bb.min.z * s, zMax = bb.max.z * s
   const yMin = bb.min.y * s, yMax = bb.max.y * s
   const xMin = bb.min.x * s, xMax = bb.max.x * s
   const len = zMax - zMin
+  // empuñadura a fracción de la longitud desde la culata (+Z)
   const gripZ = zMax - spec.gripFrac * len
-  mesh.position.set(-(xMin + xMax) / 2, -(yMin + yMax) / 2, -gripZ)
+  // centrado horizontal; la línea de mira queda a SIGHT_Y (como los procedurales)
+  const px = -(xMin + xMax) / 2
+  const py = SIGHT_Y - yMax
 
-  mesh.castShadow = true
-  mesh.frustumCulled = false
-  group.add(mesh)
+  for (const p of entry.parts) {
+    const mesh = new THREE.Mesh(p.geo, p.mat)
+    mesh.scale.setScalar(s)
+    mesh.position.set(px, py, -gripZ)
+    mesh.castShadow = true
+    mesh.frustumCulled = false
+    group.add(mesh)
+  }
 
   // boca del cañón (punta) en el espacio del grupo
   const muzzle = new THREE.Object3D()
-  muzzle.position.set(0, (yMax - yMin) * 0.12, zMin - gripZ)
+  muzzle.position.set(0, SIGHT_Y - 0.035, zMin - gripZ - 0.015)
   group.add(muzzle)
   return { group, muzzle }
 }
@@ -396,11 +405,11 @@ function buildTreeTemplate(scene: THREE.Object3D): TreeTemplate | null {
     const key = m.mat.name || m.mat.uuid
     let g = byMat.get(key)
     if (!g) { g = { geos: [], mat: m.mat }; byMat.set(key, g) }
-    g.geos.push(m.geo)
+    g.geos.push(normalizeForMerge(m.geo))
   }
   const parts: { geo: THREE.BufferGeometry; mat: THREE.Material }[] = []
   for (const g of byMat.values()) {
-    const merged = mergeGeometries(g.geos, false)
+    const merged = g.geos.length === 1 ? g.geos[0] : mergeGeometries(g.geos, false)
     if (!merged) continue
     const name = g.mat.name || ''
     if (/leaf/i.test(name)) {
@@ -429,7 +438,7 @@ function buildTreeTemplate(scene: THREE.Object3D): TreeTemplate | null {
       parts.push({ geo: merged, mat: basic })
     } else {
       // tronco y demás: PBR estándar (funciona en todos los lados)
-      parts.push({ geo: merged, mat: g.mat })
+      parts.push({ geo: merged, mat: fixWeaponMaterial(g.mat) })
     }
   }
   if (!parts.length) return null

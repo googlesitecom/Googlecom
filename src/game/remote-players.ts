@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { makeNameTag } from './textures'
-import { type Team, type WeaponId, type NetPlayerState } from './shared'
+import { type Team, type WeaponId, type NetPlayerState, ASSET_BASE } from './shared'
 import { buildWeaponModel } from './viewmodel'
 import { buildGLBWeapon } from './assets'
 
@@ -282,7 +282,7 @@ export class RemotePlayers {
     this.soldierLoading = true
     const loader = new GLTFLoader()
     loader.load(
-      '/soldier.glb',
+      `${ASSET_BASE}/soldier.glb`,
       gltf => {
         try {
           soldierAssets = prepareSoldier(gltf.scene)
