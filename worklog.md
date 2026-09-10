@@ -293,3 +293,21 @@ Stage Summary:
 - Inventario de 2 armas que sobrevive a la muerte
 - Vegetación del suelo eliminada (menos lag) sin tocar modelos/texturas
 - P2P eliminado (no funcionaba en el despliegue estático)
+
+---
+Task ID: 10
+Agent: Super Z (agente principal)
+Task: Integrar los MP3 subidos por el usuario (Musica + Pistola/Smg/Rifle/Sniper) y desplegar v5.0 a GitHub Pages
+
+Work Log:
+- MP3 del usuario movidos a public/audio/ (Musica 1,5 MB · Pistola · Smg · Rifle · Sniper)
+- audio.ts: carga y descodificación de las muestras por arma (pistol/deagle→Pistola, smg→Smg, rifle/shotgun→Rifle, sniper→Sniper) con fallback procedural si falla la descarga; disparos con variación de tono y atenuación por distancia
+- music.ts nuevo: Musica.mp3 en bucle con reproductor único que continúa entre menú y partida, se ajusta al volumen general (factor 0,5) y baja al jugar (duck)
+- Volumen general ahora controla también la música (panel de AJUSTES)
+- Verificado en dev y en producción: 6/6 muestras cargadas, disparo de rifle suena, música arranca con el primer gesto
+- Build estático (44 MB, mapas en chunks separados = carga perezosa real) → rama gh-pages forzada + rebuild de Pages solicitado
+- VERIFICACIÓN EN LA URL PÚBLICA (https://googlesitecom.github.io/Googlecom/): menú v5 con HISTORIA, lanzamiento de la campaña con mapa ISLA GALLO + muestras de audio + cinemática
+
+Stage Summary:
+- https://googlesitecom.github.io/Googlecom/ jugable con todo: historia, Ciudadela, 2 armas, deslizamiento, MP3 del usuario
+- Recordatorio: el PAT del usuario quedó expuesto en el chat → recomendar rotarlo

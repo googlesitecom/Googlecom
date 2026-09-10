@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) No, se ve una zona desértica con contenedores y estructuras, pero no una playa ni una barcaza de desembarco.\n2) Sí, el ambiente tiene un tono azulado y frío.\n3) No, no aparece el texto \"FASE 1\", sino el título \"FRONTERA CERO\" y un mensaje para omitir.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788999324,
+  "id": "20260910081519dd9814c860194439",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260910081519dd9814c860194439",
+  "usage": {
+    "completion_tokens": 83,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 959,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1042
+  }
+}
