@@ -9,12 +9,13 @@ import { Slider } from '@/components/ui/slider'
 import {
   Crosshair, Play, Settings, Volume2, Mouse, Swords, Trophy, Zap,
   Shield, Bomb, Eye, Gauge, LogOut, Loader2, Coins, Gamepad2, Bot,
-  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, BookOpen,
+  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, BookOpen, Music,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
   type BotDifficulty, type ActionId, type GameMode, type PadAction,
 } from '@/game/shared'
+import { music } from '@/game/music'
 
 // ============================================================
 // Estilo compartido: Fortnite — fondo azul profundo + rayos
@@ -291,6 +292,7 @@ export function SettingsPanel() {
         onChange={v => {
           setSettings({ volume: v })
           getGame()?.audio.setVolume(v)
+          music.setVolume(v)
         }}
       />
       <div>
@@ -409,6 +411,8 @@ export function MainMenu() {
     if (n.length < 2) { setError('El nombre debe tener al menos 2 caracteres'); return }
     setPlayerName(n)
     setError('')
+    music.play()   // arranca la música con el gesto del usuario
+    music.duck(true)
     setHud({
       mode: 'solo',
       botDifficulty: difficulty,
@@ -648,6 +652,7 @@ const NEWS = [
   { icon: Zap, title: 'DESLIZAMIENTO', desc: 'Agáchate corriendo para deslizarte (salto con impulso incluido)' },
   { icon: Gauge, title: 'MENOS LAG', desc: 'Vegetación del suelo retirada, mapas por carga perezosa y P2P fuera' },
   { icon: Bot, title: 'Armas y árbol reales (GLB)', desc: 'Modelos del repositorio integrados: pistola, SMG, rifle, francotirador y árboles' },
+  { icon: Music, title: 'Sonidos y música reales', desc: 'Disparos y banda sonora con los MP3 subidos al repositorio' },
 ]
 
 // ============================================================
@@ -739,6 +744,7 @@ export function PauseMenu() {
             className="w-full h-11 font-black italic tracking-widest"
             onClick={() => {
               getGame()?.dispose()
+              music.duck(false)
               useGame.getState().setPhase('menu')
             }}
           >

@@ -1,7 +1,10 @@
 // ============================================================
-// FRONTERA CERO — Motor de audio procedural (Web Audio API)
-// Todos los sonidos se sintetizan: sin archivos externos
+// FRONTERA CERO — Motor de audio (Web Audio API)
+// Disparos con los MP3 subidos por el usuario (Pistola/Smg/
+// Rifle/Sniper.mp3) + música de fondo (Musica.mp3) y resto de
+// efectos sintetizados. Fallback procedural si no cargan.
 // ============================================================
+import { ASSET_BASE } from './shared'
 
 export class AudioEngine {
   ctx: AudioContext | null = null
@@ -12,6 +15,8 @@ export class AudioEngine {
   volume = 0.7
   private ambientNodes: AudioNode[] = []
   private started = false
+  /** muestras MP3 del usuario descodificadas (por tipo de arma) */
+  private samples = new Map<string, AudioBuffer>()
 
   /** Debe llamarse tras un gesto del usuario */
   start(): void {
@@ -37,6 +42,44 @@ export class AudioEngine {
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1
 
     this.startAmbient()
+    this.loadSamples()
+  }
+
+  /** descarga los MP3 de armas del usuario (async, con fallback) */
+  private loadSamples(): void {
+    const files: [string, string][] = [
+      ['pistol', 'Pistola.mp3'],
+      ['deagle', 'Pistola.mp3'],
+      ['smg', 'Smg.mp3'],
+      ['rifle', 'Rifle.mp3'],
+      ['shotgun', 'Rifle.mp3'],
+      ['sniper', 'Sniper.mp3'],
+    ]
+    for (const [kind, file] of files) {
+      fetch(`${ASSET_BASE}/audio/${file}`)
+        .then(r => r.arrayBuffer())
+        .then(buf => this.ctx!.decodeAudioData(buf))
+        .then(decoded => { this.samples.set(kind, decoded) })
+        .catch(() => { /* sin muestra: queda el sonido procedural */ })
+    }
+  }
+
+  /** reproduce una muestra MP3 con ganancia por distancia */
+  private playSample(kind: string, dist: number): boolean {
+    const buf = this.samples.get(kind)
+    if (!buf || !this.ctx) return false
+    const g = this.dGain(dist)
+    if (g <= 0.01) return true
+    const src = this.ctx.createBufferSource()
+    src.buffer = buf
+    // pequeña variación de tono para que no suene repetitivo
+    src.playbackRate.value = 0.96 + Math.random() * 0.08
+    const gain = this.ctx.createGain()
+    gain.gain.value = 0.9 * g
+    src.connect(gain)
+    gain.connect(this.sfxBus)
+    src.start()
+    return true
   }
 
   setVolume(v: number): void {
@@ -124,6 +167,9 @@ export class AudioEngine {
   // ----------------------------------------------------------
   gunshot(kind: string, dist = 0): void {
     if (!this.ctx) return
+    // 1) muestra MP3 del usuario si está cargada
+    if (this.playSample(kind, dist)) return
+    // 2) fallback procedural
     const g = this.dGain(dist)
     if (g <= 0.01) return
     const bus = this.sfxBus

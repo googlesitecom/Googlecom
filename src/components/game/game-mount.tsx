@@ -5,6 +5,7 @@ import { Game } from '@/game/engine'
 import { setGame, getGame } from '@/game/game-instance'
 import { useGame } from '@/game/store'
 import { setActiveMap } from '@/game/map-types'
+import { music } from '@/game/music'
 
 export function GameMount() {
   const canvas3dRef = useRef<HTMLCanvasElement>(null)
@@ -37,6 +38,9 @@ export function GameMount() {
       setGame(game)
       game.audio.start()
       game.audio.setVolume(useGame.getState().settings.volume)
+      music.setVolume(useGame.getState().settings.volume)
+      music.play()
+      music.duck(true)
       game.init(canvas3dRef.current!, overlayRef.current!, minimapRef.current!)
       game.net.connect(playerName || 'Operador', {
         mode: 'solo',
@@ -53,6 +57,7 @@ export function GameMount() {
       initRef.current = false
       if (game) game.dispose()
       setGame(null)
+      music.duck(false)   // al volver al menú la música sube un poco
     }
   }, [])
 
