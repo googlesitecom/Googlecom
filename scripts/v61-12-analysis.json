@@ -4,25 +4,25 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "1) Sí\n2) Sí (parcialmente, se ven edificios/estructuras)\n3) Sí\n4) Sí",
+        "content": "Yes, 0.",
         "role": "assistant"
       }
     }
   ],
-  "created": 1789006684,
-  "id": "202609101018022ba78de28d814272",
+  "created": 1789054525,
+  "id": "20260910233524cc05094abe6a443d",
   "model": "glm-5v-turbo",
   "object": "chat.completion",
-  "request_id": "202609101018022ba78de28d814272",
+  "request_id": "20260910233524cc05094abe6a443d",
   "usage": {
-    "completion_tokens": 33,
+    "completion_tokens": 6,
     "completion_tokens_details": {
       "reasoning_tokens": 0
     },
-    "prompt_tokens": 2212,
+    "prompt_tokens": 913,
     "prompt_tokens_details": {
       "cached_tokens": 0
     },
-    "total_tokens": 2245
+    "total_tokens": 919
   }
 }

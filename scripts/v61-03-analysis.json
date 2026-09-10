@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) **Loading overlay.** The screen shows a loading message (\"ESTABLECIENDO ENLACE TÁCTICO\" / \"Desplegando operadores IA en el mapa...\") with a spinning icon, not the 3D game world.\n2) **No HUD.** There are no health bars, ammo counters, or money indicators visible.\n3) **No.** There is no sun, sky, streets, water, or birds; the background is a dark grid pattern.\n4) **No.** There are no weapon slot chips or numbers in the bottom right corner.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789054201,
+  "id": "20260910232956d95db33510a2452f",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260910232956d95db33510a2452f",
+  "usage": {
+    "completion_tokens": 124,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 978,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1102
+  }
+}

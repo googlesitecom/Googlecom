@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) **Yes**, 3D world is visible. No cinematic bars/overlay.\n2) **Yes**, HUD is visible (minimap, health, ammo, scores, timer, etc.).\n3) **Yes**, sky and ground/streets are visible.\n4) **Yes**, weapon slot chips are visible in the bottom-right corner.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789054233,
+  "id": "20260910233031c9d34e0186d64598",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260910233031c9d34e0186d64598",
+  "usage": {
+    "completion_tokens": 72,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 937,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1009
+  }
+}

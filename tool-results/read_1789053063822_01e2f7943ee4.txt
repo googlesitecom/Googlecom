@@ -1,0 +1,1899 @@
+     1→// ============================================================
+     2→// FRONTERA CERO — Configuración compartida cliente/servidor
+     3→// Mapa 140×140 (v4: ciudad ordenada), modos de juego,
+     4→// pociones de escudo (estilo Fortnite), armas y controles
+     5→// ============================================================
+     6→
+     7→/**
+     8→ * Prefijo de ruta para los assets estáticos (public/).
+     9→ * Vacío en desarrollo; en el despliegue de GitHub Pages el sitio
+    10→ * se sirve bajo /Googlecom/, así que el build de Pages define
+    11→ * NEXT_PUBLIC_BASE_PATH=/Googlecom y aquí se usa como prefijo.
+    12→ */
+    13→export const ASSET_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
+    14→
+    15→export const GAME = {
+    16→  TICK: 33,              // ms por tick de simulación (30 Hz)
+    17→  SNAPSHOT_EVERY: 2,     // snapshot cada 2 ticks (15 Hz)
+    18→  INPUT_RATE: 50,        // cliente envía input cada 50 ms (20 Hz)
+    19→  INTERP_DELAY: 120,     // ms de interpolación de jugadores remotos
+    20→  ROUND_TIME: 240,       // segundos por ronda (combate de equipos)
+    21→  ROUND_KILLS: 30,       // kills de equipo para ganar la ronda
+    22→  ROUNDS_TO_WIN: 5,      // rondas para ganar la partida
+    23→  RESPAWN_TIME: 3.0,     // segundos hasta reaparecer
+    24→  SPAWN_PROTECT: 2.5,    // segundos de protección al aparecer
+    25→  BUY_RADIUS: 8,         // metros de la zona de compra
+    26→  START_MONEY: 1000,
+    27→  MAX_MONEY: 16000,
+    28→  KILL_REWARD: 300,
+    29→  HS_REWARD: 100,
+    30→  WIN_REWARD: 2500,
+    31→  LOSE_REWARD: 1900,
+    32→  BOT_COUNT: 8,
+    33→  GRAVITY: 14.0,
+    34→  MAP_HALF: 70,
+    35→  // sistema de vida estilo Fortnite
+    36→  PICKUP_RADIUS: 1.7,    // metros para recoger un objeto
+    37→  PICKUP_RESPAWN: 32,    // segundos hasta reaparecer una poción
+    38→  REGEN_DELAY: 8,        // segundos sin recibir daño para regenerar vida
+    39→  REGEN_HP: 1.2,         // HP por segundo regenerado
+    40→  // capturar la bandera
+    41→  FLAG_RETURN_TIME: 6,   // segundos hasta que la bandera caída vuelva a su base
+    42→  FLAG_CAPTURES: 3,      // capturas para ganar la ronda
+    43→  // dominación
+    44→  DOM_ZONE_RADIUS: 6,    // radio de captura de una zona
+    45→  DOM_CAP_TIME: 7,       // segundos para capturar una zona
+    46→  DOM_TICK_POINTS: 5,    // puntos por zona cada 5 s
+    47→  DOM_TARGET: 150,       // puntos para ganar la ronda
+    48→  // todos contra todos
+    49→  FFA_KILLS: 15,         // bajas individuales para ganar la ronda
+    50→} as const
+    51→
+    52→// ------------------------------------------------------------
+    53→// MODOS DE JUEGO
+    54→// ------------------------------------------------------------
+    55→export type GameMode = 'escaramuza' | 'ffa' | 'bandera' | 'dominacion' | 'historia'
+    56→
+    57→export interface ModeInfo {
+    58→  id: GameMode
+    59→  name: string
+    60→  short: string
+    61→  desc: string
+    62→  target: number
+    63→  time: number
+    64→  teams: boolean
+    65→}
+    66→
+    67→export const MODES: Record<GameMode, ModeInfo> = {
+    68→  escaramuza: {
+    69→    id: 'escaramuza', name: 'COMBATE DE EQUIPOS', short: 'EQUIPOS',
+    70→    desc: '4 vs 4 · la primera escuadra en llegar al objetivo gana la ronda',
+    71→    target: GAME.ROUND_KILLS, time: GAME.ROUND_TIME, teams: true,
+    72→  },
+    73→  ffa: {
+    74→    id: 'ffa', name: 'TODOS CONTRA TODOS', short: 'LIBRE',
+    75→    desc: 'Operador contra operador · la primera racha individual gana',
+    76→    target: GAME.FFA_KILLS, time: GAME.ROUND_TIME, teams: false,
+    77→  },
+    78→  bandera: {
+    79→    id: 'bandera', name: 'CAPTURAR LA BANDERA', short: 'BANDERA',
+    80→    desc: 'Roba la bandera rival y llévala a tu base · primero a 3 capturas',
+    81→    target: GAME.FLAG_CAPTURES, time: 300, teams: true,
+    82→  },
+    83→  dominacion: {
+    84→    id: 'dominacion', name: 'DOMINACIÓN', short: 'DOMINACIÓN',
+    85→    desc: 'Toma y conserva las 3 zonas del mapa · primero a 150 puntos',
+    86→    target: GAME.DOM_TARGET, time: 300, teams: true,
+    87→  },
+    88→  historia: {
+    89→    id: 'historia', name: 'OPERACIÓN CENIZA', short: 'HISTORIA',
+    90→    desc: 'Misión de 4 capítulos contra la instalación militar · 15-20 min',
+    91→    target: 0, time: 1260, teams: true,
+    92→  },
+    93→}
+    94→
+    95→export const MODE_LIST: GameMode[] = ['escaramuza', 'ffa', 'bandera', 'dominacion']
+    96→
+    97→// Dificultad de los bots (escala reacción, puntería y daño)
+    98→export type BotDifficulty = 'facil' | 'normal' | 'dificil' | 'experto'
+    99→export const BOT_SKILL: Record<BotDifficulty, {
+   100→  react: [number, number]
+   101→  aimSpeed: number
+   102→  hitBase: number
+   103→  aimErr: number
+   104→  burstPause: [number, number]
+   105→  seeDist: number
+   106→  dmg: number             // multiplicador de daño que infligen los bots
+   107→  settle: number           // ms que tarda en "asentar" la puntería tras reaccionar
+   108→}> = {
+   109→  // Rebalanceo: en FÁCIL los bots fallan mucho (hitBase bajo, error de apuntado
+   110→  // grande, reacción lenta y tardan ~2.6 s en asentar la mira)
+   111→  facil:   { react: [900, 1600], aimSpeed: 3.2, hitBase: 0.24, aimErr: 0.40, burstPause: [750, 1400], seeDist: 38, dmg: 0.38, settle: 2600 },
+   112→  normal:  { react: [550, 950],  aimSpeed: 6.0, hitBase: 0.42, aimErr: 0.24, burstPause: [420, 850],  seeDist: 50, dmg: 0.48, settle: 1500 },
+   113→  dificil: { react: [300, 520],  aimSpeed: 9.0, hitBase: 0.58, aimErr: 0.12, burstPause: [240, 450],  seeDist: 62, dmg: 0.56, settle: 850 },
+   114→  experto: { react: [190, 330],  aimSpeed: 12.0, hitBase: 0.72, aimErr: 0.06, burstPause: [160, 310],  seeDist: 70, dmg: 0.64, settle: 500 },
+   115→}
+   116→
+   117→export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
+   118→  facil: 'FÁCIL', normal: 'NORMAL', dificil: 'DIFÍCIL', experto: 'EXPERTO',
+   119→}
+   120→
+   121→export type Team = 'A' | 'B'
+   122→export type WeaponId =
+   123→  | 'knife' | 'p9' | 'aguila' | 'mp9' | 'breacher' | 'ar47' | 'cr4' | 'awp338'
+   124→export type BodyPart = 'head' | 'body' | 'legs'
+   125→export type HitPart = BodyPart
+   126→
+   127→export const TEAM_INFO: Record<Team, { name: string; color: string; accent: string }> = {
+   128→  A: { name: 'ESCUADRÓN ÁMBAR', color: '#f59e0b', accent: '#fbbf24' },
+   129→  B: { name: 'ESCUADRÓN VERDE', color: '#22c55e', accent: '#4ade80' },
+   130→}
+   131→
+   132→// ------------------------------------------------------------
+   133→// ARMAS
+   134→// ------------------------------------------------------------
+   135→export interface WeaponConfig {
+   136→  id: WeaponId
+   137→  name: string
+   138→  slot: 'primary' | 'secondary' | 'melee' | 'grenade'
+   139→  price: number
+   140→  damage: number          // daño base por bala (cuerpo, sin escudo, cerca)
+   141→  headMult: number
+   142→  legMult: number
+   143→  rpm: number             // disparos por minuto
+   144→  auto: boolean
+   145→  pellets: number         // perdigones (escopeta = 8)
+   146→  mag: number
+   147→  reserve: number
+   148→  reloadTime: number      // segundos
+   149→  spreadBase: number      // grados de dispersión base
+   150→  spreadMove: number      // dispersión extra al moverse (grados a máx velocidad)
+   151→  spreadAir: number       // dispersión extra en el aire
+   152→  recoilV: number         // kick vertical por disparo (grados)
+   153→  recoilH: number         // deriva horizontal por disparo (grados)
+   154→  recoilRecover: number   // velocidad de recuperación (0..1)
+   155→  sprayInacc: number      // dispersión extra por bala sostenida (grados/bala)
+   156→  zoomFov: number         // FOV al apuntar (0 = sin ADS especial)
+   157→  sniper: boolean         // mira telescópica con overlay
+   158→  moveMult: number        // multiplicador de velocidad al portarla
+   159→  falloffStart: number    // inicio de caída de daño (m)
+   160→  falloffEnd: number      // fin de caída (m)
+   161→  falloffMin: number      // multiplicador mínimo de daño a distancia
+   162→  sound: 'pistol' | 'deagle' | 'smg' | 'shotgun' | 'rifle' | 'sniper'
+   163→}
+   164→
+   165→// NOTA de rebalanceo (v4): retroceso y dispersión REDUCIDOS ~40-45 % —
+   166→// la mira ya no "se va mucho" al disparar y la retícula apenas se abre.
+   167→export const WEAPONS: Record<WeaponId, WeaponConfig> = {
+   168→  knife: {
+   169→    id: 'knife', name: 'Cuchillo Táctico', slot: 'melee', price: 0,
+   170→    damage: 55, headMult: 2.0, legMult: 1.0,
+   171→    rpm: 120, auto: false, pellets: 1, mag: 0, reserve: 0, reloadTime: 0,
+   172→    spreadBase: 0, spreadMove: 0, spreadAir: 0,
+   173→    recoilV: 0.5, recoilH: 0.15, recoilRecover: 0.92, sprayInacc: 0,
+   174→    zoomFov: 0, sniper: false, moveMult: 1.08,
+   175→    falloffStart: 100, falloffEnd: 100, falloffMin: 1, sound: 'pistol',
+   176→  },
+   177→  p9: {
+   178→    id: 'p9', name: 'P9 Compacto', slot: 'secondary', price: 0,
+   179→    damage: 33, headMult: 4.0, legMult: 0.75,
+   180→    rpm: 400, auto: false, pellets: 1, mag: 15, reserve: 90, reloadTime: 2.2,
+   181→    spreadBase: 0.3, spreadMove: 1.0, spreadAir: 2.6,
+   182→    recoilV: 0.62, recoilH: 0.22, recoilRecover: 0.9, sprayInacc: 0.05,
+   183→    zoomFov: 62, sniper: false, moveMult: 1.02,
+   184→    falloffStart: 18, falloffEnd: 55, falloffMin: 0.68, sound: 'pistol',
+   185→  },
+   186→  aguila: {
+   187→    id: 'aguila', name: 'Águila .50', slot: 'secondary', price: 700,
+   188→    damage: 58, headMult: 4.0, legMult: 0.80,
+   189→    rpm: 267, auto: false, pellets: 1, mag: 7, reserve: 35, reloadTime: 2.2,
+   190→    spreadBase: 0.45, spreadMove: 1.5, spreadAir: 3.6,
+   191→    recoilV: 1.8, recoilH: 0.4, recoilRecover: 0.82, sprayInacc: 0.12,
+   192→    zoomFov: 60, sniper: false, moveMult: 1.0,
+   193→    falloffStart: 20, falloffEnd: 60, falloffMin: 0.7, sound: 'deagle',
+   194→  },
+   195→  mp9: {
+   196→    id: 'mp9', name: 'MP-9 Vecto', slot: 'primary', price: 1250,
+   197→    damage: 26, headMult: 3.0, legMult: 0.75,
+   198→    rpm: 750, auto: true, pellets: 1, mag: 30, reserve: 120, reloadTime: 2.3,
+   199→    spreadBase: 0.4, spreadMove: 0.6, spreadAir: 3.2,
+   200→    recoilV: 0.4, recoilH: 0.26, recoilRecover: 0.92, sprayInacc: 0.04,
+   201→    zoomFov: 60, sniper: false, moveMult: 1.04,
+   202→    falloffStart: 14, falloffEnd: 45, falloffMin: 0.6, sound: 'smg',
+   203→  },
+   204→  breacher: {
+   205→    id: 'breacher', name: 'Breacher-12', slot: 'primary', price: 1800,
+   206→    damage: 12, headMult: 2.0, legMult: 0.9,
+   207→    rpm: 68, auto: false, pellets: 8, mag: 6, reserve: 32, reloadTime: 3.0,
+   208→    spreadBase: 2.6, spreadMove: 1.0, spreadAir: 3.4,
+   209→    recoilV: 2.6, recoilH: 0.55, recoilRecover: 0.78, sprayInacc: 0.1,
+   210→    zoomFov: 66, sniper: false, moveMult: 0.97,
+   211→    falloffStart: 8, falloffEnd: 22, falloffMin: 0.28, sound: 'shotgun',
+   212→  },
+   213→  ar47: {
+   214→    id: 'ar47', name: "AR-47 «Cóndor»", slot: 'primary', price: 2700,
+   215→    damage: 36, headMult: 4.0, legMult: 0.75,
+   216→    rpm: 600, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 2.5,
+   217→    spreadBase: 0.28, spreadMove: 1.7, spreadAir: 4.4,
+   218→    recoilV: 0.78, recoilH: 0.38, recoilRecover: 0.85, sprayInacc: 0.07,
+   219→    zoomFov: 55, sniper: false, moveMult: 0.94,
+   220→    falloffStart: 25, falloffEnd: 70, falloffMin: 0.75, sound: 'rifle',
+   221→  },
+   222→  cr4: {
+   223→    id: 'cr4', name: 'Carabina CR-4', slot: 'primary', price: 2900,
+   224→    damage: 33, headMult: 4.0, legMult: 0.75,
+   225→    rpm: 666, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 3.1,
+   226→    spreadBase: 0.24, spreadMove: 1.4, spreadAir: 3.8,
+   227→    recoilV: 0.6, recoilH: 0.26, recoilRecover: 0.88, sprayInacc: 0.05,
+   228→    zoomFov: 55, sniper: false, moveMult: 0.95,
+   229→    falloffStart: 28, falloffEnd: 75, falloffMin: 0.78, sound: 'rifle',
+   230→  },
+   231→  awp338: {
+   232→    id: 'awp338', name: 'FR-338 Tirador', slot: 'primary', price: 4750,
+   233→    damage: 115, headMult: 2.5, legMult: 0.85,
+   234→    rpm: 41, auto: false, pellets: 1, mag: 5, reserve: 30, reloadTime: 3.7,
+   235→    spreadBase: 0.15, spreadMove: 3.4, spreadAir: 6,
+   236→    recoilV: 2.8, recoilH: 0.6, recoilRecover: 0.75, sprayInacc: 0,
+   237→    zoomFov: 9, sniper: true, moveMult: 0.85,
+   238→    falloffStart: 200, falloffEnd: 300, falloffMin: 1, sound: 'sniper',
+   239→  },
+   240→}
+   241→
+   242→export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke'; name: string; price: number; desc: string; cat: string }[] = [
+   243→  { id: 'w:aguila', weapon: 'aguila', name: 'Águila .50', price: 700, desc: 'Pistola de alto calibre', cat: 'Pistolas' },
+   244→  { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'SMG rápida y ágil', cat: 'SMG' },
+   245→  { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Escopeta de caño corto', cat: 'Escopetas' },
+   246→  { id: 'w:ar47', weapon: 'ar47', name: 'AR-47 «Cóndor»', price: 2700, desc: 'Rifle de asalto 7.62', cat: 'Rifles' },
+   247→  { id: 'w:cr4', weapon: 'cr4', name: 'Carabina CR-4', price: 2900, desc: 'Rifle de asalto 5.56', cat: 'Rifles' },
+   248→  { id: 'w:awp338', weapon: 'awp338', name: 'FR-338 Tirador', price: 4750, desc: 'Francotirador letal', cat: 'Francotirador' },
+   249→  { id: 'e:shield', equip: 'shield', name: 'Escudo Completo', price: 1000, desc: 'Sube el escudo a 100', cat: 'Equipamiento' },
+   250→  { id: 'e:frag', equip: 'frag', name: 'Granada MOLO', price: 300, desc: 'Máx. 2 unidades', cat: 'Equipamiento' },
+   251→  { id: 'e:smoke', equip: 'smoke', name: 'Granada de Humo', price: 200, desc: 'Cortina de humo 12 s · máx. 2', cat: 'Equipamiento' },
+   252→]
+   253→
+   254→// ------------------------------------------------------------
+   255→// CONTROLES CONFIGURABLES (teclado + RATÓN + mando)
+   256→// ------------------------------------------------------------
+   257→export type ActionId =
+   258→  | 'fwd' | 'back' | 'left' | 'right'
+   259→  | 'sprint' | 'crouch' | 'jump'
+   260→  | 'reload' | 'grenadeFrag' | 'grenadeSmoke'
+   261→  | 'buy' | 'lastWeapon' | 'zipline'
+   262→  | 'slot1' | 'slot2' | 'slot3'
+   263→  | 'shoot' | 'aim'
+   264→
+   265→/** Los binds de DISPARAR y APUNTAR aceptan botones del ratón (Mouse0..4)
+   266→ *  o cualquier tecla — por fin se pueden reasignar. */
+   267→export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
+   268→  fwd: 'KeyW',
+   269→  back: 'KeyS',
+   270→  left: 'KeyA',
+   271→  right: 'KeyD',
+   272→  sprint: 'ShiftLeft',
+   273→  crouch: 'ControlLeft',
+   274→  jump: 'Space',
+   275→  reload: 'KeyR',
+   276→  grenadeFrag: 'KeyG',
+   277→  grenadeSmoke: 'KeyH',
+   278→  buy: 'KeyB',
+   279→  lastWeapon: 'KeyQ',
+   280→  zipline: 'KeyE',
+   281→  slot1: 'Digit1',
+   282→  slot2: 'Digit2',
+   283→  slot3: 'Digit3',
+   284→  shoot: 'Mouse0',
+   285→  aim: 'Mouse2',
+   286→}
+   287→
+   288→export const ACTION_LABELS: Record<ActionId, string> = {
+   289→  fwd: 'Avanzar',
+   290→  back: 'Retroceder',
+   291→  left: 'Izquierda',
+   292→  right: 'Derecha',
+   293→  sprint: 'Esprintar',
+   294→  crouch: 'Agacharse',
+   295→  jump: 'Saltar',
+   296→  reload: 'Recargar',
+   297→  grenadeFrag: 'Granada MOLO',
+   298→  grenadeSmoke: 'Granada de humo',
+   299→  buy: 'Tienda',
+   300→  lastWeapon: 'Arma anterior',
+   301→  zipline: 'Interactuar / Tirolina',
+   302→  slot1: 'Arma principal',
+   303→  slot2: 'Arma secundaria',
+   304→  slot3: 'Cuchillo',
+   305→  shoot: 'Disparar',
+   306→  aim: 'Apuntar (ADS)',
+   307→}
+   308→
+   309→/** ¿El código corresponde a un botón del ratón? */
+   310→export function isMouseButton(code: string): boolean {
+   311→  return code.startsWith('Mouse')
+   312→}
+   313→
+   314→/** Índice del botón del ratón (Mouse2 → 2), o null */
+   315→export function mouseButtonIndex(code: string): number | null {
+   316→  if (!code.startsWith('Mouse')) return null
+   317→  const n = Number(code.slice(5))
+   318→  return Number.isFinite(n) ? n : null
+   319→}
+   320→
+   321→/** Convierte un KeyboardEvent.code o botón a etiqueta legible */
+   322→export function keyLabel(code: string): string {
+   323→  if (!code) return '—'
+   324→  if (code.startsWith('Mouse')) {
+   325→    const names = ['CLIC IZQ', 'CLIC MED', 'CLIC DER', 'CLIC 4', 'CLIC 5', 'CLIC 6']
+   326→    const n = Number(code.slice(5))
+   327→    return names[n] ?? `CLIC ${n + 1}`
+   328→  }
+   329→  if (code.startsWith('Key')) return code.slice(3)
+   330→  if (code.startsWith('Digit')) return code.slice(5)
+   331→  if (code.startsWith('Numpad')) return 'NUM ' + code.slice(6)
+   332→  if (code.startsWith('Arrow')) {
+   333→    const names: Record<string, string> = { Up: '↑', Down: '↓', Left: '←', Right: '→' }
+   334→    return names[code.slice(5)] ?? code
+   335→  }
+   336→  const names: Record<string, string> = {
+   337→    Space: 'ESPACIO', ShiftLeft: 'MAYÚS IZQ', ShiftRight: 'MAYÚS DER',
+   338→    ControlLeft: 'CTRL IZQ', ControlRight: 'CTRL DER',
+   339→    AltLeft: 'ALT', AltRight: 'ALT GR', Enter: 'ENTER', Tab: 'TAB',
+   340→    CapsLock: 'BLOQ MAYÚS', Backquote: '`', Minus: '-', Equal: '=',
+   341→    BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+   342→    Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+   343→  }
+   344→  return names[code] ?? code.toUpperCase()
+   345→}
+   346→
+   347→// ------------------------------------------------------------
+   348→// MANDO — botones reasignables
+   349→// ------------------------------------------------------------
+   350→export type PadAction =
+   351→  | 'shoot' | 'aim' | 'sprint' | 'jump' | 'crouch' | 'reload'
+   352→  | 'weaponNext' | 'grenadeFrag' | 'grenadeSmoke' | 'buy' | 'scoreboard' | 'pause'
+   353→
+   354→export const DEFAULT_PAD_BINDS: Record<PadAction, number> = {
+   355→  shoot: 7,          // RT
+   356→  aim: 6,            // LT
+   357→  sprint: 10,        // L3 (pulsar stick izquierdo)
+   358→  jump: 0,           // A / Cruz
+   359→  crouch: 1,         // B / Círculo
+   360→  reload: 2,         // X / Cuadrado
+   361→  weaponNext: 3,     // Y / Triángulo
+   362→  grenadeFrag: 4,    // LB
+   363→  grenadeSmoke: 13,  // cruceta abajo
+   364→  buy: 5,            // RB
+   365→  scoreboard: 8,     // Back / View
+   366→  pause: 9,          // Start
+   367→}
+   368→
+   369→export const PAD_ACTION_LABELS: Record<PadAction, string> = {
+   370→  shoot: 'Disparar',
+   371→  aim: 'Apuntar (ADS)',
+   372→  sprint: 'Esprintar (L3)',
+   373→  jump: 'Saltar',
+   374→  crouch: 'Agacharse',
+   375→  reload: 'Recargar',
+   376→  weaponNext: 'Cambiar arma',
+   377→  grenadeFrag: 'Granada MOLO',
+   378→  grenadeSmoke: 'Granada de humo',
+   379→  buy: 'Tienda',
+   380→  scoreboard: 'Marcador (mantener)',
+   381→  pause: 'Pausa',
+   382→}
+   383→
+   384→/** Etiqueta de botón estándar Xbox (PS: A=Cruz, B=Círculo…) */
+   385→export function padButtonLabel(i: number): string {
+   386→  const names: Record<number, string> = {
+   387→    0: 'A', 1: 'B', 2: 'X', 3: 'Y',
+   388→    4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT',
+   389→    8: 'VIEW', 9: 'MENU', 10: 'L3', 11: 'R3',
+   390→    12: '↑', 13: '↓', 14: '←', 15: '→',
+   391→    16: 'CENTRO', 17: 'GUIA',
+   392→  }
+   393→  return names[i] ?? `B${i}`
+   394→}
+   395→
+   396→export const WEAPON_LIST = Object.values(WEAPONS)
+   397→
+   398→export function weaponIndex(id: WeaponId): number {
+   399→  return WEAPON_LIST.findIndex(w => w.id === id)
+   400→}
+   401→export function weaponByIndex(i: number): WeaponId {
+   402→  return WEAPON_LIST[i]?.id ?? 'p9'
+   403→}
+   404→
+   405→/** Daño efectivo de un arma (sin escudo: la absorción la aplica la simulación) */
+   406→export function computeDamage(w: WeaponConfig, part: BodyPart, distance: number): number {
+   407→  let dmg = w.damage
+   408→  if (part === 'head') dmg *= w.headMult
+   409→  else if (part === 'legs') dmg *= w.legMult
+   410→  if (distance > w.falloffStart) {
+   411→    const t = Math.min(1, (distance - w.falloffStart) / Math.max(1, w.falloffEnd - w.falloffStart))
+   412→    dmg *= 1 - (1 - w.falloffMin) * t
+   413→  }
+   414→  return Math.round(dmg)
+   415→}
+   416→
+   417→// ------------------------------------------------------------
+   418→// OBJETOS DE CURACIÓN (estilo Fortnite)
+   419→// ------------------------------------------------------------
+   420→export type PickupKind = 'medkit' | 'bandage' | 'shieldSmall' | 'shieldBig'
+   421→
+   422→export const PICKUP_INFO: Record<PickupKind, { name: string; hp: number; shield: number; color: number }> = {
+   423→  medkit:      { name: 'Botiquín',            hp: 50, shield: 0,  color: 0xef4444 },
+   424→  bandage:     { name: 'Vendaje',             hp: 15, shield: 0,  color: 0xfca5a5 },
+   425→  shieldSmall: { name: 'Poción de Escudo S',  hp: 0,  shield: 25, color: 0x38bdf8 },
+   426→  shieldBig:   { name: 'Poción de Escudo G',  hp: 0,  shield: 50, color: 0x0ea5e9 },
+   427→}
+   428→
+   429→export interface PickupSpot { kind: PickupKind; x: number; z: number }
+   430→
+   431→// ------------------------------------------------------------
+   432→// MAPA v4 — "SECTOR MERIDIANO": ciudad ordenada tipo Warzone
+   433→// Mismo tamaño (140×140), cuadrícula de calles, distritos variados
+   434→// y edificios grandes con interior: hotel de 3 plantas, torre de
+   435→// oficinas de 4, mercado, almacenes, tiendas, casas y gasolinera.
+   436→// ------------------------------------------------------------
+   437→
+   438→/** Posiciones de pociones/botiquines (dentro de edificios y zonas clave) */
+   439→export const PICKUP_SPOTS: PickupSpot[] = [
+   440→  // pociones del hotel y almacén reposicionadas (fuera de columnas/estanterías)
+   441→  { kind: 'bandage', x: 18, z: -21 },
+   442→  { kind: 'shieldSmall', x: 17, z: -17 },
+   443→  // torre de oficinas
+   444→  { kind: 'shieldBig', x: 50, z: -22 },
+   445→  { kind: 'medkit', x: 50, z: -17 },
+   446→  // mercado central
+   447→  { kind: 'bandage', x: 15, z: -52 },
+   448→  { kind: 'shieldSmall', x: 24, z: -52 },
+   449→  // almacén norte / nave oeste
+   450→  { kind: 'shieldBig', x: -22, z: -16 },
+   451→  { kind: 'medkit', x: -19.5, z: -23 },
+   452→  { kind: 'bandage', x: -51, z: -21 },
+   453→  // colonia residencial SE
+   454→  { kind: 'bandage', x: 16, z: 18 },
+   455→  { kind: 'shieldSmall', x: 44.8, z: 16 },
+   456→  { kind: 'shieldBig', x: 16, z: 52 },
+   457→  // barracón del radar
+   458→  { kind: 'medkit', x: -50, z: 56 },
+   459→  // parque SE
+   460→  { kind: 'shieldSmall', x: 46, z: 58 },
+   461→]
+   462→
+   463→export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
+   464→
+   465→export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock'
+   466→
+   467→export interface MapBox {
+   468→  x: number; y: number; z: number
+   469→  w: number; h: number; d: number
+   470→  mat: MatKey
+   471→}
+   472→
+   473→function box(x: number, y: number, z: number, w: number, h: number, d: number, mat: MatKey): MapBox {
+   474→  return { x, y, z, w, h, d, mat }
+   475→}
+   476→
+   477→const MAP: MapBox[] = []
+   478→function B(...a: Parameters<typeof box>) { MAP.push(box(...a)) }
+   479→
+   480→// --- Perímetro 140×140 (muros de 6.5 m) ---
+   481→B(0, 3.25, -70.5, 142, 6.5, 1.5, 'sand')
+   482→B(0, 3.25, 70.5, 142, 6.5, 1.5, 'sand')
+   483→B(-70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
+   484→B(70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
+   485→for (const v of [-64, -48, -32, -16, 0, 16, 32, 48, 64]) {
+   486→  B(v, 3.6, -70.5, 2.4, 7.2, 2.4, 'concrete')
+   487→  B(v, 3.6, 70.5, 2.4, 7.2, 2.4, 'concrete')
+   488→  B(-70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+   489→  B(70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+   490→}
+   491→
+   492→// --- Muros con puerta central ---
+   493→function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: number, T: number, mat: MatKey, gateHalf = 1.6, doorH = 0): void {
+   494→  const lo = Math.min(from, to), hi = Math.max(from, to)
+   495→  const mid = (lo + hi) / 2
+   496→  const mk = (c: number, len: number) => {
+   497→    if (len <= 0.05) return
+   498→    if (ax === 'x') B(c, H / 2, at, len, H, T, mat)
+   499→    else B(at, H / 2, c, T, H, len, mat)
+   500→  }
+   501→  mk((lo + (mid - gateHalf)) / 2, (mid - gateHalf) - lo)
+   502→  mk((hi + (mid + gateHalf)) / 2, hi - (mid + gateHalf))
+   503→  if (gateHalf > 0 && H > doorH + 0.6) {
+   504→    const lintelH = H - Math.max(doorH, 0.01)
+   505→    if (lintelH > 0.15) {
+   506→      if (ax === 'x') B(mid, H - lintelH / 2, at, gateHalf * 2, lintelH, T, mat)
+   507→      else B(at, H - lintelH / 2, mid, T, lintelH, gateHalf * 2, mat)
+   508→    }
+   509→  }
+   510→}
+   511→
+   512→// ------------------------------------------------------------
+   513→// Edificios con interior: muros con puerta + banda de ventanas
+   514→// ------------------------------------------------------------
+   515→const ROT = { N: 0, E: Math.PI / 2, S: Math.PI, W: Math.PI * 1.5 } as const
+   516→type Facing = keyof typeof ROT
+   517→
+   518→/** Caja en coordenadas locales del edificio, girada según `f` */
+   519→function BR(cx: number, cz: number, f: Facing, lx: number, ly: number, lz: number, w: number, h: number, d: number, mat: MatKey): void {
+   520→  const ang = ROT[f]
+   521→  const c = Math.cos(ang), s = Math.sin(ang)
+   522→  const rx = lx * c - lz * s
+   523→  const rz = lx * s + lz * c
+   524→  const swap = Math.abs(s) > 0.5
+   525→  B(cx + rx, ly, cz + rz, swap ? d : w, h, swap ? w : d, mat)
+   526→}
+   527→
+   528→interface WallOpts {
+   529→  H?: number; T?: number; y0?: number
+   530→  door?: number; doorHalf?: number; doorH?: number
+   531→  wins?: number[]; winW?: number; bandLo?: number; bandHi?: number
+   532→}
+   533→
+   534→/**
+   535→ * Muro de edificio en coords. locales. `axis 'z'`: corre a lo largo de x en z=at;
+   536→ * `axis 'x'`: corre a lo largo de z en x=at. Puerta = hueco a toda altura con dintel;
+   537→ * ventanas = banda practiable (se puede disparar a través) entre zócalo y franja superior.
+   538→ */
+   539→function wallL(cx: number, cz: number, f: Facing, axis: 'x' | 'z', at: number, from: number, to: number, mat: MatKey, opts: WallOpts): void {
+   540→  const H = opts.H ?? 3.3
+   541→  const T = opts.T ?? 0.35
+   542→  const y0 = opts.y0 ?? 0
+   543→  const bandLo = y0 + (opts.bandLo ?? 1.45)
+   544→  const bandHi = y0 + (opts.bandHi ?? 2.25)
+   545→  const winW = opts.winW ?? 1.3
+   546→  const lo = Math.min(from, to), hi = Math.max(from, to)
+   547→  const put = (c: number, len: number, ya: number, yb: number) => {
+   548→    if (len <= 0.06 || yb - ya <= 0.06) return
+   549→    const cy = (ya + yb) / 2
+   550→    if (axis === 'z') BR(cx, cz, f, c, cy, at, len, yb - ya, T, mat)
+   551→    else BR(cx, cz, f, at, cy, c, T, yb - ya, len, mat)
+   552→  }
+   553→  let solids: [number, number][] = [[lo, hi]]
+   554→  if (opts.door !== undefined) {
+   555→    const dh = opts.doorHalf ?? 1.05
+   556→    const doorH = y0 + (opts.doorH ?? 2.15)
+   557→    const dLo = opts.door - dh, dHi = opts.door + dh
+   558→    solids = []
+   559→    if (dLo - lo > 0.05) solids.push([lo, dLo])
+   560→    if (hi - dHi > 0.05) solids.push([dHi, hi])
+   561→    put(opts.door, dh * 2, doorH, y0 + H)
+   562→  }
+   563→  for (const [a, b] of solids) {
+   564→    put((a + b) / 2, b - a, y0, bandLo)
+   565→    put((a + b) / 2, b - a, bandHi, y0 + H)
+   566→    const gaps: [number, number][] = []
+   567→    for (const w of opts.wins ?? []) {
+   568→      const g0 = w - winW / 2, g1 = w + winW / 2
+   569→      if (g0 > a + 0.3 && g1 < b - 0.3) gaps.push([g0, g1])
+   570→    }
+   571→    gaps.sort((p, q) => p[0] - q[0])
+   572→    let cur = a
+   573→    for (const [g0, g1] of gaps) { put((cur + g0) / 2, g0 - cur, bandLo, bandHi); cur = g1 }
+   574→    put((cur + b) / 2, b - cur, bandLo, bandHi)
+   575→  }
+   576→}
+   577→
+   578→const WP_EXTRA: [number, number][] = []
+   579→function wpTransform(cx: number, cz: number, f: Facing, lx: number, lz: number): [number, number] {
+   580→  const ang = ROT[f], c = Math.cos(ang), s = Math.sin(ang)
+   581→  return [cx + lx * c - lz * s, cz + lx * s + lz * c]
+   582→}
+   583→
+   584→/** Escalera recta de peldaños crecientes con altura inicial y0.
+   585→ *  (xAt, zAt) = posición local del PRIMER peldaño; (dx, dz) = dirección de subida. */
+   586→function stairsBR(cx: number, cz: number, f: Facing, xAt: number, zAt: number, dx: number, dz: number, steps: number, riseStep: number, runStep: number, wStair: number, y0 = 0, mat: MatKey = 'concrete'): void {
+   587→  for (let i = 0; i < steps; i++) {
+   588→    const rise = riseStep * (i + 1)
+   589→    const sx = xAt + dx * runStep * i
+   590→    const sz = zAt + dz * runStep * i
+   591→    // si sube a lo largo de x, el largo del peldaño va en x
+   592→    BR(cx, cz, f, sx, y0 + rise / 2, sz, dx !== 0 ? runStep + 0.04 : wStair, rise, dz !== 0 ? runStep + 0.04 : wStair, mat)
+   593→  }
+   594→}
+   595→
+   596→// ------------------------------------------------------------
+   597→// HOTEL MERIDIANO — 18×14, 3 plantas + azotea (escaleras interiores
+   598→// de dos tramos apilados + escalera exterior de incendios)
+   599→// ------------------------------------------------------------
+   600→function hotel(cx: number, cz: number, f: Facing): void {
+   601→  const HW = 9, HD = 7, H1 = 3.0, H2 = 2.8, T = 0.4
+   602→  const F2 = 3.3, F3 = 6.6, ROOF = 9.55
+   603→  // ---- planta baja: lobby ----
+   604→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H1, T, door: 0, doorHalf: 1.7, doorH: 2.4, wins: [-6, 6] })
+   605→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H1, T, wins: [-5, 0, 5] })
+   606→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
+   607→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
+   608→  // columnas del lobby
+   609→  BR(cx, cz, f, 0, 1.5, -3, 0.7, 3.0, 0.7, 'concrete')
+   610→  BR(cx, cz, f, 0, 1.5, 2, 0.7, 3.0, 0.7, 'concrete')
+   611→  // recepción + mobiliario
+   612→  BR(cx, cz, f, -4.5, 0.55, -4.5, 3.4, 1.1, 0.9, 'wood')        // mostrador
+   613→  BR(cx, cz, f, -6, 0.4, 1.5, 2.0, 0.8, 0.9, 'sandbag')          // sofá
+   614→  BR(cx, cz, f, -3.2, 0.45, 1.5, 1.2, 0.9, 0.9, 'wood')         // mesa baja
+   615→  BR(cx, cz, f, -7.6, 0.9, -1, 0.7, 1.8, 1.6, 'wood')           // estante
+   616→  // ---- escalera interior: 2 tramos apilados (lado este, suben hacia -z) ----
+   617→  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, 0)      // tramo A: planta baja → P1
+   618→  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, F2)    // tramo B: P1 → P2 (apilado)
+   619→  // ---- forjado P1 con hueco sobre la escalera (x 5..9, z 0.4..7) ----
+   620→  BR(cx, cz, f, -2.1, 3.15, 0, 14.2, 0.3, 14, 'concrete')       // franja oeste
+   621→  BR(cx, cz, f, 7, 3.15, -3.85, 4, 0.3, 6.3, 'concrete')        // rincón este-sur
+   622→  BR(cx, cz, f, 6.9, 3.15, -0.15, 2.8, 0.3, 1.1, 'concrete')    // rellano del tramo A
+   623→  // ---- muros P1 ----
+   624→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-6, 0, 6] })
+   625→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-5, 0, 5] })
+   626→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
+   627→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
+   628→  // tabique de habitaciones en P1
+   629→  wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.7, 'sand', { H: H2, T: 0.3, y0: F2, door: -2, doorHalf: 0.8, doorH: 2.05 })
+   630→  BR(cx, cz, f, -6, F2 + 0.4, -4, 1.8, 0.8, 0.9, 'sandbag')     // cama (hab.)
+   631→  BR(cx, cz, f, -6, F2 + 0.45, 0, 1.2, 0.9, 0.9, 'wood')
+   632→  // ---- forjado P2 + muros P2 ----
+   633→  BR(cx, cz, f, -2.1, F3 + 0.15 - 0.3, 0, 14.2, 0.3, 14, 'concrete')
+   634→  BR(cx, cz, f, 7, F3 - 0.15, -3.85, 4, 0.3, 6.3, 'concrete')
+   635→  BR(cx, cz, f, 6.9, F3 - 0.15, -0.15, 2.8, 0.3, 1.1, 'concrete')
+   636→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-6, 0, 6] })
+   637→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
+   638→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
+   639→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
+   640→  BR(cx, cz, f, -6, F3 + 0.7, 4, 1.2, 1.2, 1.2, 'crate')
+   641→  // ---- azotea: forjado + pretil (hueco al este donde llega la escalera) ----
+   642→  BR(cx, cz, f, 0, ROOF, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
+   643→  const py = ROOF + 0.475
+   644→  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+   645→  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+   646→  BR(cx, cz, f, +HW + 0.12, py, -6.5, 0.22, 0.35, 1.1, 'concrete')   // pretil este, tramo norte
+   647→  BR(cx, cz, f, +HW + 0.12, py, 4.5, 0.22, 0.35, 5.1, 'concrete')     // pretil este, tramo sur
+   648→  BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
+   649→  BR(cx, cz, f, -4, ROOF + 0.75, -4, 1.6, 1.1, 1.3, 'metalGrey')  // climatizador
+   650→  BR(cx, cz, f, -6.5, ROOF + 0.6, 3, 1.1, 0.8, 1.1, 'metalGrey')
+   651→  // ---- escalera exterior de incendios (fachada este, sube hacia -z) ----
+   652→  stairsBR(cx, cz, f, 10.1, 7.2, 0, -1, 19, 0.5, 0.62, 1.4)
+   653→  // waypoints: entrada, lobby, pasillo P1 (solo planta baja para bots)
+   654→  WP_EXTRA.push(
+   655→    wpTransform(cx, cz, f, 0, -8.6),
+   656→    wpTransform(cx, cz, f, 0, -1),
+   657→    wpTransform(cx, cz, f, -4, 3),
+   658→    wpTransform(cx, cz, f, 3, -2),
+   659→  )
+   660→}
+   661→
+   662→// ------------------------------------------------------------
+   663→// TORRE ÁMBAR (oficinas) — 14×14, 4 plantas + azotea con mirador.
+   664→// Escalera interior de 4 tramos apilados (núcleo este); el último
+   665→// tramo desemboca en la azotea a través de un hueco.
+   666→// ------------------------------------------------------------
+   667→function torreOficina(cx: number, cz: number, f: Facing): void {
+   668→  const HW = 7, HD = 7, HF = 2.8, T = 0.4
+   669→  const F = [0, 3.1, 6.2, 9.3]
+   670→  const ROOF = 12.25
+   671→  for (let p = 0; p < 4; p++) {
+   672→    const y0 = F[p]
+   673→    // fachada sur: con puerta en planta baja
+   674→    if (p === 0) {
+   675→      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, door: 0, doorHalf: 1.3, doorH: 2.3, wins: [-4.5, 4.5] })
+   676→    } else {
+   677→      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+   678→    }
+   679→    wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+   680→    wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+   681→    wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+   682→  }
+   683→  // tabiques de oficinas (plantas 1..3)
+   684→  for (let p = 1; p < 4; p++) {
+   685→    wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.2, 'sand', { H: HF, T: 0.25, y0: F[p], door: -1, doorHalf: 0.8, doorH: 2.05 })
+   686→  }
+   687→  // escritorios
+   688→  BR(cx, cz, f, -4.5, 0.45, -4.5, 1.6, 0.9, 0.9, 'wood')
+   689→  BR(cx, cz, f, -4.5, 3.55, 3.5, 1.6, 0.9, 0.9, 'wood')
+   690→  BR(cx, cz, f, -4.5, 6.65, -3.5, 1.6, 0.9, 0.9, 'wood')
+   691→  BR(cx, cz, f, 3, 0.45, 5, 1.3, 0.9, 0.9, 'wood')
+   692→  // ---- escalera interior: 4 tramos apilados (núcleo este) ----
+   693→  for (let p = 0; p < 4; p++) {
+   694→    stairsBR(cx, cz, f, 5.6, 6.4, 0, -1, 10, 0.28, 0.55, 2.4, F[p])
+   695→  }
+   696→  // ---- forjados (hueco del núcleo x 4.2..7, z 0.4..7 + rellano) ----
+   697→  for (let p = 1; p < 4; p++) {
+   698→    BR(cx, cz, f, -1.6, F[p] - 0.15, 0, 11.2, 0.3, 14, 'concrete')   // franja oeste
+   699→    BR(cx, cz, f, 6.2, F[p] - 0.15, -3.85, 2.6, 0.3, 6.3, 'concrete')
+   700→    BR(cx, cz, f, 5.6, F[p] - 0.15, -0.15, 2.4, 0.3, 1.1, 'concrete')
+   701→  }
+   702→  // ---- azotea con mirador (pretil alto) + hueco de la escalera ----
+   703→  BR(cx, cz, f, -1.6, ROOF, 0, 11.2, 0.3, 14, 'roof')
+   704→  BR(cx, cz, f, 6.2, ROOF, -3.85, 2.6, 0.3, 6.3, 'concrete')
+   705→  BR(cx, cz, f, 5.6, ROOF, -0.15, 2.4, 0.3, 1.1, 'concrete')
+   706→  const py = ROOF + 0.55
+   707→  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.7, 0.7, 0.22, 'concrete')
+   708→  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.7, 0.7, 0.22, 'concrete')
+   709→  BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.7, HD * 2 + 0.7, 'concrete')
+   710→  BR(cx, cz, f, +HW + 0.12, py, -3.5, 0.22, 0.7, 7, 'concrete')       // pretil este, tramo norte
+   711→  BR(cx, cz, f, +HW + 0.12, py, 4, 0.22, 0.7, 6, 'concrete')          // tramo sur (hueco en medio)
+   712→  BR(cx, cz, f, -3.5, ROOF + 0.6, -4, 1.5, 1.0, 1.2, 'metalGrey')     // maquinaria
+   713→  WP_EXTRA.push(
+   714→    wpTransform(cx, cz, f, 0, -8.5),
+   715→    wpTransform(cx, cz, f, 0, -3),
+   716→    wpTransform(cx, cz, f, -4, 0),
+   717→    wpTransform(cx, cz, f, 3, -4),
+   718→  )
+   719→}
+   720→
+   721→// ------------------------------------------------------------
+   722→// MERCADO CENTRAL — 20×20 con 4 puertas, puestos interiores y
+   723→// tejado accesible por escaleras exteriores N y S
+   724→// ------------------------------------------------------------
+   725→function mercado(cx: number, cz: number, f: Facing): void {
+   726→  const MW = 10, MH = 4.6, MT = 0.6, MG = 1.7
+   727→  // fachadas N y S (z = ∓MW) con puerta central
+   728→  {
+   729→    const segW = MW - MG
+   730→    for (const sz of [-1, 1]) {
+   731→      BR(cx, cz, f, -(MG + segW / 2), MH / 2, sz * MW, segW, MH, MT, 'sand')
+   732→      BR(cx, cz, f, MG + segW / 2, MH / 2, sz * MW, segW, MH, MT, 'sand')
+   733→      BR(cx, cz, f, 0, MH - 0.5, sz * MW, MG * 2, 1, MT, 'sand')
+   734→    }
+   735→    // fachadas E y O (x = ±MW) con puerta central
+   736→    for (const sx of [-1, 1]) {
+   737→      BR(cx, cz, f, sx * MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
+   738→      BR(cx, cz, f, sx * MW, MH / 2, (MG + segW / 2), MT, MH, segW, 'sand')
+   739→      BR(cx, cz, f, sx * MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
+   740→    }
+   741→  }
+   742→  // pilares de esquina e interiores
+   743→  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+   744→    BR(cx, cz, f, sx * 9.6, MH / 2, sz * 9.6, 1, MH, 1, 'concrete')
+   745→    BR(cx, cz, f, sx * 6, MH / 2, sz * 6, 0.7, MH, 0.7, 'concrete')
+   746→  }
+   747→  // puestos interiores
+   748→  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+   749→    BR(cx, cz, f, sx * 4.2, 0.6, sz * 2, 1.2, 1.2, 1.2, 'crate')
+   750→    BR(cx, cz, f, sx * 4.2, 1.8, sz * 2, 1.2, 1.2, 1.2, 'crate')
+   751→    BR(cx, cz, f, sx * 2, 0.45, sz * 5, 0.7, 0.9, 0.7, 'barrel')
+   752→  }
+   753→  // techo con parapeto (hueco N/S donde llegan las escaleras)
+   754→  BR(cx, cz, f, 0, MH + 0.15, 0, MW * 2 + 1.4, 0.3, MW * 2 + 1.4, 'roof')
+   755→  BR(cx, cz, f, 4.4, MH + 0.45, -10.3, 11.9, 0.4, 0.3, 'concrete')    // parapeto N (hueco a la izq.)
+   756→  BR(cx, cz, f, -4.4, MH + 0.45, 10.3, 11.9, 0.4, 0.3, 'concrete')   // parapeto S (hueco a la der.)
+   757→  BR(cx, cz, f, 10.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+   758→  BR(cx, cz, f, -10.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+   759→  // escaleras exteriores N y S (junto a la fachada, suben a lo largo de x)
+   760→  stairsBR(cx, cz, f, -10.6, -12.6, 1, 0, 9, 0.5, 0.9, 1.0, 0)
+   761→  stairsBR(cx, cz, f, 10.6, 12.6, -1, 0, 9, 0.5, 0.9, 1.0, 0)
+   762→  WP_EXTRA.push(
+   763→    wpTransform(cx, cz, f, 0, -11),
+   764→    wpTransform(cx, cz, f, 0, 0),
+   765→    wpTransform(cx, cz, f, 0, 7),
+   766→    wpTransform(cx, cz, f, -6, 3),
+   767→    wpTransform(cx, cz, f, 6, -3),
+   768→  )
+   769→}
+   770→
+   771→// ------------------------------------------------------------
+   772→// CASAS (colonia residencial) — probadas en v3
+   773→// ------------------------------------------------------------
+   774→/** Casa pequeña 9×8 con interior: salón + dormitorio, ventanas, tejado plano */
+   775→function smallHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
+   776→  const HW = 4.5, HD = 4.0, H = 3.3, T = 0.35
+   777→  const o: WallOpts = { H, T }
+   778→  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.05, doorH: 2.15, wins: [-2.85, 2.85] })
+   779→  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-2.2, 2.2] })
+   780→  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
+   781→  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
+   782→  wallL(cx, cz, f, 'z', 1.2, -HW + T, HW - T, mat, { ...o, door: 1.9, doorHalf: 0.8, doorH: 2.05 })
+   783→  BR(cx, cz, f, -2.7, 0.4, -3.1, 1.9, 0.8, 0.85, 'sandbag')   // sofá
+   784→  BR(cx, cz, f, -0.6, 0.45, -2.5, 1.3, 0.9, 0.9, 'wood')      // mesa
+   785→  BR(cx, cz, f, 3.9, 0.9, -1.5, 0.7, 1.8, 1.6, 'wood')        // estante
+   786→  BR(cx, cz, f, -2.6, 0.3, 2.7, 1.7, 0.6, 1.9, 'wood')        // cama
+   787→  BR(cx, cz, f, -1.1, 0.3, 3.3, 0.7, 0.6, 0.7, 'crate')       // mesita
+   788→  BR(cx, cz, f, 3.6, 0.45, 3.2, 0.7, 0.9, 0.7, 'barrel')      // bidón
+   789→  // tejado plano con pretiles
+   790→  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
+   791→  BR(cx, cz, f, 0, H + 0.475, -HD - 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
+   792→  BR(cx, cz, f, 0, H + 0.475, +HD + 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
+   793→  BR(cx, cz, f, -HW - 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
+   794→  BR(cx, cz, f, +HW + 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
+   795→  WP_EXTRA.push(
+   796→    wpTransform(cx, cz, f, 0, -6.2),
+   797→    wpTransform(cx, cz, f, 1.9, -1.5),
+   798→    wpTransform(cx, cz, f, 1.9, 3.3),
+   799→  )
+   800→}
+   801→
+   802→/** Casa grande de dos plantas: escalera interior y tejado accesible */
+   803→function bigHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
+   804→  const HW = 5.5, HD = 4.5, H1 = 3.2, H2 = 2.8, T = 0.4
+   805→  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H1, T, door: 0, doorHalf: 1.15, doorH: 2.25, wins: [-3.6, 3.6] })
+   806→  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H1, T, wins: [-3.3, 0, 3.3] })
+   807→  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
+   808→  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
+   809→  // escalera interior junto a la pared este
+   810→  stairsBR(cx, cz, f, 3.55, 2.7, 0, -1, 8, 0.4, 0.8, 1.4, 0)
+   811→  // mobiliario planta baja
+   812→  BR(cx, cz, f, -3.4, 0.4, -3.3, 2.1, 0.8, 0.85, 'sandbag')
+   813→  BR(cx, cz, f, -1.2, 0.45, -2.7, 1.3, 0.9, 0.9, 'wood')
+   814→  BR(cx, cz, f, -4.85, 0.9, -0.5, 0.7, 1.8, 1.7, 'wood')
+   815→  BR(cx, cz, f, -4.3, 0.6, 3.4, 1.2, 1.2, 1.2, 'crate')
+   816→  BR(cx, cz, f, -4.3, 1.8, 3.4, 1.2, 1.2, 1.2, 'crate')
+   817→  // forjado 2.ª planta (hueco sobre la escalera)
+   818→  BR(cx, cz, f, -1.5, H1 + 0.15, 0, 8.0, 0.3, HD * 2, 'concrete')
+   819→  BR(cx, cz, f, 4.0, H1 + 0.15, 3.25, 3.0, 0.3, 2.5, 'concrete')
+   820→  // muros 2.ª planta
+   821→  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
+   822→  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
+   823→  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
+   824→  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
+   825→  BR(cx, cz, f, -4.5, H1 + 0.9, 3.4, 1.2, 1.2, 1.2, 'crate')
+   826→  BR(cx, cz, f, -4.5, H1 + 2.1, 3.4, 1.2, 1.2, 1.2, 'crate')
+   827→  BR(cx, cz, f, -2.0, H1 + 0.75, -3.0, 1.3, 0.9, 0.9, 'wood')
+   828→  // tejado accesible + pretil (hueco oeste para la escalera exterior)
+   829→  BR(cx, cz, f, 0, H1 + 0.3 + H2 + 0.15, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
+   830→  const py = H1 + 0.3 + H2 + 0.475
+   831→  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+   832→  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+   833→  BR(cx, cz, f, +HW + 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
+   834→  BR(cx, cz, f, -HW - 0.12, py, 1.9, 0.22, 0.35, 5.2, 'concrete')
+   835→  BR(cx, cz, f, -HW - 0.12, py, -3.5, 0.22, 0.35, 2.0, 'concrete')
+   836→  // escalera exterior al tejado (pared oeste)
+   837→  stairsBR(cx, cz, f, -6.3, 4.0, 0, -1, 14, 0.5, 0.62, 1.3, 0)
+   838→  WP_EXTRA.push(
+   839→    wpTransform(cx, cz, f, 0, -6.5),
+   840→    wpTransform(cx, cz, f, 0, -1),
+   841→    wpTransform(cx, cz, f, 0, 2.5),
+   842→  )
+   843→}
+   844→
+   845→/** Barracón militar 8×5.4 con literas */
+   846→function barracks(cx: number, cz: number, f: Facing, mat: MatKey = 'metalGreen'): void {
+   847→  const HW = 4.0, HD = 2.7, H = 2.9, T = 0.35
+   848→  const o: WallOpts = { H, T }
+   849→  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.0, doorH: 2.05, wins: [-2.5, 2.5] })
+   850→  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-1.8, 1.8] })
+   851→  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [0] })
+   852→  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [0] })
+   853→  BR(cx, cz, f, 2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
+   854→  BR(cx, cz, f, -2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
+   855→  BR(cx, cz, f, -3.3, 0.9, -1.6, 0.6, 1.8, 1.0, 'metalGrey')
+   856→  BR(cx, cz, f, 2.2, 0.6, -1.5, 1.2, 1.2, 1.2, 'crate')
+   857→  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
+   858→  WP_EXTRA.push(
+   859→    wpTransform(cx, cz, f, 0, -4.3),
+   860→    wpTransform(cx, cz, f, 0, 0),
+   861→  )
+   862→}
+   863→
+   864→// ------------------------------------------------------------
+   865→// ALMACÉN — grande, con puerta amplia, estanterías y tejado
+   866→// accesible por escalera exterior. XW/ZW = semiejes.
+   867→// ------------------------------------------------------------
+   868→function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): void {
+   869→  const T = 0.6, G = 2.6
+   870→  // pared trasera y frontal con puerta grande
+   871→  wallL(cx, cz, f, 'z', -ZW, -XW, XW, 'metalBlue', { H, T, door: 0, doorHalf: G, doorH: 3.6 })
+   872→  wallL(cx, cz, f, 'z', +ZW, -XW, XW, 'metalBlue', { H, T, wins: [-XW * 0.55, 0, XW * 0.55], bandLo: 1.6, bandHi: 3.0 })
+   873→  // laterales con puertas
+   874→  for (const sx of [-1, 1]) {
+   875→    wallL(cx, cz, f, 'x', sx * XW, -ZW, ZW, 'metalBlue', { H, T, door: 0, doorHalf: 1.3, doorH: 3.2, wins: [-ZW * 0.5, ZW * 0.5], bandLo: 1.6, bandHi: 3.0 })
+   876→  }
+   877→  // techo
+   878→  BR(cx, cz, f, 0, H + 0.15, 0, XW * 2 + 1.2, 0.3, ZW * 2 + 1.2, 'roof')
+   879→  // estanterías interiores (dos hileras)
+   880→  BR(cx, cz, f, -XW * 0.45, 1.3, -ZW * 0.3, 2.4, 2.6, ZW * 1.2, 'metalGreen')
+   881→  BR(cx, cz, f, XW * 0.45, 1.3, -ZW * 0.3, 2.4, 2.6, ZW * 1.2, 'metalGreen')
+   882→  BR(cx, cz, f, -XW * 0.45, 1.3, 0, 1.4, 1.2, 1.4, 'crate')
+   883→  BR(cx, cz, f, -XW * 0.45, 2.6, 0, 1.4, 1.2, 1.4, 'crate')
+   884→  BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.5, 0.7, 0.9, 0.7, 'barrel')
+   885→  // muelle de carga frente a la puerta
+   886→  BR(cx, cz, f, 0, 0.225, -ZW - 1.4, 7, 0.45, 2, 'concrete')
+   887→  // escalera exterior al tejado (lado oeste, sube hacia -z)
+   888→  stairsBR(cx, cz, f, -XW - 1.0, ZW + 1.2, 0, -1, Math.ceil(H / 0.5), 0.5, 0.62, 1.3, 0)
+   889→  // pretiles del tejado (hueco donde llega la escalera, lado oeste)
+   890→  BR(cx, cz, f, 0, H + 0.45, -ZW - 0.15, XW * 2 + 1.2, 0.4, 0.28, 'concrete')
+   891→  BR(cx, cz, f, 0, H + 0.45, +ZW + 0.15, XW * 2 + 1.2, 0.4, 0.28, 'concrete')
+   892→  BR(cx, cz, f, +XW + 0.15, H + 0.45, 0, 0.28, 0.4, ZW * 2 + 1.2, 'concrete')
+   893→  BR(cx, cz, f, -XW - 0.15, H + 0.45, 3, 0.28, 0.4, 5, 'concrete')
+   894→  WP_EXTRA.push(
+   895→    wpTransform(cx, cz, f, 0, -ZW - 3.4),
+   896→    wpTransform(cx, cz, f, 0, -4),
+   897→    wpTransform(cx, cz, f, 0, 0),
+   898→    wpTransform(cx, cz, f, 0, 4),
+   899→    wpTransform(cx, cz, f, XW + 2.8, 0),
+   900→  )
+   901→}
+   902→
+   903→/** Tienda pequeña 7×6 con mostrador y escaparate */
+   904→function shop(cx: number, cz: number, f: Facing): void {
+   905→  const HW = 3.5, HD = 3, H = 3.6, T = 0.35
+   906→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H, T, door: 1.8, doorHalf: 0.9, doorH: 2.2, wins: [-1.6, 0.6], winW: 2.0 })
+   907→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H, T })
+   908→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H, T, wins: [0] })
+   909→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H, T, wins: [0] })
+   910→  BR(cx, cz, f, 0, 0.55, 0.8, 2.6, 1.1, 0.8, 'wood')       // mostrador
+   911→  BR(cx, cz, f, -2.6, 0.9, 0, 0.6, 1.8, 1.5, 'wood')       // estante
+   912→  BR(cx, cz, f, 2.4, 0.45, -1.8, 1.2, 0.9, 0.9, 'crate')
+   913→  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.5, 0.3, HD * 2 + 0.5, 'roof')
+   914→  WP_EXTRA.push(
+   915→    wpTransform(cx, cz, f, 1.8, -4.6),
+   916→    wpTransform(cx, cz, f, 0, 0),
+   917→  )
+   918→}
+   919→
+   920→// ------------------------------------------------------------
+   921→// GASOLINERA — kiosco + marquesina con bombas (f: entrada hacia +x)
+   922→// ------------------------------------------------------------
+   923→function gasStation(cx: number, cz: number, f: Facing): void {
+   924→  const KW = 5, KD = 4, KH = 3.2, T = 0.4
+   925→  // kiosco (tienda) 10×8
+   926→  wallL(cx, cz, f, 'z', -KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.5, 2.5] })
+   927→  wallL(cx, cz, f, 'z', +KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.5, 0, 2.5] })
+   928→  wallL(cx, cz, f, 'x', +KW, -KD, KD, 'sand', { H: KH, T, door: 0, doorHalf: 0.95, doorH: 2.2, wins: [-1.5, 1.5] })
+   929→  wallL(cx, cz, f, 'x', -KW, -KD, KD, 'sand', { H: KH, T })
+   930→  BR(cx, cz, f, 0, 3.75, 0, KW * 2 + 0.8, 0.3, KD * 2 + 0.8, 'roof')
+   931→  BR(cx, cz, f, 2.2, 0.55, 0, 1.2, 1.1, 3, 'crate')        // mostrador
+   932→  BR(cx, cz, f, -3, 0.6, -2.5, 3, 1.2, 0.9, 'crate')       // estantería
+   933→  BR(cx, cz, f, -3, 0.6, 2.5, 3, 1.2, 0.9, 'crate')
+   934→  // marquesina (patio de bombas, al este)
+   935→  BR(cx, cz, f, 8.5, 0.225, 0, 8, 0.45, 10, 'concrete')    // explanada
+   936→  BR(cx, cz, f, 8.5, 4.4, 0, 12, 0.5, 12, 'roof')          // marquesina
+   937→  for (const [px, pz] of [[6.2, -2.5], [6.2, 2.5], [10.8, -2.5], [10.8, 2.5]] as [number, number][]) {
+   938→    BR(cx, cz, f, px, 2.1, pz, 0.5, 4.2, 0.5, 'concrete')
+   939→  }
+   940→  BR(cx, cz, f, 7.2, 0.6, 0, 1.2, 1.2, 1.2, 'metalRed')    // bombas
+   941→  BR(cx, cz, f, 9.8, 0.6, 0, 1.2, 1.2, 1.2, 'metalRed')
+   942→  WP_EXTRA.push(
+   943→    wpTransform(cx, cz, f, 0, 6),
+   944→    wpTransform(cx, cz, f, 8.5, 6),
+   945→    wpTransform(cx, cz, f, 8.5, -6),
+   946→  )
+   947→}
+   948→
+   949→// ------------------------------------------------------------
+   950→// ESTACIÓN DE RADAR — recinto amurallado con barracón
+   951→// ------------------------------------------------------------
+   952→function radarStation(cx: number, cz: number, f: Facing): void {
+   953→  const W = 12, D = 10, H = 2.6, T = 0.5
+   954→  wallL(cx, cz, f, 'z', -D, -W, W, 'concrete', { H, T })
+   955→  wallL(cx, cz, f, 'z', +D, -W, W, 'concrete', { H, T })
+   956→  wallL(cx, cz, f, 'x', -W, -D, D, 'concrete', { H, T })
+   957→  wallL(cx, cz, f, 'x', +W, -D, D, 'concrete', { H, T, door: 0, doorHalf: 1.3, doorH: 2.2 })
+   958→  // radar (base + plataforma + antena)
+   959→  BR(cx, cz, f, -5, 1.5, -4, 3, 3, 3, 'concrete')
+   960→  BR(cx, cz, f, -5, 3.2, -4, 4, 0.4, 4, 'metalOrange')
+   961→  BR(cx, cz, f, -5, 4.2, -4, 0.4, 1.6, 0.4, 'metalGrey')
+   962→  // barracón con literas (dentro)
+   963→  barracks(cx, cz, f)
+   964→  // el barracón se coloca en el centro local (0,0) del recinto
+   965→  BR(cx, cz, f, 4, 0.7, 4, 1.4, 1.4, 1.4, 'crate')     // generador
+   966→  BR(cx, cz, f, 4, 0.6, -4, 1.2, 1.2, 1.2, 'crate')
+   967→  // sacos de cobertura junto a la puerta (dentro del recinto)
+   968→  for (const z of [-7, 7]) BR(cx, cz, f, W - 3, 0.4, z, 3, 0.8, 0.6, 'sandbag')
+   969→  WP_EXTRA.push(
+   970→    wpTransform(cx, cz, f, W + 4, 0),
+   971→    wpTransform(cx, cz, f, W - 2, 0),
+   972→    wpTransform(cx, cz, f, 6, 6),
+   973→    wpTransform(cx, cz, f, -8, 6),
+   974→  )
+   975→}
+   976→
+   977→/** Torre de vigilancia genérica (escaleras al lado `stairsFrom`: +1 sur · -1 norte) */
+   978→function watchTower(cx: number, cz: number, stairsFrom: number): void {
+   979→  B(cx, 1.6, cz, 2.0, 3.2, 2.0, 'concrete')
+   980→  B(cx, 3.5, cz, 4.4, 0.3, 4.4, 'concrete')
+   981→  B(cx, 3.9, cz - 2.1, 4.4, 0.55, 0.3, 'metalOrange')
+   982→  B(cx, 3.9, cz + 2.1, 4.4, 0.55, 0.3, 'metalOrange')
+   983→  B(cx - 2.1, 3.9, cz, 0.3, 0.55, 4.4, 'metalOrange')
+   984→  B(cx + 2.1, 3.9, cz, 0.3, 0.55, 4.4, 'metalOrange')
+   985→  for (let i = 0; i < 7; i++) {
+   986→    const h = 0.5 * (i + 1)
+   987→    const z = cz + stairsFrom * (6.0 - i * 0.62)
+   988→    B(cx, h / 2 - 0.02, z, 1.6, h, 0.62, 'concrete')
+   989→  }
+   990→}
+   991→
+   992→// ------------------------------------------------------------
+   993→// Mobiliario urbano: rotonda, quiosco, fuente, tanques, vehículos
+   994→// ------------------------------------------------------------
+   995→/** Rotonda central (0,0): fuente + jardineras */
+   996→function roundabout(): void {
+   997→  B(0, 0.45, 0, 5.6, 0.9, 5.6, 'concrete')            // basamento de la fuente
+   998→  B(0, 1.2, 0, 1.8, 2.4, 1.8, 'concrete')             // pilar central
+   999→  for (const [x, z] of [[8.5, 0], [-8.5, 0], [0, 8.5], [0, -8.5], [6.2, 6.2], [-6.2, 6.2], [6.2, -6.2], [-6.2, -6.2]] as [number, number][]) {
+  1000→    B(x, 0.45, z, 2.4, 0.9, 0.8, 'concrete')          // jardineras
+  1001→  }
+  1002→}
+  1003→
+  1004→/** Quiosco abierto 5×5 (4 postes + tejado) */
+  1005→function kiosco(cx: number, cz: number): void {
+  1006→  for (const [x, z] of [[-2.2, -2.2], [2.2, -2.2], [-2.2, 2.2], [2.2, 2.2]] as [number, number][]) {
+  1007→    B(cx + x, 1.5, cz + z, 0.3, 3.0, 0.3, 'wood')
+  1008→  }
+  1009→  B(cx, 3.2, cz, 5.4, 0.3, 5.4, 'roof')
+  1010→  B(cx, 0.45, cz, 2.0, 0.9, 1.2, 'wood')               // mesa
+  1011→}
+  1012→
+  1013→/** Fuente de parque (más pequeña que la rotonda) */
+  1014→function fountain(cx: number, cz: number): void {
+  1015→  B(cx, 0.35, cz, 3.4, 0.7, 3.4, 'concrete')
+  1016→  B(cx, 0.95, cz, 1.1, 1.5, 1.1, 'concrete')
+  1017→}
+  1018→
+  1019→/** Planta de tanques industriales (3 silos + tuberías) */
+  1020→function tankPlant(cx: number, cz: number): void {
+  1021→  B(cx - 6, 3, cz, 5, 6, 5, 'metalGrey')
+  1022→  B(cx, 3, cz + 1, 5, 6, 5, 'metalGrey')
+  1023→  B(cx - 3, 3, cz - 6, 5, 6, 5, 'metalGrey')
+  1024→  B(cx - 3, 6.4, cz - 2, 9, 0.5, 0.5, 'metalOrange')   // tubería
+  1025→  B(cx - 2, 6.4, cz + 3, 0.5, 0.5, 5, 'metalOrange')
+  1026→  WP_EXTRA.push([cx, cz + 5])
+  1027→}
+  1028→
+  1029→/** Coche abandonado (cobertura en calles) */
+  1030→function car(x: number, z: number, alongX: boolean, mat: MatKey = 'metalBlue'): void {
+  1031→  if (alongX) {
+  1032→    B(x, 0.55, z, 4.2, 1.1, 1.9, mat)
+  1033→    B(x, 1.15, z, 2.1, 0.75, 1.7, 'metalGrey')
+  1034→  } else {
+  1035→    B(x, 0.55, z, 1.9, 1.1, 4.2, mat)
+  1036→    B(x, 1.15, z, 1.7, 0.75, 2.1, 'metalGrey')
+  1037→  }
+  1038→}
+  1039→
+  1040→/** Autobús abandonado */
+  1041→function bus(x: number, z: number, alongX: boolean): void {
+  1042→  if (alongX) {
+  1043→    B(x, 1.3, z, 2.4, 2.6, 6.5, 'metalBlue')
+  1044→    B(x, 1.05, z, 2.2, 2.1, 1.3, 'metalBlue')
+  1045→  } else {
+  1046→    B(x, 1.3, z, 6.5, 2.6, 2.4, 'metalBlue')
+  1047→    B(x, 1.05, z, 1.3, 2.1, 2.2, 'metalBlue')
+  1048→  }
+  1049→}
+  1050→
+  1051→// ------------------------------------------------------------
+  1052→// COLOCACIÓN DEL MAPA
+  1053→// ------------------------------------------------------------
+  1054→// === NE: distrito cívico ===
+  1055→hotel(19.5, -19.5, 'S')
+  1056→torreOficina(50, -20, 'S')
+  1057→mercado(19.5, -52, 'S')
+  1058→shop(44, -57, 'N')
+  1059→shop(56, -57, 'N')
+  1060→// aparcamiento NE (autos + cobertura ordenada)
+  1061→car(48, -44, true, 'metalRed')
+  1062→car(56, -44, true, 'metalGrey')
+  1063→B(50, 0.55, -49, 3, 1.1, 0.5, 'concrete')              // barrera
+  1064→B(44, 0.55, -49, 3, 1.1, 0.5, 'concrete')
+  1065→
+  1066→// === NO: distrito industrial ===
+  1067→almacen(-19.5, -19.5, 'N', 11, 8, 6)                    // almacén norte (puerta al sur→calle z=-35… fachada -z)
+  1068→almacen(-51, -19.5, 'E', 9, 7, 5.5)                     // nave oeste (puerta al este→calle x=-35)
+  1069→// depósito de contenedores
+  1070→{
+  1071→  const row1: MatKey[] = ['metalRed', 'metalBlue', 'metalGreen']
+  1072→  const row2: MatKey[] = ['metalBlue', 'metalOrange', 'metalRed']
+  1073→  const xs = [-25, -17.5, -10]
+  1074→  for (let i = 0; i < 3; i++) {
+  1075→    B(xs[i], 1.2, -45, 6, 2.4, 2.5, row1[i])
+  1076→    B(xs[i], 1.2, -57, 6, 2.4, 2.5, row2[i])
+  1077→  }
+  1078→  B(-17.5, 3.6, -57, 6, 2.4, 2.5, 'metalGrey')          // apilado
+  1079→  WP_EXTRA.push([-19, -51], [-11, -51], [-26, -51])
+  1080→  // cobertura ordenada del pasillo
+  1081→  B(-19, 0.4, -49.5, 3, 0.8, 0.6, 'sandbag')
+  1082→  B(-19, 0.55, -62.5, 3, 1.1, 0.5, 'concrete')
+  1083→}
+  1084→watchTower(-11, -61, 1)
+  1085→tankPlant(-51, -51)
+  1086→
+  1087→// === SE: distrito residencial + parque ===
+  1088→smallHouse(16, 16, 'W')
+  1089→smallHouse(46, 13.5, 'N')
+  1090→smallHouse(46, 27, 'E')
+  1091→bigHouse(16, 50, 'W')
+  1092→// parque SE: árboles + fuente + quiosco + bancos
+  1093→fountain(51, 46)
+  1094→kiosco(42, 58)
+  1095→B(46, 0.45, 52, 1.8, 0.28, 0.6, 'wood')                // bancos
+  1096→B(56, 0.45, 52, 1.8, 0.28, 0.6, 'wood')
+  1097→B(48, 0.45, 62, 0.6, 0.28, 1.8, 'wood')
+  1098→// zona DOM CHARLIE queda abierta en (46, 58)
+  1099→
+  1100→// === SO: gasolinera + radar + residencial ===
+  1101→gasStation(-51, 19.5, 'E')
+  1102→radarStation(-51, 51, 'E')
+  1103→smallHouse(-14, 45, 'N')
+  1104→smallHouse(-14, 57.5, 'N')
+  1105→// aparcamiento/patio SO (cobertura inicial)
+  1106→car(-20, 15, true, 'metalRed')
+  1107→car(-25, 24, true, 'metalGrey')
+  1108→B(-14, 0.4, 20, 3, 0.8, 0.6, 'sandbag')
+  1109→
+  1110→// === Rotonda central ===
+  1111→roundabout()
+  1112→
+  1113→// === Vehículos en las avenidas (cobertura ordenada) ===
+  1114→bus(16, 2.5, true)
+  1115→bus(-16, -2.5, true)
+  1116→car(32, -2.2, true, 'metalRed')
+  1117→car(48, 2.2, true, 'metalGrey')
+  1118→car(-32, 2.2, true, 'metalRed')
+  1119→car(-48, -2.2, true, 'metalGrey')
+  1120→car(2.2, -16, false, 'metalRed')
+  1121→car(-2.2, -32, false, 'metalGrey')
+  1122→car(2.2, 16, false, 'metalRed')
+  1123→car(-2.2, 32, false, 'metalGrey')
+  1124→car(2.2, -48, false, 'metalRed')
+  1125→
+  1126→// === Bases de banderas (CTF) en los extremos de la avenida E-O ===
+  1127→B(-58, 0.15, 0, 3.5, 0.3, 3.5, 'concrete')
+  1128→B(-58, 1.8, 0, 0.18, 3.6, 0.18, 'metalGrey')
+  1129→B(58, 0.15, 0, 3.5, 0.3, 3.5, 'concrete')
+  1130→B(58, 1.8, 0, 0.18, 3.6, 0.18, 'metalGrey')
+  1131→
+  1132→// === Cajas cerca de spawns ===
+  1133→B(-66, 0.6, -54, 1.2, 1.2, 1.2, 'crate')
+  1134→B(-54, 0.6, -66, 1.2, 1.2, 1.2, 'crate')
+  1135→B(-60, 0.4, -58, 3, 0.8, 0.6, 'sandbag')
+  1136→B(66, 0.6, 54, 1.2, 1.2, 1.2, 'crate')
+  1137→B(54, 0.6, 66, 1.2, 1.2, 1.2, 'crate')
+  1138→B(60, 0.4, 58, 3, 0.8, 0.6, 'sandbag')
+  1139→
+  1140→// ------------------------------------------------------------
+  1141→// ÁRBOLES (el tronco tiene colisión; el modelo GLB Arbol.glb se
+  1142→// instancia en el motor si está disponible)
+  1143→// ------------------------------------------------------------
+  1144→export const TREES: [number, number][] = [
+  1145→  // parque SE (denso)
+  1146→  [43, 43], [58, 41], [40, 56], [58, 58], [50, 64], [62, 50], [44, 48],
+  1147→  // calles residenciales SE
+  1148→  [28, 12], [28, 30], [60, 25], [58, 9], [28, 45], [28, 56], [9, 10], [30, 26],
+  1149→  // residencial SO
+  1150→  [-28, 45], [-28, 58], [-27, 50], [-8, 39], [-28, 28],
+  1151→  // industrial NO (puntos sueltos)
+  1152→  [-30, -48], [-7, -33], [-30, -31], [-60, -31],
+  1153→  // aparcamiento NE
+  1154→  [40, -40], [60, -40], [38, -30],
+  1155→  // perímetro
+  1156→  [64, 20], [-64, -20], [20, -64], [-20, 64], [64, -30], [-64, 30],
+  1157→]
+  1158→for (const [tx, tz] of TREES) B(tx, 2.1, tz, 0.5, 4.2, 0.5, 'wood')
+  1159→
+  1160→// --- Farolas (poste con colisión; luz y cabezal decorativos) ---
+  1161→export const LAMPS: [number, number][] = [
+  1162→  // rotonda
+  1163→  [11, 11], [11, -11], [-11, 11], [-11, -11],
+  1164→  // avenida E-O
+  1165→  [24, 7], [-24, 7], [48, -7], [-48, -7],
+  1166→  // avenida N-S
+  1167→  [7, 24], [-7, 24], [7, -48], [-7, -48], [7, 48], [-7, 48],
+  1168→  // cruces de calles secundarias
+  1169→  [31, 31], [-31, 31], [31, -31], [-31, -31],
+  1170→  // parque y aparcamientos
+  1171→  [50, 40], [54, -42],
+  1172→]
+  1173→for (const [lx, lz] of LAMPS) B(lx, 2.6, lz, 0.35, 5.2, 0.35, 'metalGrey')
+  1174→
+  1175→// --- Barriles explosivos ---
+  1176→export interface ExplosiveBarrel { x: number; z: number }
+  1177→export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
+  1178→  // gasolinera
+  1179→  { x: -44.2, z: 14.5 }, { x: -45.8, z: 25 },
+  1180→  // almacén norte
+  1181→  { x: -24, z: -14 }, { x: -14, z: -24 },
+  1182→  // mercado
+  1183→  { x: 8.5, z: -44 }, { x: 30.5, z: -44 },
+  1184→  // rotonda
+  1185→  { x: 11, z: -11 }, { x: -11, z: 11 },
+  1186→  // depósito de contenedores
+  1187→  { x: -22, z: -51 }, { x: -13, z: -62.5 },
+  1188→  // aparcamiento NE / parque
+  1189→  { x: 54, z: -48 }, { x: 58, z: 44 },
+  1190→  // planta de tanques / radar
+  1191→  { x: -51, z: -43.5 }, { x: -37, z: 47 },
+  1192→]
+  1193→for (const eb of EXPLODING_BARRELS) B(eb.x, 0.5, eb.z, 0.74, 1.0, 0.74, 'explosive')
+  1194→
+  1195→// --- Tirolinas (E para agarrarlas) ---
+  1196→export interface ZiplineSpec { from: [number, number, number]; to: [number, number, number] }
+  1197→export const ZIPLINES: ZiplineSpec[] = [
+  1198→  { from: [19.5, 10.0, -19.5], to: [-7, 3.0, 5] },       // azotea del hotel → rotonda
+  1199→  { from: [50, 12.7, -20], to: [19.5, 5.4, -52] },       // azotea de la torre → tejado del mercado
+  1200→  { from: [16, 7.1, 50], to: [48, 3.0, 46] },            // tejado casa grande → fuente del parque
+  1201→  { from: [-19.5, 6.3, -19.5], to: [-49, 4.5, -46] },    // tejado del almacén → planta de tanques
+  1202→]
+  1203→
+  1204→// --- Plataformas de salto ---
+  1205→export interface JumpPadSpec { x: number; z: number }
+  1206→export const JUMP_PADS: JumpPadSpec[] = [
+  1207→  { x: -22, z: -39 },    // depósito NO (sube a los contenedores)
+  1208→  { x: 56, z: -49 },     // aparcamiento NE (sube a los tejados de las tiendas)
+  1209→  { x: -36, z: 51 },     // exterior del radar (salta la muralla al interior)
+  1210→  { x: 44, z: 44 },      // parque SE
+  1211→  { x: 11, z: -11 },     // rotonda NE (sube al autobús/edificio bajo)
+  1212→]
+  1213→
+  1214→// --- Banderas (capturar la bandera) ---
+  1215→export const FLAG_A: [number, number] = [-58, 0]
+  1216→export const FLAG_B: [number, number] = [58, 0]
+  1217→
+  1218→// --- Zonas de dominación ---
+  1219→export interface DomZoneSpec { id: 'A' | 'B' | 'C'; name: string; x: number; z: number }
+  1220→export const DOM_ZONES: DomZoneSpec[] = [
+  1221→  { id: 'A', name: 'ALFA', x: 0, z: 0 },         // rotonda central
+  1222→  { id: 'B', name: 'BRAVO', x: -19.5, z: -19.5 },// interior del almacén norte
+  1223→  { id: 'C', name: 'CHARLIE', x: 46, z: 58 },    // parque SE
+  1224→]
+  1225→
+  1226→export const MAP_BOXES: MapBox[] = MAP
+  1227→
+  1228→// --- Spawns ---
+  1229→export const SPAWN_A: [number, number, number] = [-62, 0, -62]
+  1230→export const SPAWN_B: [number, number, number] = [62, 0, 62]
+  1231→export function spawnPoint(team: Team, i: number): [number, number, number] {
+  1232→  const base = team === 'A' ? SPAWN_A : SPAWN_B
+  1233→  const a = (i * 2.399) % (Math.PI * 2)
+  1234→  const r = 1.5 + (i % 3) * 1.2
+  1235→  return [base[0] + Math.cos(a) * r, 0, base[2] + Math.sin(a) * r]
+  1236→}
+  1237→
+  1238→// ------------------------------------------------------------
+  1239→// GEOMETRÍA — rayo vs AABB (método slab)
+  1240→// ------------------------------------------------------------
+  1241→export interface AABB { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number }
+  1242→
+  1243→export function boxToAABB(b: MapBox): AABB {
+  1244→  return {
+  1245→    minX: b.x - b.w / 2, maxX: b.x + b.w / 2,
+  1246→    minY: b.y - b.h / 2, maxY: b.y + b.h / 2,
+  1247→    minZ: b.z - b.d / 2, maxZ: b.z + b.d / 2,
+  1248→  }
+  1249→}
+  1250→
+  1251→export const MAP_AABBS: AABB[] = MAP_BOXES.map(boxToAABB)
+  1252→
+  1253→/** ¿Choca el segmento p→q con alguna caja? (para línea de visión) */
+  1254→export function segmentBlocked(px: number, py: number, pz: number, qx: number, qy: number, qz: number, boxes: AABB[] = MAP_AABBS): boolean {
+  1255→  const dx = qx - px, dy = qy - py, dz = qz - pz
+  1256→  for (let i = 0; i < boxes.length; i++) {
+  1257→    const b = boxes[i]
+  1258→    let tmin = 0, tmax = 1
+  1259→    // X
+  1260→    if (Math.abs(dx) < 1e-9) {
+  1261→      if (px < b.minX || px > b.maxX) continue
+  1262→    } else {
+  1263→      let t1 = (b.minX - px) / dx, t2 = (b.maxX - px) / dx
+  1264→      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+  1265→      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2)
+  1266→      if (tmin > tmax) continue
+  1267→    }
+  1268→    // Y
+  1269→    if (Math.abs(dy) < 1e-9) {
+  1270→      if (py < b.minY || py > b.maxY) continue
+  1271→    } else {
+  1272→      let t1 = (b.minY - py) / dy, t2 = (b.maxY - py) / dy
+  1273→      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+  1274→      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2)
+  1275→      if (tmin > tmax) continue
+  1276→    }
+  1277→    // Z
+  1278→    if (Math.abs(dz) < 1e-9) {
+  1279→      if (pz < b.minZ || pz > b.maxZ) continue
+  1280→    } else {
+  1281→      let t1 = (b.minZ - pz) / dz, t2 = (b.maxZ - pz) / dz
+  1282→      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+  1283→      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2)
+  1284→      if (tmin > tmax) continue
+  1285→    }
+  1286→    return true
+  1287→  }
+  1288→  return false
+  1289→}
+  1290→
+  1291→// ------------------------------------------------------------
+  1292→// WAYPOINTS para bots (calles + interiores)
+  1293→// ------------------------------------------------------------
+  1294→export const WAYPOINTS: [number, number][] = [
+  1295→  // anillo rotonda (r=12, fuera de las jardineras)
+  1296→  [12, 0], [8.5, 8.5], [0, 12], [-8.5, 8.5], [-12, 0], [-8.5, -8.5], [0, -12], [8.5, -8.5],
+  1297→  // avenida E-O (z=±5)
+  1298→  [18, 5], [27, 5], [36, 5], [45, 5], [54, 5], [-18, 5], [-27, 5], [-36, 5], [-45, 5], [-54, 5],
+  1299→  [18, -5], [27, -5], [36, -5], [45, -5], [54, -5], [-18, -5], [-27, -5], [-36, -5], [-45, -5], [-54, -5],
+  1300→  // avenida N-S (x=±5)
+  1301→  [5, 18], [5, 27], [5, 36], [5, 45], [5, 54], [5, -18], [5, -27], [5, -36], [5, -45], [5, -54],
+  1302→  [-5, 18], [-5, 27], [-5, 36], [-5, 45], [-5, 54], [-5, -18], [-5, -27], [-5, -36], [-5, -45], [-5, -54],
+  1303→  // calles secundarias N-S (x=±35)
+  1304→  [35, 42], [35, 30], [35, 18], [35, 6], [35, -6], [35, -18], [35, -30], [35, -42], [35, -54],
+  1305→  [-35, 42], [-35, 30], [-35, 18], [-35, 6], [-35, -6], [-35, -18], [-35, -30], [-35, -42], [-35, -54],
+  1306→  // calles secundarias E-O (z=±35)
+  1307→  [42, 35], [30, 35], [18, 35], [6, 35], [-6, 35], [-18, 35], [-30, 35], [-42, 35], [-54, 35],
+  1308→  [42, -35], [30, -35], [18, -35], [6, -35], [-6, -35], [-18, -35], [-30, -35], [-42, -35], [-54, -35],
+  1309→  // anillo perímetro r62 (esquivando el mercado y el radar)
+  1310→  [-62, -62], [-44, -62], [-22, -62], [22, -59], [44, -62], [62, -62],
+  1311→  [62, -44], [62, -22], [62, 22], [62, 44], [62, 62],
+  1312→  [44, 66], [22, 62], [-22, 62], [-44, 66], [-62, 62],
+  1313→  [-62, 44], [-62, 22], [-62, -22], [-62, -44],
+  1314→  // anillo intermedio r48 (esquivando fachadas)
+  1315→  [0, -48], [26, -38], [40, 21], [48, 0], [40, 28], [24, 42], [0, 48], [-24, 42], [-40, 24], [-48, 0], [-42, -24], [-24, -42],
+  1316→  // extremos de banderas (junto a las bases, sin pisarlas)
+  1317→  [-58, 2.6], [58, 2.6],
+  1318→  // parque SE
+  1319→  [44, 42], [58, 42], [46, 54], [58, 56], [50, 50], [46, 62],
+  1320→  // aparcamientos
+  1321→  [48, -42], [51, -42], [44, -48], [-14, 14], [-24, 20], [-24, 14],
+  1322→  // planta de tanques / radar exterior
+  1323→  [-49, -46], [-38, 51], [-33, 63],
+  1324→  // interiores de edificios (generados por las funciones de construcción)
+  1325→  ...WP_EXTRA,
+  1326→]
+  1327→
+  1328→/** Aristas del grafo de waypoints (calculadas con LOS a altura de rodilla 0.5 m) */
+  1329→export const WAYPOINT_EDGES: number[][] = WAYPOINTS.map(() => [])
+  1330→{
+  1331→  const MAXD = 22
+  1332→  for (let i = 0; i < WAYPOINTS.length; i++) {
+  1333→    for (let j = i + 1; j < WAYPOINTS.length; j++) {
+  1334→      const dx = WAYPOINTS[i][0] - WAYPOINTS[j][0]
+  1335→      const dz = WAYPOINTS[i][1] - WAYPOINTS[j][1]
+  1336→      const dist = Math.hypot(dx, dz)
+  1337→      if (dist > MAXD) continue
+  1338→      if (!segmentBlocked(WAYPOINTS[i][0], 0.5, WAYPOINTS[i][1], WAYPOINTS[j][0], 0.5, WAYPOINTS[j][1])) {
+  1339→        WAYPOINT_EDGES[i].push(j)
+  1340→        WAYPOINT_EDGES[j].push(i)
+  1341→      }
+  1342→    }
+  1343→  }
+  1344→}
+  1345→
+  1346→// ------------------------------------------------------------
+  1347→// DECORACIÓN (sin colisión — la dibuja el motor)
+  1348→// ------------------------------------------------------------
+  1349→export interface NeonSpec { text: string; x: number; y: number; z: number; ry: number; color: string; w: number }
+  1350→export const NEONS: NeonSpec[] = [
+  1351→  { text: 'HOTEL', x: 19.5, y: 4.2, z: -12.2, ry: 0, color: '#f472b6', w: 4.5 },
+  1352→  { text: 'TORRE ÁMBAR', x: 50, y: 5.2, z: -12.8, ry: 0, color: '#fbbf24', w: 5.5 },
+  1353→  { text: 'MERCADO', x: 19.5, y: 3.8, z: -41.9, ry: 0, color: '#22d3ee', w: 5 },
+  1354→  { text: 'TIENDAS', x: 50, y: 2.8, z: -53.9, ry: Math.PI, color: '#4ade80', w: 4 },
+  1355→  { text: 'GAS', x: -42.2, y: 4.0, z: 19.5, ry: Math.PI / 2, color: '#f87171', w: 3 },
+  1356→  { text: 'RADAR', x: -38.8, y: 2.1, z: 51, ry: Math.PI / 2, color: '#4ade80', w: 4.5 },
+  1357→  { text: 'ALMACÉN', x: -19.5, y: 3.4, z: -27.6, ry: Math.PI, color: '#fbbf24', w: 4.5 },
+  1358→  { text: 'DEPÓSITO', x: -19, y: 3.2, z: -38.6, ry: 0, color: '#fbbf24', w: 4.5 },
+  1359→]
+  1360→
+  1361→export interface PuddleSpec { x: number; z: number; r: number }
+  1362→export const PUDDLES: PuddleSpec[] = [
+  1363→  { x: 14, z: 8, r: 1.6 }, { x: -14, z: -8, r: 1.4 },
+  1364→  { x: 26, z: -9, r: 1.8 }, { x: -26, z: 9, r: 1.5 },
+  1365→  { x: 9, z: -26, r: 1.4 }, { x: -9, z: 26, r: 1.6 },
+  1366→  { x: 44, z: 3, r: 1.5 }, { x: -44, z: -3, r: 1.4 },
+  1367→  { x: 40, z: -40, r: 1.6 }, { x: -40, z: 40, r: 1.4 },
+  1368→]
+  1369→
+  1370→// ------------------------------------------------------------
+  1371→// PROTOCOLO DE RED
+  1372→// ------------------------------------------------------------
+  1373→export interface NetPlayerState {
+  1374→  id: string
+  1375→  name: string
+  1376→  team: Team
+  1377→  bot: boolean
+  1378→  x: number; y: number; z: number
+  1379→  yaw: number
+  1380→  pitch: number
+  1381→  hp: number
+  1382→  armor: number          // escudo (0..100) — nombre de campo heredado del protocolo
+  1383→  weapon: WeaponId
+  1384→  dead: boolean
+  1385→  crouch: boolean
+  1386→  speed: number
+  1387→  kills: number
+  1388→  deaths: number
+  1389→  money: number
+  1390→  streak: number
+  1391→  aiming: boolean        // apuntando/disparando (pose de tiro)
+  1392→  sprint: boolean        // esprintando (animación de correr estilo Fortnite)
+  1393→  flag: 'A' | 'B' | null // lleva la bandera contraria (CTF)
+  1394→}
+  1395→
+  1396→export type GrenadeKind = 'frag' | 'smoke'
+  1397→export interface NetGrenade { id: string; x: number; y: number; z: number; team: Team; kind: GrenadeKind }
+  1398→
+  1399→export interface NetFlagState {
+  1400→  status: 'home' | 'carried' | 'drop'
+  1401→  x: number; z: number
+  1402→  carrier?: string
+  1403→}
+  1404→
+  1405→export interface NetZoneState {
+  1406→  id: 'A' | 'B' | 'C'
+  1407→  owner: Team | null
+  1408→  prog: number           // 0..1 progreso de captura
+  1409→  by: Team | null        // equipo que está capturando
+  1410→}
+  1411→
+  1412→export interface NetRoundState {
+  1413→  phase: 'live' | 'ended' | 'matchend'
+  1414→  timeLeft: number
+  1415→  roundNumber: number
+  1416→  scoresA: number        // puntuación del equipo A (kills · capturas · puntos)
+  1417→  scoresB: number
+  1418→  roundWinsA: number
+  1419→  roundWinsB: number
+  1420→  mode: GameMode
+  1421→  scoreTarget: number
+  1422→  /** solo en CTF */
+  1423→  flags?: { a: NetFlagState; b: NetFlagState }
+  1424→  /** solo en dominación */
+  1425→  zones?: NetZoneState[]
+  1426→  /** solo en FFA: líder actual */
+  1427→  leader?: { name: string; kills: number; team: Team } | null
+  1428→}
+  1429→
+  1430→export interface NetSnapshot {
+  1431→  t: number
+  1432→  players: NetPlayerState[]
+  1433→  grenades: NetGrenade[]
+  1434→  pickups: NetPickup[]
+  1435→  round: NetRoundState
+  1436→}
+  1437→
+  1438→export interface NetKillEvent {
+  1439→  killer: string; killerName: string; killerTeam: Team
+  1440→  victim: string; victimName: string; victimTeam: Team
+  1441→  weapon: WeaponId; headshot: boolean
+  1442→  killerStreak: number
+  1443→  multi?: number
+  1444→}
+  1445→
+  1446→export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Puma', 'Oso', 'Jaguar', 'Serpiente', 'Tigre', 'Águila', 'Coyote', 'León', 'Pantera', 'Búho', 'Araña']
+  1447→
+  1448→// ------------------------------------------------------------
+  1449→// SALAS P2P (PeerJS)
+  1450→// ------------------------------------------------------------
+  1451→export const PEER_APP_PREFIX = 'fzcero3'
+  1452→export function peerIdForRoom(code: string): string {
+  1453→  return `${PEER_APP_PREFIX}-${code.toLowerCase()}`
+  1454→}
+  1455→const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+  1456→export function generateRoomCode(): string {
+  1457→  let s = ''
+  1458→  for (let i = 0; i < 5; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]
+  1459→  return s
+  1460→}
+  1461→
+  1462→// ============================================================
+  1463→// MODO HISTORIA — VALLE SERENO (mapa rural 140×140, v6)
+  1464→// Un valle al atardecer: río con puente de piedra, lago con
+  1465→// embarcadero, pueblo con plaza, capilla en ruinas, torre de
+  1466→// vigía y el complejo militar amurallado al norte. Cerrado por
+  1467→// un anillo montañoso natural (sin muros artificiales).
+  1468→// ============================================================
+  1469→export type MapId = 'ciudad' | 'instalacion'
+  1470→
+  1471→const STORY_BOXES: MapBox[] = []
+  1472→function SB(x: number, y: number, z: number, w: number, h: number, d: number, mat: MatKey): void {
+  1473→  STORY_BOXES.push({ x, y, z, w, h, d, mat })
+  1474→}
+  1475→/** muro que corre a lo largo de X (en z=at), con puerta opcional en x=door */
+  1476→function SWX(z: number, x0: number, x1: number, H: number, mat: MatKey, door?: number, dh = 1.15): void {
+  1477→  const lo = Math.min(x0, x1), hi = Math.max(x0, x1)
+  1478→  if (door === undefined) { SB((lo + hi) / 2, H / 2, z, hi - lo, H, 0.35, mat); return }
+  1479→  if (door - dh - lo > 0.05) SB((lo + door - dh) / 2, H / 2, z, door - dh - lo, H, 0.35, mat)
+  1480→  if (hi - door - dh > 0.05) SB((hi + door + dh) / 2, H / 2, z, hi - door - dh, H, 0.35, mat)
+  1481→  const lint = H - 2.25
+  1482→  if (lint > 0.15) SB(door, 2.25 + lint / 2, z, dh * 2, lint, 0.35, mat)
+  1483→}
+  1484→/** muro que corre a lo largo de Z (en x=at), con puerta opcional en z=door */
+  1485→function SWZ(x: number, z0: number, z1: number, H: number, mat: MatKey, door?: number, dh = 1.15): void {
+  1486→  const lo = Math.min(z0, z1), hi = Math.max(z0, z1)
+  1487→  if (door === undefined) { SB(x, H / 2, (lo + hi) / 2, 0.35, H, hi - lo, mat); return }
+  1488→  if (door - dh - lo > 0.05) SB(x, H / 2, (lo + door - dh) / 2, 0.35, H, door - dh - lo, mat)
+  1489→  if (hi - door - dh > 0.05) SB(x, H / 2, (hi + door + dh) / 2, 0.35, H, hi - door - dh, mat)
+  1490→  const lint = H - 2.25
+  1491→  if (lint > 0.15) SB(x, 2.25 + lint / 2, door, 0.35, lint, dh * 2, mat)
+  1492→}
+  1493→/** escalera recta: peldaño i con altura creciente, avanza (dx,dz) por peldaño */
+  1494→function SST(xAt: number, zAt: number, dx: number, dz: number, steps: number, rise: number, run: number, w: number, y0 = 0): void {
+  1495→  for (let i = 0; i < steps; i++) {
+  1496→    const h = rise * (i + 1)
+  1497→    SB(xAt + dx * run * i, y0 + h / 2, zAt + dz * run * i, dx !== 0 ? run + 0.04 : w, h, dz !== 0 ? run + 0.04 : w, 'concrete')
+  1498→  }
+  1499→}
+  1500→
+  1501→// --- Anillo montañoso natural (límite del valle) ---
+  1502→{
+  1503→  const R = 66
+  1504→  const ridge = (x: number, z: number, w: number, d: number, h: number): void => SB(x, h / 2 - 1.2, z, w, h, d, 'rock')
+  1505→  // muro base continuo en los 4 lados (el norte se abre paso: helipuerto)
+  1506→  const RN = 72
+  1507→  ridge(0, R, 142, 12, 9)
+  1508→  ridge(0, -RN, 142, 12, 9)
+  1509→  ridge(R, 0, 12, 142, 9)
+  1510→  ridge(-R, 0, 12, 142, 9)
+  1511→  // masas en las 4 esquinas
+  1512→  ridge(58, 58, 24, 24, 17)
+  1513→  ridge(-58, 58, 24, 24, 15)
+  1514→  ridge(58, -58, 24, 24, 16)
+  1515→  ridge(-58, -58, 24, 24, 14)
+  1516→  // picos irregulares (deterministas)
+  1517→  let rs = 7919
+  1518→  const rnd = (): number => { rs = (rs * 16807) % 2147483647; return rs / 2147483647 }
+  1519→  for (let k = 0; k < 28; k++) {
+  1520→    const u = -56 + rnd() * 112
+  1521→    const h = 7 + rnd() * 9
+  1522→    const w = 9 + rnd() * 7
+  1523→    const side = k % 4
+  1524→    if (side === 0) ridge(u, R, w, 11, h)
+  1525→    else if (side === 1) ridge(u, -RN, w, 11, h)
+  1526→    else if (side === 2) ridge(R, u, 11, w, h)
+  1527→    else ridge(-R, u, 11, w, h)
+  1528→  }
+  1529→}
+  1530→
+  1531→// --- RÍO (z 36.5..43.5) y LAGO (x 8..36, z 34..54): el agua la
+  1532→//     dibuja el motor con un shader animado; aquí solo orillas ---
+  1533→// (sin orillas de arena: el agua llega al terreno como los charcos y los
+  1534→//  bots pueden vadear el río; el puente y las piedras son atajos del jugador)
+  1535→// puente de piedra (x -8.5..-3.5): tablero alto (no crea aristas de bots)
+  1536→SB(-6, 0.35, 40, 5, 0.7, 12, 'concrete')
+  1537→SB(-8.6, 0.85, 40, 0.5, 0.7, 12, 'rock')       // pretiles
+  1538→SB(-3.4, 0.85, 40, 0.5, 0.7, 12, 'rock')
+  1539→SST(-6, 33.4, 0, 1, 2, 0.25, 0.62, 4.6)        // escalones sur (subida al tablero)
+  1540→SST(-6, 46.6, 0, -1, 2, 0.25, 0.62, 4.6)       // escalones norte
+  1541→// piedras de paso sobre el río (x -30): 0.55 m — escalón del jugador
+  1542→for (const [sx, sz] of [[-31.5, 37.6], [-28.8, 39.4], [-31.5, 41.2], [-28.8, 42.9]] as [number, number][]) {
+  1543→  SB(sx, 0.275, sz, 1.5, 0.55, 1.5, 'rock')
+  1544→}
+  1545→// embarcadero del lago (madera hacia el norte)
+  1546→SB(22, 0.34, 50, 2.4, 0.32, 9, 'wood')
+  1547→SB(20.9, 0.8, 51.4, 0.22, 0.62, 2.4, 'wood')
+  1548→SB(23.1, 0.8, 51.4, 0.22, 0.62, 2.4, 'wood')
+  1549→SB(20.9, 0.8, 45.4, 0.22, 0.62, 2.4, 'wood')
+  1550→SB(23.1, 0.8, 45.4, 0.22, 0.62, 2.4, 'wood')
+  1551→
+  1552→// --- PUEBLO ALBA (centro del valle) ---
+  1553→// Plaza con fuente octogonal (x -6..6, z 6..20)
+  1554→for (let k = 0; k < 8; k++) {
+  1555→  const a = (k / 8) * Math.PI * 2
+  1556→  SB(Math.cos(a) * 2.3, 0.38, 13 + Math.sin(a) * 2.3, 1.5, 0.76, 1.5, 'rock')
+  1557→}
+  1558→SB(0, 0.5, 13, 1.2, 1.0, 1.2, 'rock')          // pilón central
+  1559→// bancos de la plaza
+  1560→SB(-3.5, 0.28, 10.5, 1.8, 0.12, 0.5, 'wood')
+  1561→SB(3.5, 0.28, 15.5, 1.8, 0.12, 0.5, 'wood')
+  1562→SB(-3.5, 0.28, 15.5, 1.8, 0.12, 0.5, 'wood')
+  1563→// terminal del ENLACE (norte de la plaza)
+  1564→SB(0, 0.15, 8, 3.4, 0.3, 3.4, 'concrete')
+  1565→SB(1.4, 1.25, 6.7, 0.35, 2.5, 0.35, 'metalGrey')
+  1566→
+  1567→// CASA DEL MOLINO (este, 11×9, interior; INTEL 1)
+  1568→SWX(9.5, 14.5, 25.5, 3.4, 'sand')              // norte
+  1569→SWX(18.5, 14.5, 25.5, 3.4, 'sand', 20)         // sur, puerta
+  1570→SWZ(14.5, 9.5, 18.5, 3.4, 'sand', 14)          // oeste, puerta a la plaza
+  1571→SWZ(25.5, 9.5, 18.5, 3.4, 'sand')
+  1572→SB(20, 3.55, 14, 11.4, 0.35, 9.4, 'roof')
+  1573→SB(23.5, 0.5, 11.5, 1.4, 1, 2.2, 'wood')       // mesa
+  1574→SB(16.6, 1.15, 16.5, 1.4, 2.3, 3.5, 'metalGreen') // estantería
+  1575→SB(24, 0.5, 17, 1.2, 1, 1.2, 'crate')
+  1576→
+  1577→// CASA DEL HERRERO (oeste, 10×8, interior)
+  1578→SWX(12, -25, -15, 3.2, 'sand')
+  1579→SWX(20, -25, -15, 3.2, 'sand')
+  1580→SWZ(-25, 12, 20, 3.2, 'sand')
+  1581→SWZ(-15, 12, 20, 3.2, 'sand', 16)              // este, puerta
+  1582→SB(-20, 3.35, 16, 10.4, 0.3, 8.6, 'roof')
+  1583→SB(-23.5, 0.5, 18.5, 1.4, 1, 1.1, 'crate')
+  1584→SB(-17.5, 0.45, 14, 1.6, 0.9, 1.2, 'wood')     // yunque/mesa
+  1585→
+  1586→// GRANERO (nordeste de la plaza, 9×8, puerta grande)
+  1587→SWX(-0.5, -18.5, -9.5, 4.2, 'wood')
+  1588→SWX(7.5, -18.5, -9.5, 4.2, 'wood')
+  1589→SWZ(-18.5, -0.5, 7.5, 4.2, 'wood')
+  1590→SWZ(-9.5, -0.5, 7.5, 4.2, 'wood', 3.5, 1.6)    // este, puerta grande
+  1591→SB(-14, 4.35, 3.5, 9.4, 0.3, 8.6, 'metalRed')
+  1592→SB(-16, 0.9, 1.5, 1.4, 1.8, 1.4, 'crate')
+  1593→SB(-12, 0.9, 2.5, 1.4, 1.8, 1.4, 'crate')
+  1594→
+  1595→// CAPILLA EN RUINAS (oeste; INTEL 2)
+  1596→SWX(3.5, -40, -28, 3.6, 'rock', -34, 1.4)      // sur, arco de entrada
+  1597→SWX(9, -40, -28, 2.4, 'rock')                  // norte (derruida, baja)
+  1598→SWZ(-40, 3.5, 9, 3.8, 'rock')
+  1599→SWZ(-28, 3.5, 9, 3.2, 'rock')
+  1600→SB(-34, 3.0, 6.5, 12, 0.3, 5.6, 'roof')        // tejado parcial (solo altar)
+  1601→SB(-38.5, 0.55, 7.5, 2.2, 1.1, 1.0, 'rock')    // altar
+  1602→// campanario (4×4, escalera exterior al mirador)
+  1603→SWX(1, -40.5, -36.5, 6.5, 'rock')
+  1604→SWX(5, -40.5, -36.5, 6.5, 'rock')
+  1605→SWZ(-40.5, 1, 5, 6.5, 'rock')
+  1606→SWZ(-36.5, 1, 5, 6.5, 'rock', 3, 1.0)
+  1607→SB(-38.5, 6.65, 3, 4.4, 0.3, 4.4, 'wood')      // plataforma del mirador
+  1608→SB(-38.5, 7.1, 1.1, 4.4, 0.35, 0.3, 'rock')    // pretil
+  1609→SB(-38.5, 7.1, 4.9, 4.4, 0.35, 0.3, 'rock')
+  1610→SST(-38.5, -4.5, 0, 1, 10, 0.64, 0.62, 1.6)     // escalera al campanario (cara sur)
+  1611→
+  1612→// TORRE DE VIGÍA (este, 3.4×3.4 H6 con interior; INTEL 3)
+  1613→SWX(8.6, 40.4, 43.8, 6, 'rock', 42.1, 1.0)     // sur, puerta
+  1614→SWX(11.4, 40.4, 43.8, 6, 'rock')
+  1615→SWZ(40.4, 8.6, 11.4, 6, 'rock')
+  1616→SWZ(43.8, 8.6, 11.4, 6, 'rock')
+  1617→SB(42.1, 6.15, 10, 4.9, 0.3, 4.9, 'wood')      // plataforma superior
+  1618→SB(42.1, 6.6, 8.4, 4.9, 0.35, 0.3, 'rock')     // pretiles
+  1619→SB(42.1, 6.6, 11.6, 4.9, 0.35, 0.3, 'rock')
+  1620→SB(44.2, 6.6, 10, 0.3, 0.35, 4.9, 'rock')
+  1621→SST(39.6, 7.4, 1, 0, 9, 0.68, 0.62, 1.5)       // escalera exterior
+  1622→
+  1623→// --- COMPLEJO CENIZA (norte, amurallado x -26..26, z -52..-16) ---
+  1624→SWX(-16, -26, 26, 2.8, 'concrete', 0)          // sur, puerta central
+  1625→SWX(-52, -26, 26, 2.8, 'concrete', 0)          // norte, puerta al helipuerto
+  1626→SWZ(-26, -52, -16, 2.8, 'concrete')
+  1627→SWZ(26, -52, -16, 2.8, 'concrete', -34, 1.3)   // este, puerta
+  1628→SB(0, 3.0, -15.8, 1.6, 0.6, 1.6, 'concrete')   // pilona de la puerta sur
+  1629→// EDIFICIO DE COMANDO (18×13, interior + tejado)
+  1630→SWX(-24, -9, 9, 3.4, 'sand', 0)
+  1631→SWX(-36, -9, 9, 3.4, 'sand', 0)
+  1632→SWZ(-9, -24, -36, 3.4, 'sand')
+  1633→SWZ(9, -24, -36, 3.4, 'sand', -30, 1.0)
+  1634→SB(0, 3.55, -30, 18.4, 0.35, 13.4, 'roof')
+  1635→SB(-4.5, 0.5, -28, 2.4, 1, 1.1, 'metalGrey')   // mesa de radio
+  1636→SB(-7.4, 1.15, -31.5, 1.4, 2.3, 3.5, 'metalGreen')
+  1637→SB(6.5, 0.5, -33.5, 1.2, 1, 1.2, 'crate')
+  1638→SST(10.6, -26, 0, -1, 6, 0.55, 0.62, 1.6)      // escalera exterior al tejado
+  1639→// ESTACIÓN DE RADAR (suroeste del patio): anillo + mástil
+  1640→for (let k = 0; k < 8; k++) {
+  1641→  if (k === 2 || k === 6) continue
+  1642→  const a = (k / 8) * Math.PI * 2 + Math.PI / 8
+  1643→  SB(-20 + Math.cos(a) * 5.5, 0.5, -34 + Math.sin(a) * 5.5, 3.2, 1.0, 1.1, 'concrete')
+  1644→}
+  1645→SB(-20, 0.5, -34, 3, 1, 3, 'concrete')
+  1646→SB(-20, 2.75, -34, 0.9, 3.5, 0.9, 'metalGrey')
+  1647→// DEPÓSITO DE COMBUSTIBLE (este): tanques
+  1648→SB(14, 1.3, -22, 6.4, 2.6, 2.6, 'metalOrange')
+  1649→SB(14, 1.3, -18.4, 6.4, 2.6, 2.6, 'metalOrange')
+  1650→SB(14, 1.3, -26.6, 6.4, 2.6, 2.6, 'metalOrange')
+  1651→// CUARTEL 1 (oeste, 12×8 interior)
+  1652→SWX(-40, -20, -8, 3.2, 'sand', -14)
+  1653→SWX(-48, -20, -8, 3.2, 'sand')
+  1654→SWZ(-20, -40, -48, 3.2, 'sand')
+  1655→SWZ(-8, -40, -48, 3.2, 'sand')
+  1656→SB(-14, 3.35, -44, 12.6, 0.3, 8.6, 'roof')
+  1657→SB(-18.5, 0.4, -42, 2, 0.8, 1.1, 'sandbag')
+  1658→SB(-10, 0.5, -46.5, 1.2, 1, 1.2, 'crate')
+  1659→// CUARTEL 2 (centro, 12×8 interior)
+  1660→SWX(-40, -4, 8, 3.2, 'sand', 2)
+  1661→SWX(-48, -4, 8, 3.2, 'sand')
+  1662→SWZ(-4, -40, -48, 3.2, 'sand')
+  1663→SWZ(8, -40, -48, 3.2, 'sand')
+  1664→SB(2, 3.35, -44, 12.6, 0.3, 8.6, 'roof')
+  1665→SB(6.5, 0.4, -42, 2, 0.8, 1.1, 'sandbag')
+  1666→// PRISIÓN (este, 6×5, celda con barrotes; CAPÍTULO 4)
+  1667→SWX(-41, 17, 23, 2.6, 'concrete', 20)
+  1668→SWX(-47, 17, 23, 2.6, 'concrete')
+  1669→SWZ(17, -41, -47, 2.6, 'concrete')
+  1670→SWZ(23, -41, -47, 2.6, 'concrete')
+  1671→SB(20, 2.75, -44, 6.4, 0.3, 6.4, 'roof')
+  1672→// barrotes de la celda (huecos de 0.6 entre barrote y barrote)
+  1673→for (let bx = 18.2; bx <= 21.8; bx += 0.9) {
+  1674→  SB(bx, 0.95, -42.4, 0.22, 1.9, 0.22, 'metalGrey')
+  1675→}
+  1676→SB(20, 0.5, -45.5, 1.2, 1, 1.2, 'crate')
+  1677→// PARQUE DE VEHÍCULOS (oeste del comando)
+  1678→SB(-22, 1.1, -22, 2.4, 2.2, 5.6, 'metalGreen')
+  1679→SB(-22, 1.3, -28.5, 6, 2.6, 2.4, 'metalRed')
+  1680→// ANTENAS: ALFA (colina este), BRAVO (fuera del muro oeste), CHARLIE (sureste del helipuerto)
+  1681→for (const [ax, az] of [[36, -18], [-36, -24], [30, -50]] as [number, number][]) {
+  1682→  SB(ax, 0.4, az, 2.4, 0.8, 2.4, 'concrete')
+  1683→  SB(ax, 5.4, az, 0.5, 10, 0.5, 'metalGrey')
+  1684→  SB(ax, 8.6, az + 0.7, 2.0, 2.8, 0.3, 'metalGrey')
+  1685→}
+  1686→SB(36, 1.0, -14.5, 7, 2, 5, 'rock')            // colina de ALFA (acceso por el sur)
+  1687→SST(32.2, -12.5, 1, -1, 3, 0.62, 0.62, 2.2)
+  1688→SB(-36, 1.0, -18.5, 6, 2, 5, 'rock')           // plataforma de BRAVO
+  1689→// HELIPUERTO (norte, fuera del muro)
+  1690→SB(0, 0.15, -60, 11, 0.3, 11, 'concrete')
+  1691→
+  1692→// --- COLINAS SUELTAS Y COBERTURA ---
+  1693→SB(-44, 1.6, 18, 9, 3.2, 9, 'rock')            // colina del oeste (tirolina)
+  1694→SST(-40.6, 21.4, 1, 0, 5, 0.62, 0.62, 2.0)
+  1695→SB(40, 1.2, 26, 8, 2.4, 7, 'rock')             // loma del lago
+  1696→SB(-30, 1.0, -6, 7, 2, 6, 'rock')
+  1697→// sacos y barreras del pueblo y el complejo
+  1698→SB(4, 0.4, 24, 2.6, 0.8, 0.6, 'sandbag')
+  1699→SB(-4, 0.4, 24, 2.6, 0.8, 0.6, 'sandbag')
+  1700→SB(-10, 0.4, 20, 0.6, 0.8, 2.6, 'sandbag')
+  1701→SB(10, 0.4, 22, 0.6, 0.8, 2.6, 'sandbag')
+  1702→SB(4, 0.55, -20, 2.2, 1.1, 0.6, 'concrete')
+  1703→SB(-8, 0.55, -34, 0.6, 1.1, 2.2, 'concrete')
+  1704→SB(8, 0.55, -38, 0.6, 1.1, 2.2, 'concrete')
+  1705→for (const [cx, cz] of [[-10, 10], [10, 6], [26, -8], [-27, 12], [34, -26], [-30, -14], [24, -36], [-24, -44], [12, -44], [44, 22], [-46, 8]] as [number, number][]) {
+  1706→  SB(cx, 0.5, cz, 1.2, 1, 1.2, 'crate')
+  1707→}
+  1708→
+  1709→// --- Waypoints del valle ---
+  1710→// (los bots vadear el río por el agua: el puente y las piedras son
+  1711→//  atajos de escalón solo para el jugador)
+  1712→const STORY_WAYPOINTS: [number, number][] = [
+  1713→  // inserción sur (ribera y borde del lago)
+  1714→  [0, 54], [-8, 50], [8, 50],
+  1715→  // río: vado del agua y extremos del puente
+  1716→  [-16, 40], [8, 40], [-6, 30], [-6, 48],
+  1717→  // piedras de paso (norte y sur del río)
+  1718→  [-30, 33], [-30, 47],
+  1719→  // pueblo: plaza y casas
+  1720→  [-6, 28], [6, 28], [0, 21], [3.5, 13], [-4.5, 13], [0, 5],
+  1721→  [14, 14], [20, 14], [20, 6.5],
+  1722→  [-14, 16], [-20, 16],
+  1723→  [-14, 5], [-8, 3], [-20, 10],
+  1724→  // capilla y alrededores
+  1725→  [-24, 6], [-34, -3], [-34, 1], [-34, 6], [-30, 10],
+  1726→  // torre de vigía
+  1727→  [34, 8], [42, 5], [42, 13],
+  1728→  // lago
+  1729→  [12, 30], [22, 30], [38, 44], [22, 56],
+  1730→  // camino al complejo
+  1731→  [0, -8], [0, -14],
+  1732→  // complejo: puertas y patio
+  1733→  [0, -18], [8, -20], [-8, -20], [0, -26], [12, -30], [-12, -30],
+  1734→  [0, -36], [-13, -30], [10, -22], [-16, -20], [-6, -38],
+  1735→  [-14, -38], [2, -38], [20, -38], [20, -41], [24, -33],
+  1736→  // antena ALFA (colina este) y puerta este
+  1737→  [28, -34], [30, -30], [30, -12], [36, -20],
+  1738→  // antena BRAVO (exterior oeste)
+  1739→  [-31, -18], [-36, -22], [-30, -40], [-34, -30], [-28, -22],
+  1740→  // norte exterior: helipuerto y antena CHARLIE
+  1741→  [0, -55], [0, -60], [14, -56], [26, -54], [30, -48], [30, -52],
+  1742→  [-14, -56], [-28, -54],
+  1743→]
+  1744→const STORY_EDGES: number[][] = STORY_WAYPOINTS.map(() => [])
+  1745→{
+  1746→  const MAXD = 22
+  1747→  const storyAabbs = STORY_BOXES.map(boxToAABB)
+  1748→  for (let i = 0; i < STORY_WAYPOINTS.length; i++) {
+  1749→    for (let j = i + 1; j < STORY_WAYPOINTS.length; j++) {
+  1750→      const dx = STORY_WAYPOINTS[i][0] - STORY_WAYPOINTS[j][0]
+  1751→      const dz = STORY_WAYPOINTS[i][1] - STORY_WAYPOINTS[j][1]
+  1752→      if (Math.hypot(dx, dz) > MAXD) continue
+  1753→      if (!segmentBlocked(STORY_WAYPOINTS[i][0], 0.5, STORY_WAYPOINTS[i][1], STORY_WAYPOINTS[j][0], 0.5, STORY_WAYPOINTS[j][1], storyAabbs)) {
+  1754→        STORY_EDGES[i].push(j)
+  1755→        STORY_EDGES[j].push(i)
+  1756→      }
+  1757→    }
+  1758→  }
+  1759→}
+  1760→
+  1761→// --- Objetivos de la misión (los usa el director del modo historia) ---
+  1762→export interface StoryObjective { x: number; z: number; label: string }
+  1763→export const STORY_INTEL: StoryObjective[] = [
+  1764→  { x: 20, z: 14, label: 'MOLINO' },
+  1765→  { x: -34, z: 8, label: 'CAPILLA' },
+  1766→  { x: 42, z: 10, label: 'VIGÍA' },
+  1767→]
+  1768→export const STORY_UPLINK: StoryObjective = { x: 0, z: 8, label: 'ENLACE' }
+  1769→export const STORY_ANTENNAS: StoryObjective[] = [
+  1770→  { x: 36, z: -18, label: 'ANTENA ALFA' },
+  1771→  { x: -36, z: -24, label: 'ANTENA BRAVO' },
+  1772→  { x: 30, z: -50, label: 'ANTENA CHARLIE' },
+  1773→]
+  1774→export const STORY_PRISONER: StoryObjective = { x: 20, z: -44, label: 'PRISIONERO' }
+  1775→export const STORY_EXTRACTION: StoryObjective = { x: 0, z: -60, label: 'EXTRACCIÓN' }
+  1776→
+  1777→const STORY_MAP_SPawn_A: [number, number, number] = [0, 0, 54]
+  1778→const STORY_SPAWN_B: [number, number, number] = [0, 0, -21]
+  1779→// ============================================================
+  1780→// REGISTRO DE MAPAS — el motor y la simulación eligen el mapa
+  1781→// según el modo de juego (carga perezosa: solo se construye el
+  1782→// del modo activo)
+  1783→// ============================================================
+  1784→export interface MapData {
+  1785→  half: number
+  1786→  boxes: MapBox[]
+  1787→  aabbs: AABB[]
+  1788→  waypoints: [number, number][]
+  1789→  edges: number[][]
+  1790→  trees: [number, number][]
+  1791→  lamps: [number, number][]
+  1792→  barrels: ExplosiveBarrel[]
+  1793→  ziplines: ZiplineSpec[]
+  1794→  jumpPads: JumpPadSpec[]
+  1795→  pickups: PickupSpot[]
+  1796→  neons: NeonSpec[]
+  1797→  puddles: PuddleSpec[]
+  1798→  /** láminas de agua animadas (río/lago/fuente) — las dibuja el motor */
+  1799→  water: { x: number; z: number; w: number; d: number }[]
+  1800→  /** centro que custodian los bots en el modo historia (undefined = spawn) */
+  1801→  guard?: [number, number]
+  1802→  spawnA: [number, number, number]
+  1803→  spawnB: [number, number, number]
+  1804→}
+  1805→
+  1806→export const MAPS: Record<MapId, MapData> = {
+  1807→  ciudad: {
+  1808→    half: GAME.MAP_HALF,
+  1809→    boxes: MAP_BOXES,
+  1810→    aabbs: MAP_AABBS,
+  1811→    waypoints: WAYPOINTS,
+  1812→    edges: WAYPOINT_EDGES,
+  1813→    trees: TREES,
+  1814→    lamps: LAMPS,
+  1815→    barrels: EXPLODING_BARRELS,
+  1816→    ziplines: ZIPLINES,
+  1817→    jumpPads: JUMP_PADS,
+  1818→    pickups: PICKUP_SPOTS,
+  1819→    neons: NEONS,
+  1820→    puddles: PUDDLES,
+  1821→    water: [],
+  1822→    spawnA: SPAWN_A,
+  1823→    spawnB: SPAWN_B,
+  1824→  },
+  1825→  instalacion: {
+  1826→    half: 70,
+  1827→    boxes: STORY_BOXES,
+  1828→    aabbs: STORY_BOXES.map(boxToAABB),
+  1829→    waypoints: STORY_WAYPOINTS,
+  1830→    edges: STORY_EDGES,
+  1831→    trees: [
+  1832→      // ribera norte del río
+  1833→      [-52, 34], [-44, 36], [-36, 33], [-28, 35], [-20, 33], [-12, 35], [-16, 31],
+  1834→      // alrededor del lago
+  1835→      [30, 50], [34, 46], [10, 48], [16, 52], [36, 52],
+  1836→      // pueblo
+  1837→      [10, 24], [-10, 26], [-24, 12], [12, 4], [-14, 4], [8, 28],
+  1838→      // orilla sur (inserción)
+  1839→      [-6, 52], [6, 54], [-18, 50], [18, 52],
+  1840→      // camino al complejo
+  1841→      [-10, -4], [10, -8],
+  1842→    ],
+  1843→    lamps: [
+  1844→      [5, 21], [-5, 21], [5, 5], [-5, 5], [0, 28],
+  1845→      [0, -14], [-16, -28], [16, -28], [0, -38], [-14, -40], [8, -40], [4, -56],
+  1846→    ],
+  1847→    barrels: [
+  1848→      { x: 12, z: -20.5 }, { x: 16.5, z: -20.5 }, { x: 14, z: -28.5 },
+  1849→      { x: -24, z: -20 }, { x: -34, z: -20.5 }, { x: 34.5, z: -16.5 },
+  1850→    ],
+  1851→    ziplines: [
+  1852→      { from: [44.6, 6.4, 10], to: [4, 1.2, 13] },     // torre de vigía → plaza
+  1853→      { from: [-44, 4.4, 18], to: [-8, 1.2, 10] },     // colina oeste → plaza
+  1854→    ],
+  1855→    jumpPads: [
+  1856→      { x: 22, z: 20 },   // pueblo → tejado del molino
+  1857→      { x: -10, z: -28 }, // patio del complejo → tejado del comando
+  1858→    ],
+  1859→    pickups: [
+  1860→      { kind: 'medkit', x: 20, z: 14 },
+  1861→      { kind: 'bandage', x: -20, z: 16 },
+  1862→      { kind: 'shieldSmall', x: 2, z: 12 },
+  1863→      { kind: 'medkit', x: -34, z: 7 },
+  1864→      { kind: 'shieldBig', x: -14, z: 3 },
+  1865→      { kind: 'bandage', x: -6, z: 32 },
+  1866→      { kind: 'medkit', x: -14, z: -44 },
+  1867→      { kind: 'shieldSmall', x: 2, z: -44 },
+  1868→      { kind: 'medkit', x: 0, z: -30 },
+  1869→      { kind: 'bandage', x: -20, z: -27 },
+  1870→      { kind: 'medkit', x: 20, z: -44 },
+  1871→      { kind: 'shieldBig', x: 42, z: 10 },
+  1872→      { kind: 'medkit', x: 0, z: -58 },
+  1873→    ],
+  1874→    neons: [
+  1875→      { text: 'PUEBLO ALBA', x: 0, y: 2.9, z: 21.2, ry: 0, color: '#fbbf24', w: 5 },
+  1876→      { text: 'EXTRACCIÓN', x: 0, y: 2.4, z: -65.4, ry: 0, color: '#22d3ee', w: 5 },
+  1877→      { text: 'COMPLEJO CENIZA', x: 0, y: 3.2, z: -15.4, ry: 0, color: '#f87171', w: 5.5 },
+  1878→      { text: 'RADAR', x: -14.4, y: 2.0, z: -34, ry: Math.PI / 2, color: '#4ade80', w: 4 },
+  1879→      { text: 'COMBUSTIBLE', x: 17.6, y: 2.0, z: -22, ry: -Math.PI / 2, color: '#f87171', w: 4.5 },
+  1880→      { text: 'PRISIÓN', x: 20, y: 2.2, z: -41.4, ry: 0, color: '#f472b6', w: 4 },
+  1881→    ],
+  1882→    puddles: [
+  1883→      { x: -4, z: 24, r: 1.2 }, { x: 10, z: -36, r: 1.4 }, { x: -20, z: -30, r: 1.3 },
+  1884→    ],
+  1885→    water: [
+  1886→      { x: -26, z: 40, w: 58, d: 7 },   // río (oeste → lago)
+  1887→      { x: 22, z: 44, w: 28, d: 20 },   // lago
+  1888→      { x: 0, z: 13, w: 3.6, d: 3.6 },  // fuente de la plaza
+  1889→    ],
+  1890→    guard: [0, -16],
+  1891→    spawnA: STORY_MAP_SPawn_A,
+  1892→    spawnB: STORY_SPAWN_B,
+  1893→  },
+  1894→}
+  1895→
+  1896→export function getMapData(id: MapId): MapData {
+  1897→  return MAPS[id] ?? MAPS.ciudad
+  1898→}
+  1899→

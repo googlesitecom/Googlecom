@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the screenshot of the **ARMERÍA TÁCTICA** menu:\n\n1.  **Yes.** There is a \"TU LOADOUT\" panel at the top with three slots: **HUECO 1** (Empty), **HUECO 2** (P9 Compacto), and **HUECO 3** (Cuchillo Táctico). They display weapon names and key labels (1, 2, 3).\n2.  **Partially.** The visible weapon card for \"Águila .50\" has a yellow **COMPRAR** (Buy) button. There is no visible **EQUIPAR** (Equip) button in this view (likely because the weapon is not owned yet).\n3.  **Yes.** The money amount is shown in the top right corner as **$1000**.\n4.  **No.** All text, including weapon names and stats, appears in white or yellow/gold. There are no red or black weapon names.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789054253,
+  "id": "2026091023304840ca6f02386e469c",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026091023304840ca6f02386e469c",
+  "usage": {
+    "completion_tokens": 213,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 990,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1203
+  }
+}

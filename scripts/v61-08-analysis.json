@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the image provided, here are the answers to your questions:\n\n*   **Weapon Slot Chips:** Yes, they are visible in the bottom-right corner. They show **\"2 .50\"** and **\"3 Cuchillo\"**. (Note: The slot for \"1 —\" is not explicitly rendered as a separate chip in this specific UI layout, though the current weapon is active).\n*   **Big Ammo Panel Weapon Name:** The weapon name displayed above the large ammo counter (7 / 35) is **\"ÁGUILA .50\"**.\n*   **Graphics Quality & Environment:**\n    *   **Sky/Sun:** There is a clear **sky gradient** (light blue to white near the horizon), suggesting a bright, sunny day, though the sun itself is not a distinct disc.\n    *   **Streets/Sheen:** The ground appears to be dirt or dry pavement with a rocky texture; it does **not** have a glossy or wet sheen.\n    *   **Water:** There are **no visible water puddles**.\n    *   **Birds:** There are **no birds** in the sky.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789054374,
+  "id": "2026091023324995fbb7782fcc4f87",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026091023324995fbb7782fcc4f87",
+  "usage": {
+    "completion_tokens": 240,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 975,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1215
+  }
+}

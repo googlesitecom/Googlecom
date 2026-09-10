@@ -290,3 +290,75 @@
    290→- v4.2: armas orientadas (pistola ry=−π/2 medida por vértices, SMG ry=+π/2 signo corregido), bots mueren (lastHitsAt), strafe sereno, ~2000→~20 draw calls y 23→11 luces puntuales SIN borrar gráficos ni modelos
    291→- Pendiente: recomendar al usuario ROTAR el PAT (expuesto en el chat)
    292→
+   293→---
+   294→Task ID: 10
+   295→Agent: Super Z (agente principal)
+   296→Task: v5.0 — Sonidos MP3 del usuario (disparos + música con volumen ajustable), recarga mejorada, menú táctico detallado, pantalla de carga de 3 s, multijugador de vuelta y reforzado, gráficos sin perder FPS y sol nuevo (mensajes #13 pendientes + actual)
+   297→
+   298→Work Log:
+   299→- RECUPERACIÓN: el main remoto tenía una v5 de la sesión perdida (Isla Gallo, P2P RETIRADO — por eso el usuario pidió "regresa el multijugador"); respaldada en rama backup-v5-isla-gallo y main realineado con la fuente de la versión desplegada
+   300→- AUDIO (audio.ts reescrito): carga de los MP3 del repositorio (audio/Pistola|Smg|Rifle|Sniper|Musica.mp3) por fetch+decodeAudioData con fallback procedural; buses separados master/música/efectos; música en bucle que se atenúa en partida (duck 0.45) y se restaura en el menú; gunshot() usa el MP3 por tipo de arma con detune 0.94-1.12 y caída por distancia (escopeta = rifle grave); getAudio() singleton compartido menú+juego
+   301→- RECARGA en capas hecha a medida: liberación (clic+resorte), cargador fuera (barrido metálico descendente + golpe), cargador dentro (golpe hueco + pestillo + cerrojo atrás/adelante + ring), bomba de escopeta en dos tiempos; etapas del motor al 30 %/82 %; dryFire con percutor
+   302→- AJUSTES: sliders VOLUMEN GENERAL / MÚSICA / EFECTOS (store: musicVol+sfxVol, persistidos); sección AUDIO/VÍDEO/CONTROL con descripciones
+   303→- MENÚ rediseñado (menus.tsx reescrito): estética táctica sobria (negro azulado, ámbar, tipografía recta con tracking) en vez del look arcade Fortnite; pestañas DESPLEGAR/OPERACIÓN/CONTROLES/AJUSTES/INFORMACIÓN; pestaña OPERACIÓN con ficha de campaña (4 capítulos, duración, dificultad); ConnectingScreen del anfitrión con código grande + botón de copiar; resumen del sector y novedades v5
+   304→- PANTALLA DE CARGA (boot-screen.tsx): 3 s exactos con easing, barra fina ámbar, consejos rotativos y fundido de salida; consejo inicial determinista (fix de hidratación React #418) y aleatorización solo tras montar
+   305→- MODO HISTORIA "OPERACIÓN CENIZA" (story.ts + shared.ts + sim.ts + sim-worker.ts): mapa INSTALACIÓN CENIZA 112×112 completamente distinto (perímetro con brecha, comando con interior, anillo de radar con pasillos, depósito de combustible, 3 antenas, 2 cuarteles, parque de vehículos, 4 torretas con escaleras, helipuerto con H); 155 cajas + 43 waypoints conectados (scripts/story-map-check.ts: SIN ERRORES); registro de mapas getMapData() compartido por motor y worker; director con 4 capítulos (infiltrar 3 intel · defender el enlace 240 s · sabotear 3 antenas con E mantenido + cuenta atrás de 45 s · matar al Cnel. Vega 400HP/150escudo y extraerse), balizas 3D con haz+anillo+etiqueta, diálogos de radio, marcadores parpadeantes en el minimapa, muerte → repetir capítulo (inventario a salvo); IA de la misión DEFENDE el centro (sesgo 0.5 lejos/0.12 cerca, no acampa el spawn) y protect 4 s
+   306→- MULTIJUGADOR DE VUELTA Y REFORZADO (net.ts): PeerJS con 3 STUN públicos; invitado con 3 intentos (peer nuevo por intento, 12 s por intento) y mensajes claros; anfitrión con reconnect() del broker al desconectarse y hasta 3 reintentos del servidor de salas; prefijo de sala fzcero3; storyCmd por el worker (boss/give/ammo)
+   307→- GRÁFICOS: SOL rehecho (makeSunTexture: degradado radial blanco→ámbar, 3 sprites halo/corona/disco alineados con la luz, antes usaba la textura del cielo como sprite); sunBall del PMREM alineado; viñeta cinematográfica CSS (coste 0); VEGETACIÓN DEL SUELO ELIMINADA (buildGrass/buildBushes/buildFlowers borrados: −14000 briznas, −170 arbustos, −700 flores) a petición del usuario
+   308→- DUAL ARMA + PERSISTENCIA: la compra permite 2 armas simultáneas y respawnPlayer() CONSERVA el inventario al morir (refill de munición por arma)
+   309→- CARGA PEREZOSA: preloadAssets({trees}) omite Arbol.glb en la misión; el mapa y el worker se construyen solo del modo activo; tsconfig excluye out/ y game/
+   310→- BUGS corregidos: hidratación React #418 (tip aleatorio del boot), pointer lock sin gesto (catch), bucle infinito de explosión/completado del director (flags siegeDone/boomDone), bots de la misión acampando el spawn del jugador
+   311→- VERIFICACIÓN (agent-browser + VLM, 17 capturas scripts/v5-*.png): boot de 3 s y menú táctico en la URL pública; partida de bots (8, ciudad, 0 errores); misión completa (mapa militar amurallado, HUD de capítulo, baliza amarilla, intel 1/3 recogida, bots defendiendo el centro); sol con halo verificado desde punto elevado; suelo sin pasto; los 6 MP3 cargados (200) del sitio público; sala P2P creada (código 893UP vía cloud PeerJS) — el canal de datos falla SOLO en este sandbox (WebRTC bloqueado incluso en loopback: limitación del entorno headless, no del juego); tsc y eslint limpios
+   312→- DESPLIEGUE: build de Pages con basePath + rama gh-pages v5.0 (551ccb5) + push main (ade0b80) + respaldo remoto backup-v5-isla-gallo; https://googlesitecom.github.io/Googlecom/ verificada en vivo con 0 errores
+   313→
+   314→Stage Summary:
+   315→- https://googlesitecom.github.io/Googlecom/ JUGABLE en v5.0: audio MP3 con mezclador, modo historia Operación Ceniza (15-20 min, mapa nuevo), menú táctico, pantalla de carga, multijugador P2P restaurado y blindado, sol nuevo, sin vegetación de suelo (menos lag), dos armas permanentes
+   316→- El multijugador no se pudo probar E2E en el sandbox (WebRTC bloqueado en headless); probado en navegador real por diseño (STUN + reintentos + reconexión)
+   317→- Pendiente: recomendar al usuario ROTAR el PAT (expuesto en el chat)
+   318→
+   319→---
+   320→Task ID: 11
+   321→Agent: Super Z (agente principal)
+   322→Task: v6.0 — Mejorar los gráficos, ampliar el modo historia con cinemáticas y un mapa hermoso (mensaje #15)
+   323→
+   324→Work Log:
+   325→- GRÁFICOS (sin coste de FPS apreciable):
+   326→  - CIELO CON SHADER propio (degradado atmosférico zenit→horizonte→suelo con resplandor solar integrado, cálido lateral hacia el sol y dithering anti-banding) sustituye la textura de canvas; PMREM del entorno rehecho desde el mismo shader → reflexiones PBR coherentes
+   327→  - NUBES: 12 billboards altos a la deriva (coste ~0)
+   328→  - AGUA ANIMADA (río + lago + fuente) con ShaderMaterial: oleaje en el vértice, dos capas de ruido desplazándose, fresnel potencia 5 (refleja el atardecer SOLO muy rasante), destello solar especular y chispeo — tras 3 iteraciones visuales con VLM (antes se leía como "carretera con líneas")
+   329→  - MOTAS DE POLVO (180 puntos aditivos alrededor de la cámara, envolvimiento continuo), AVES del valle (7 siluetas en círculo con aleteo), ANISOTROPÍA máxima en las texturas del mundo
+   330→  - Textura de ROCA nueva (estratos + musgo) para el anillo montañoso; helper ridge() con picos deterministas
+   331→- MAPA HERMOSO "VALLE SERENO" (instalacion, 140×140):
+   332→  - Anillo montañoso natural (sierra norte a -72 para abrir el helipuerto) — sin muros artificiales
+   333→  - RÍO con puente de piedra (tablero alto + escalones) y PIEDRAS DE PASO (0.55 m, escalón del jugador); bots vadear por el agua (grafo conectado a través del río)
+   334→  - LAGO con EMBARCADERO de madera; FUENTE octogonal en la plaza con lámina de agua
+   335→  - PUEBLO ALBA: molino y herrero con interior, granero con puerta grande, capilla EN RUINAS con campanario + mirador, TORRE DE VIGÍA con plataforma
+   336→  - COMPLEJO CENIZA amurallado: comando, radar (anillo con huecos), depósito, 2 cuarteles, PRISIÓN con celda de barrotes, 3 antenas en colinas, helipuerto con puerta norte
+   337→  - 257 cajas · 70 waypoints · 142 aristas · story-map-check SIN ERRORES (corregidos: 12 waypoints dentro de geometría, grafo partido, spawns bloqueados, barrera/caja sobre rutas clave)
+   338→- MODO HISTORIA AMPLIADO (4 → 6 capítulos, ~25-30 min):
+   339→  - Cap 4 EL PRISIONERO nuevo (mantener E para liberar + sobrevivir la alarma 75 s con refuerzos) y Cap 6 LA EXTRACCIÓN (correr al helipuerto contra reloj 150 s; si despega sin ti, repite)
+   340→  - Diálogos de radio ampliados (Ríos, la resistencia); menú táctico actualizado (6 capítulos, valle 140×140)
+   341→- CINEMÁTICAS por capítulo (v6):
+   342→  - playStoryCine() en el motor: curvas CatmullRom de cámara + barras de cine + título dinámico + subtítulo de localización + fundido final + omisión con clic/tecla; endCinematic ejecuta onDone
+   343→  - 6 rutas de cámara sobre el valle (sierra sur → río → pueblo; barrido del pueblo; muro norte y antenas; descenso a la celda; rastreo del jefe; órbita final del helipuerto) — la entrada de cada capítulo termina donde empieza el jugador
+   344→  - story.begin() se llama en el PRIMER SPAWN (antes corría tapada por la pantalla de conexión)
+   345→  - Cinemática FINAL de victoria → pantalla MISIÓN COMPLETADA con tiempo y bajas
+   346→- IA de la misión afinada:
+   347→  - Visión de los bots limitada a 52 m en historia (antes avistaban a 75 m por el valle abierto) y ZONA SEGURA de 14 m en la inserción (sin acampar el spawn ni bucle de muertes)
+   348→  - storyCmd 'protect' (invulnerable en cinemáticas), 'attack' (oleadas de asedio convergen sobre el enlace/celda cada 22-25 s), 'reinforce' hasta 12 bots
+   349→  - Transiciones de capítulo con planificador dirigido por FRAMES (inmune a la limitación de setTimeout en pestañas ocultas — fue el causante de una transición que no llegaba a dispararse)
+   350→  - No se recogen inteligencias estando muerto; spawn de historia 9 s de protección
+   351→- HUD: aviso de tienda oculto en la misión; etiquetas de bots ocultas durante las cinemáticas
+   352→- VERIFICACIÓN E2E en build de producción servida localmente (agent-browser + VLM, 17 capturas):
+   353→  - Boot 3 s → menú táctico → OPERACIÓN → cine 1 con barras/título/subtítulo/omisión
+   354→  - Flujo completo dirigido: 3 intel → cap 2 (asedio 240 s + oleadas + refuerzos) → cap 3 (carga en antena con E mantenido) → cap 4 (prisionero) → cap 5 (jefe Vega) → cap 6 (extracción 150 s) → CINE FINAL → MISIÓN COMPLETADA con TIEMPO/BAJAS
+   355→  - Jugador vivo tras la cine sin bucle de muertes; 12 bots activos con refuerzos; partida de bots de la CIUDAD intacta (cinemática de entrada + HUD + mapa urbano)
+   356→  - Nota del sandbox: el software rendering dilata el tiempo de juego (los holds de 2,5 s tardan ~20 s reales) — en GPU real es tiempo normal
+   357→- DESPLIEGUE: build:pages + rama gh-pages + push main
+   358→
+   359→Stage Summary:
+   360→- Gráficos: cielo shader + nubes + agua animada + polvo + aves + anisotropía + roca nueva, sin perder FPS
+   361→- Modo historia: VALLE SERENO (río, lago, pueblo, ruinas, complejo), 6 capítulos ~25-30 min, cinemática por capítulo + final, jefe y extracción cronometrada
+   362→- IA de misión robusta (zona segura, oleadas, refuerzos, protección en cines) y transiciones por frames
+   363→- Flujo E2E verificado de principio a fin en producción local
+   364→

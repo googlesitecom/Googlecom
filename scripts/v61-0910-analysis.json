@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "*   **Image 1 (Ground View):** Yes, there is a **teal/blue-ish water puddle** on the ground (it appears as a light blue, reflective pool on the dirt).\n*   **Image 2 (Sky View):** The sky is visible and is **clear blue with no clouds or bird silhouettes**.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789054449,
+  "id": "2026091023340686f55e4bccbb4241",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026091023340686f55e4bccbb4241",
+  "usage": {
+    "completion_tokens": 73,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1837,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1910
+  }
+}

@@ -176,6 +176,22 @@
     }
   },
   {
+    "name": "game",
+    "path": "game",
+    "sha": "d783e72c4ef76cbc34ab64f83602563b36a9f2b7",
+    "size": 0,
+    "url": "https://api.github.com/repos/googlesitecom/Googlecom/contents/game?ref=main",
+    "html_url": "https://github.com/googlesitecom/Googlecom/tree/main/game",
+    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/d783e72c4ef76cbc34ab64f83602563b36a9f2b7",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/googlesitecom/Googlecom/contents/game?ref=main",
+      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/d783e72c4ef76cbc34ab64f83602563b36a9f2b7",
+      "html": "https://github.com/googlesitecom/Googlecom/tree/main/game"
+    }
+  },
+  {
     "name": "mini-services",
     "path": "mini-services",
     "sha": "57ecce09614e38831445fb78a116ff96ccd41120",
@@ -274,32 +290,32 @@
   {
     "name": "scripts",
     "path": "scripts",
-    "sha": "651dd2df827e772b5b68f94c3cc2c8fb147d87b0",
+    "sha": "0d719659f4d5525e4cca231940bf16206ee7e66e",
     "size": 0,
     "url": "https://api.github.com/repos/googlesitecom/Googlecom/contents/scripts?ref=main",
     "html_url": "https://github.com/googlesitecom/Googlecom/tree/main/scripts",
-    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/651dd2df827e772b5b68f94c3cc2c8fb147d87b0",
+    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/0d719659f4d5525e4cca231940bf16206ee7e66e",
     "download_url": null,
     "type": "dir",
     "_links": {
       "self": "https://api.github.com/repos/googlesitecom/Googlecom/contents/scripts?ref=main",
-      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/651dd2df827e772b5b68f94c3cc2c8fb147d87b0",
+      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/0d719659f4d5525e4cca231940bf16206ee7e66e",
       "html": "https://github.com/googlesitecom/Googlecom/tree/main/scripts"
     }
   },
   {
     "name": "src",
     "path": "src",
-    "sha": "dedf0f9a8ded7fd61d2240a1f3cda131da5dc917",
+    "sha": "51ddc3bb2831e700e24b6b1d247728a6030e4a3e",
     "size": 0,
     "url": "https://api.github.com/repos/googlesitecom/Googlecom/contents/src?ref=main",
     "html_url": "https://github.com/googlesitecom/Googlecom/tree/main/src",
-    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/dedf0f9a8ded7fd61d2240a1f3cda131da5dc917",
+    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/51ddc3bb2831e700e24b6b1d247728a6030e4a3e",
     "download_url": null,
     "type": "dir",
     "_links": {
       "self": "https://api.github.com/repos/googlesitecom/Googlecom/contents/src?ref=main",
-      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/dedf0f9a8ded7fd61d2240a1f3cda131da5dc917",
+      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/51ddc3bb2831e700e24b6b1d247728a6030e4a3e",
       "html": "https://github.com/googlesitecom/Googlecom/tree/main/src"
     }
   },
@@ -338,32 +354,32 @@
   {
     "name": "tool-results",
     "path": "tool-results",
-    "sha": "6cdc86ba9cb472185251fbc0014462817b810d70",
+    "sha": "f04051cadc8b24d1caffc9770b94ca1c9dc27add",
     "size": 0,
     "url": "https://api.github.com/repos/googlesitecom/Googlecom/contents/tool-results?ref=main",
     "html_url": "https://github.com/googlesitecom/Googlecom/tree/main/tool-results",
-    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/6cdc86ba9cb472185251fbc0014462817b810d70",
+    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/f04051cadc8b24d1caffc9770b94ca1c9dc27add",
     "download_url": null,
     "type": "dir",
     "_links": {
       "self": "https://api.github.com/repos/googlesitecom/Googlecom/contents/tool-results?ref=main",
-      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/6cdc86ba9cb472185251fbc0014462817b810d70",
+      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/trees/f04051cadc8b24d1caffc9770b94ca1c9dc27add",
       "html": "https://github.com/googlesitecom/Googlecom/tree/main/tool-results"
     }
   },
   {
     "name": "tsconfig.json",
     "path": "tsconfig.json",
-    "sha": "8a6e4f3da9c56eb48ccf5183ad03ca751c646485",
-    "size": 730,
+    "sha": "f56be10385e591a9b371b8dcb6066867fc1de05f",
+    "size": 752,
     "url": "https://api.github.com/repos/googlesitecom/Googlecom/contents/tsconfig.json?ref=main",
     "html_url": "https://github.com/googlesitecom/Googlecom/blob/main/tsconfig.json",
-    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/8a6e4f3da9c56eb48ccf5183ad03ca751c646485",
+    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/f56be10385e591a9b371b8dcb6066867fc1de05f",
     "download_url": "https://raw.githubusercontent.com/googlesitecom/Googlecom/main/tsconfig.json",
     "type": "file",
     "_links": {
       "self": "https://api.github.com/repos/googlesitecom/Googlecom/contents/tsconfig.json?ref=main",
-      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/8a6e4f3da9c56eb48ccf5183ad03ca751c646485",
+      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/f56be10385e591a9b371b8dcb6066867fc1de05f",
       "html": "https://github.com/googlesitecom/Googlecom/blob/main/tsconfig.json"
     }
   },
@@ -386,16 +402,16 @@
   {
     "name": "worklog.md",
     "path": "worklog.md",
-    "sha": "782d9ef3a239b53b7781b6ab5bd4e92e9b9f078c",
-    "size": 37496,
+    "sha": "5fd5907da17d51bec116ad01c9804ed87986a0eb",
+    "size": 45579,
     "url": "https://api.github.com/repos/googlesitecom/Googlecom/contents/worklog.md?ref=main",
     "html_url": "https://github.com/googlesitecom/Googlecom/blob/main/worklog.md",
-    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/782d9ef3a239b53b7781b6ab5bd4e92e9b9f078c",
+    "git_url": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/5fd5907da17d51bec116ad01c9804ed87986a0eb",
     "download_url": "https://raw.githubusercontent.com/googlesitecom/Googlecom/main/worklog.md",
     "type": "file",
     "_links": {
       "self": "https://api.github.com/repos/googlesitecom/Googlecom/contents/worklog.md?ref=main",
-      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/782d9ef3a239b53b7781b6ab5bd4e92e9b9f078c",
+      "git": "https://api.github.com/repos/googlesitecom/Googlecom/git/blobs/5fd5907da17d51bec116ad01c9804ed87986a0eb",
       "html": "https://github.com/googlesitecom/Googlecom/blob/main/worklog.md"
     }
   }
