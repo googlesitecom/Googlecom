@@ -282,6 +282,30 @@ export function makeWorldTextures(): Record<MatKey, THREE.Texture> {
     T.roof = toTexture(c, 1)
   }
 
+  // --- Roca de montaña (v6: anillo del valle) ---
+  {
+    const [c, ctx] = makeCanvas(512)
+    ctx.fillStyle = '#7d7166'
+    ctx.fillRect(0, 0, 512, 512)
+    // vetas diagonales de estratos
+    for (let i = 0; i < 10; i++) {
+      const y = i * 52 + Math.random() * 18
+      ctx.strokeStyle = `rgba(58,52,46,${0.22 + Math.random() * 0.16})`
+      ctx.lineWidth = 6 + Math.random() * 10
+      ctx.beginPath()
+      ctx.moveTo(-10, y)
+      ctx.bezierCurveTo(140, y - 24, 320, y + 22, 522, y - 10)
+      ctx.stroke()
+    }
+    splotches(ctx, 512, 26, '#6a5f55', 46, 0.45)
+    splotches(ctx, 512, 18, '#8f8375', 55, 0.4)
+    splotches(ctx, 512, 10, '#57503f', 70, 0.3)
+    // musgo tenue cálido (lado del sol)
+    splotches(ctx, 512, 8, '#6e6a45', 26, 0.25)
+    noiseOverlay(ctx, 512, 24, 0)
+    T.rock = toTexture(c, 1)
+  }
+
   return T as Record<MatKey, THREE.Texture>
 }
 
@@ -393,6 +417,61 @@ export function makeSkyTexture(): THREE.Texture {
     ctx.ellipse(x, y, r * 2.0, r * 0.45, 0, 0, Math.PI * 2)
     ctx.fill()
   }
+  return new THREE.CanvasTexture(c)
+}
+
+// ------------------------------------------------------------
+// Nube suave (billboards del cielo, v6)
+// ------------------------------------------------------------
+export function makeCloudTexture(): THREE.Texture {
+  const [c, ctx] = makeCanvas(256)
+  ctx.clearRect(0, 0, 256, 256)
+  for (let i = 0; i < 16; i++) {
+    const x = 48 + Math.random() * 160
+    const y = 96 + (Math.random() - 0.5) * 70
+    const r = 22 + Math.random() * 46
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+    const warm = y > 110
+    g.addColorStop(0, warm ? `rgba(255,226,190,${0.16 + Math.random() * 0.14})` : `rgba(238,244,255,${0.16 + Math.random() * 0.14})`)
+    g.addColorStop(1, 'rgba(255,255,255,0)')
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.ellipse(x, y, r * 1.7, r * 0.6, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  return new THREE.CanvasTexture(c)
+}
+
+// ------------------------------------------------------------
+// Ruido suave para el agua (dos capas desplazándose)
+// ------------------------------------------------------------
+export function makeWaterNoiseTexture(): THREE.Texture {
+  const [c, ctx] = makeCanvas(256)
+  ctx.fillStyle = '#404040'
+  ctx.fillRect(0, 0, 256, 256)
+  splotches(ctx, 256, 60, '#ffffff', 26, 0.10)
+  splotches(ctx, 256, 50, '#202020', 30, 0.10)
+  noiseOverlay(ctx, 256, 18, 0)
+  const tex = new THREE.CanvasTexture(c)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.RepeatWrapping
+  return tex
+}
+
+// ------------------------------------------------------------
+// Ave lejana (silueta en V)
+// ------------------------------------------------------------
+export function makeBirdTexture(): THREE.Texture {
+  const [c, ctx] = makeCanvas(64)
+  ctx.clearRect(0, 0, 64, 64)
+  ctx.strokeStyle = 'rgba(30,26,24,0.9)'
+  ctx.lineWidth = 5
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(8, 34)
+  ctx.quadraticCurveTo(20, 18, 32, 30)
+  ctx.quadraticCurveTo(44, 18, 56, 34)
+  ctx.stroke()
   return new THREE.CanvasTexture(c)
 }
 

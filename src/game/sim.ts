@@ -329,7 +329,7 @@ export class GameSim {
     p.dead = false
     p.crouch = false
     p.lastDamageAt = 0
-    p.protectUntil = now() + (this.mode === 'historia' ? 4000 : GAME.SPAWN_PROTECT * 1000)
+    p.protectUntil = now() + (this.mode === 'historia' ? 9000 : GAME.SPAWN_PROTECT * 1000)
     if (initial) {
       p.owned = ['knife', 'p9']
       p.weapon = 'p9'
@@ -444,7 +444,7 @@ export class GameSim {
   // ------------------------------------------------------------
   // Comandos del director del modo historia
   // ------------------------------------------------------------
-  handleStoryCmd(playerId: string, data: { cmd?: string; botId?: string; weapon?: WeaponId }): void {
+  handleStoryCmd(playerId: string, data: { cmd?: string; botId?: string; weapon?: WeaponId; count?: number; x?: number; z?: number }): void {
     const cmd = data?.cmd
     if (cmd === 'boss') {
       // convierte un bot en el jefe final
@@ -478,6 +478,27 @@ export class GameSim {
       const p = this.players.get(playerId)
       if (p) for (const wid of p.owned) {
         if (WEAPONS[wid].mag > 0) this.emit('refillAmmo', { weapon: wid }, p.id)
+      }
+    } else if (cmd === 'reinforce') {
+      // refuerzos de la misión (asedio del capítulo 2 / alarma del 4):
+      // bots extra del bando B hasta un máximo razonable
+      const curB = Array.from(this.players.values()).filter(q => q.team === 'B').length
+      const n = Math.max(0, Math.min(12, curB + (data.count ?? 2)) - curB)
+      if (n > 0) this.addBots(n, true)
+      this.broadcastSnapshot()
+    } else if (cmd === 'protect') {
+      // invulnerable durante la cinemática (el jugador no puede moverse)
+      const p = this.players.get(playerId)
+      if (p) p.protectUntil = now() + Math.max(1, data.count ?? 5) * 1000
+    } else if (cmd === 'attack') {
+      // asedio: todos los enemigos convergen sobre un punto (enlace/celda)
+      const tx = data.x ?? 0
+      const tz = data.z ?? 0
+      for (const q of this.players.values()) {
+        if (!q.bot || q.team !== 'B' || !q.ai) continue
+        q.ai.state = 'hunt'
+        q.ai.lastKnown = [tx, tz]
+        q.ai.huntUntil = now() + 30000
       }
     }
   }
@@ -833,10 +854,17 @@ export class GameSim {
     let best: SimPlayer | null = null
     let bestD = Infinity
     const [ex, ey, ez] = eye(p)
+    // en la misión los defensores no avistan a 75 m a través del valle
+    // abierto: mantienen el combate dentro del pueblo y el complejo
+    const maxSpot = this.mode === 'historia' ? 52 : 110
     for (const q of this.players.values()) {
       if (q.dead || !this.isEnemy(p, q)) continue
       if (now() < q.protectUntil) continue
+      // misión: el refugio del jugador (radio 14 m de su inserción) es zona
+      // segura — evita el acampamiento y el bucle de muertes en la aparición
+      if (this.mode === 'historia' && Math.hypot(q.x - this.md.spawnA[0], q.z - this.md.spawnA[2]) < 14) continue
       const d = dist3(ex, ey, ez, q.x, q.y + 1.2, q.z)
+      if (d > maxSpot) continue
       if (d < bestD && this.canSee(p, q)) { bestD = d; best = q }
     }
     return best
@@ -1075,13 +1103,13 @@ export class GameSim {
             }
           } else {
             // escaramuza: sesgo hacia el territorio enemigo
-            // historia: los enemigos DEFIENDEN el corazón del complejo (0,0)
-            // — no persiguen la aparición del jugador en la brecha sur
-            const guardX = this.mode === 'historia' ? 0 : this.spawnX(p.team === 'A' ? 'B' : 'A')
-            const guardZ = this.mode === 'historia' ? 0 : this.spawnZ(p.team === 'A' ? 'B' : 'A')
+            // historia: los enemigos DEFIENDEN el corazón del valle/complejo
+            // — no persiguen la aparición del jugador
+            const guardX = this.mode === 'historia' ? (this.md.guard?.[0] ?? 0) : this.spawnX(p.team === 'A' ? 'B' : 'A')
+            const guardZ = this.mode === 'historia' ? (this.md.guard?.[1] ?? 0) : this.spawnZ(p.team === 'A' ? 'B' : 'A')
             const distGuard = Math.hypot(p.x - guardX, p.z - guardZ)
             const bias = this.mode === 'historia'
-              ? (distGuard > 26 ? 0.5 : 0.12)
+              ? (distGuard > 30 ? 0.85 : 0.25)
               : (distGuard > 38 ? 0.72 : 0.35)
             if (Math.random() < bias) {
               let bestW = edges[0], bestD = Infinity

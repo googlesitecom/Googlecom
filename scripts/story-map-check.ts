@@ -5,7 +5,7 @@
 // - LOS entre puntos clave
 // Ejecutar: bun scripts/story-map-check.ts
 // ============================================================
-import { MAPS, STORY_INTEL, STORY_UPLINK, STORY_ANTENNAS, STORY_EXTRACTION, boxToAABB, segmentBlocked } from '../src/game/shared'
+import { MAPS, STORY_INTEL, STORY_UPLINK, STORY_ANTENNAS, STORY_PRISONER, STORY_EXTRACTION, boxToAABB, segmentBlocked } from '../src/game/shared'
 
 const md = MAPS.instalacion
 const aabbs = md.boxes.map(boxToAABB)
@@ -24,7 +24,7 @@ function clearAt(x: number, z: number, y = 0): boolean {
   return true
 }
 
-console.log('== INSTALACIÓN CENIZA ==')
+console.log('== VALLE SERENO (instalación) ==')
 console.log(`cajas: ${md.boxes.length} · waypoints: ${md.waypoints.length} · aristas: ${md.edges.reduce((n, e) => n + e.length, 0) / 2}`)
 
 console.log('\n-- spawns --')
@@ -40,7 +40,7 @@ for (const [name, sp] of [['JUGADOR (A)', md.spawnA], ['ENEMIGO (B)', md.spawnB]
 }
 
 console.log('\n-- objetivos de la misión --')
-const objs = [...STORY_INTEL, STORY_UPLINK, ...STORY_ANTENNAS, STORY_EXTRACTION]
+const objs = [...STORY_INTEL, STORY_UPLINK, ...STORY_ANTENNAS, STORY_PRISONER, STORY_EXTRACTION]
 for (const o of objs) {
   // basta con que haya un punto practicable en un anillo alrededor del objetivo
   let reach = false
@@ -76,15 +76,22 @@ for (let i = 0; i < md.waypoints.length; i++) {
 
 console.log('\n-- rutas clave (LOS a 1.2 m) --')
 const keyPts: [string, number, number][] = [
-  ['brecha sur', 0, 50],
-  ['comando (interior)', 0, 2],
-  ['enlace', 13.5, 2],
-  ['radar', -27, 4],
-  ['cuartel este', 16, 34],
-  ['antena alfa', 30, -27],
-  ['antena bravo', -29, -28],
-  ['antena charlie', 27, 29],
-  ['helipuerto', 0, -40],
+  ['inserción sur', 0, 58],
+  ['puente del río', -6, 40],
+  ['piedras de paso', -30, 40],
+  ['plaza/enlace', 0, 13],
+  ['molino (interior)', 20, 14],
+  ['herrero (interior)', -20, 16],
+  ['capilla (interior)', -34, 6],
+  ['torre de vigía', 42, 10],
+  ['puerta sur complejo', 0, -16],
+  ['comando (interior)', 0, -30],
+  ['radar', -16, -40],
+  ['prisión (interior)', 20, -44],
+  ['antena alfa', 36, -18],
+  ['antena bravo', -36, -24],
+  ['antena charlie', 30, -50],
+  ['helipuerto', 0, -60],
 ]
 for (let i = 0; i < keyPts.length; i++) {
   for (let j = i + 1; j < keyPts.length; j++) {

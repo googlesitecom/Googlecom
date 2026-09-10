@@ -426,7 +426,7 @@ export class RemotePlayers {
   }
 
   /** Interpola y anima todos los remotos. Devuelve lista para minimapa */
-  update(dt: number, renderT: number, localTeam: Team, cameraPos: THREE.Vector3): NetPlayerState[] {
+  update(dt: number, renderT: number, localTeam: Team, cameraPos: THREE.Vector3, hideTags = false): NetPlayerState[] {
     const result: NetPlayerState[] = []
     for (const rp of this.map.values()) {
       const buf = rp.buffer
@@ -586,10 +586,10 @@ export class RemotePlayers {
         rp.weaponHolder.rotation.set(-state.pitch + kick * 0.16, 0, 0)
       }
 
-      // etiqueta: teammates siempre, enemigos a < 22 m
+      // etiqueta: teammates siempre, enemigos a < 22 m (nunca en cinemática)
       const d = cameraPos.distanceTo(rp.root.position)
       const isTeam = rp.team === localTeam
-      rp.tag.visible = (isTeam && d < 60) || (!isTeam && d < 22)
+      rp.tag.visible = !hideTags && ((isTeam && d < 60) || (!isTeam && d < 22))
       rp.tag.material.rotation = 0
 
       // bandera a la espalda (CTF): baliza del color de la bandera que porta

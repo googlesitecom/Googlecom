@@ -204,8 +204,8 @@ export function Hud() {
         </>
       )}
 
-      {/* ===== Aviso de zona de compra ===== */}
-      {buyZone && phase === 'playing' && (
+      {/* ===== Aviso de zona de compra (no en la misión) ===== */}
+      {buyZone && phase === 'playing' && !story.active && (
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-950/80 border border-amber-600/50 rounded-lg px-5 py-2 shadow-2xl">
           <MapPin className="w-4 h-4 text-amber-400" />
           <span className="text-amber-200 text-sm font-bold tracking-wide">

@@ -462,7 +462,7 @@ export const PICKUP_SPOTS: PickupSpot[] = [
 
 export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
 
-export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive'
+export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock'
 
 export interface MapBox {
   x: number; y: number; z: number
@@ -1460,10 +1460,11 @@ export function generateRoomCode(): string {
 }
 
 // ============================================================
-// MODO HISTORIA — INSTALACIÓN CENIZA (mapa militar 112×112)
-// Un complejo amurallado completamente distinto a la ciudad:
-// comando central, radar, depósito de combustible, antenas,
-// cuarteles, torretas de vigilancia y helipuerto de extracción.
+// MODO HISTORIA — VALLE SERENO (mapa rural 140×140, v6)
+// Un valle al atardecer: río con puente de piedra, lago con
+// embarcadero, pueblo con plaza, capilla en ruinas, torre de
+// vigía y el complejo militar amurallado al norte. Cerrado por
+// un anillo montañoso natural (sin muros artificiales).
 // ============================================================
 export type MapId = 'ciudad' | 'instalacion'
 
@@ -1490,135 +1491,259 @@ function SWZ(x: number, z0: number, z1: number, H: number, mat: MatKey, door?: n
   if (lint > 0.15) SB(x, 2.25 + lint / 2, door, 0.35, lint, dh * 2, mat)
 }
 /** escalera recta: peldaño i con altura creciente, avanza (dx,dz) por peldaño */
-function SST(xAt: number, zAt: number, dx: number, dz: number, steps: number, rise: number, run: number, w: number): void {
+function SST(xAt: number, zAt: number, dx: number, dz: number, steps: number, rise: number, run: number, w: number, y0 = 0): void {
   for (let i = 0; i < steps; i++) {
     const h = rise * (i + 1)
-    SB(xAt + dx * run * i, h / 2, zAt + dz * run * i, dx !== 0 ? run + 0.04 : w, h, dz !== 0 ? run + 0.04 : w, 'concrete')
+    SB(xAt + dx * run * i, y0 + h / 2, zAt + dz * run * i, dx !== 0 ? run + 0.04 : w, h, dz !== 0 ? run + 0.04 : w, 'concrete')
   }
 }
 
-// --- Perímetro amurallado 112×112 (brecha sur de 6 m = entrada) ---
-SWX(-54.5, -55, 55, 5, 'concrete')
-SWX(54.5, -55, -3, 5, 'concrete')     // sur, lado oeste (brecha en x -3..3)
-SWX(54.5, 3, 55, 5, 'concrete')       // sur, lado este
-SWZ(-54.5, -55, 55, 5, 'concrete')
-SWZ(54.5, -55, 55, 5, 'concrete')
-// torres de la puerta
-SB(-6, 3, 52.5, 2.5, 6, 2.5, 'concrete')
-SB(6, 3, 52.5, 2.5, 6, 2.5, 'concrete')
-
-// --- EDIFICIO DE COMANDO (centro, 18×13, interior + tejado) ---
-SWX(-4.5, -9, 9, 3.4, 'sand', 0)      // norte, puerta central
-SWX(8.5, -9, 9, 3.4, 'sand', 0)       // sur, puerta central
-SWZ(-9, -4.5, 8.5, 3.4, 'sand')
-SWZ(9, -4.5, 8.5, 3.4, 'sand', 6.5, 1.0) // este, puerta hacia el enlace
-SB(0, 3.55, 2, 18.4, 0.35, 13.4, 'roof')
-SB(-4.5, 0.5, 4, 2.4, 1, 1.1, 'metalGrey')     // mesa de radio (lado oeste, sin tapar el pasillo)
-SB(-7.4, 1.15, -1.5, 1.4, 2.3, 3.5, 'metalGreen') // racks
-SB(6.5, 0.5, 6.5, 1.2, 1, 1.2, 'crate')
-SB(-6, 0.45, 6, 1.4, 0.9, 1.2, 'wood')
-
-// --- Pista del ENLACE (este del comando) ---
-SB(13.5, 0.15, 2, 3.4, 0.3, 3.4, 'concrete')
-SB(14.9, 1.25, 0.7, 0.35, 2.5, 0.35, 'metalGrey')
-
-// --- ESTACIÓN DE RADAR (oeste): anillo bajo con 2 pasillos + mástil ---
-for (let k = 0; k < 8; k++) {
-  if (k === 2 || k === 6) continue    // huecos norte/sur
-  const a = (k / 8) * Math.PI * 2 + Math.PI / 8
-  SB(-27 + Math.cos(a) * 6.5, 0.5, Math.sin(a) * 6.5, 3.2, 1.0, 1.1, 'concrete')
+// --- Anillo montañoso natural (límite del valle) ---
+{
+  const R = 66
+  const ridge = (x: number, z: number, w: number, d: number, h: number): void => SB(x, h / 2 - 1.2, z, w, h, d, 'rock')
+  // muro base continuo en los 4 lados (el norte se abre paso: helipuerto)
+  const RN = 72
+  ridge(0, R, 142, 12, 9)
+  ridge(0, -RN, 142, 12, 9)
+  ridge(R, 0, 12, 142, 9)
+  ridge(-R, 0, 12, 142, 9)
+  // masas en las 4 esquinas
+  ridge(58, 58, 24, 24, 17)
+  ridge(-58, 58, 24, 24, 15)
+  ridge(58, -58, 24, 24, 16)
+  ridge(-58, -58, 24, 24, 14)
+  // picos irregulares (deterministas)
+  let rs = 7919
+  const rnd = (): number => { rs = (rs * 16807) % 2147483647; return rs / 2147483647 }
+  for (let k = 0; k < 28; k++) {
+    const u = -56 + rnd() * 112
+    const h = 7 + rnd() * 9
+    const w = 9 + rnd() * 7
+    const side = k % 4
+    if (side === 0) ridge(u, R, w, 11, h)
+    else if (side === 1) ridge(u, -RN, w, 11, h)
+    else if (side === 2) ridge(R, u, 11, w, h)
+    else ridge(-R, u, 11, w, h)
+  }
 }
-SB(-27, 0.5, 0, 3, 1, 3, 'concrete')
-SB(-27, 2.75, 0, 0.9, 3.5, 0.9, 'metalGrey')
 
-// --- DEPÓSITO DE COMBUSTIBLE (este): 3 tanques + barriles ---
-SB(22, 1.3, 1, 6.4, 2.6, 2.6, 'metalOrange')
-SB(22, 1.3, 4.6, 6.4, 2.6, 2.6, 'metalOrange')
-SB(22, 1.3, 8.2, 6.4, 2.6, 2.6, 'metalOrange')
+// --- RÍO (z 36.5..43.5) y LAGO (x 8..36, z 34..54): el agua la
+//     dibuja el motor con un shader animado; aquí solo orillas ---
+// (sin orillas de arena: el agua llega al terreno como los charcos y los
+//  bots pueden vadear el río; el puente y las piedras son atajos del jugador)
+// puente de piedra (x -8.5..-3.5): tablero alto (no crea aristas de bots)
+SB(-6, 0.35, 40, 5, 0.7, 12, 'concrete')
+SB(-8.6, 0.85, 40, 0.5, 0.7, 12, 'rock')       // pretiles
+SB(-3.4, 0.85, 40, 0.5, 0.7, 12, 'rock')
+SST(-6, 33.4, 0, 1, 2, 0.25, 0.62, 4.6)        // escalones sur (subida al tablero)
+SST(-6, 46.6, 0, -1, 2, 0.25, 0.62, 4.6)       // escalones norte
+// piedras de paso sobre el río (x -30): 0.55 m — escalón del jugador
+for (const [sx, sz] of [[-31.5, 37.6], [-28.8, 39.4], [-31.5, 41.2], [-28.8, 42.9]] as [number, number][]) {
+  SB(sx, 0.275, sz, 1.5, 0.55, 1.5, 'rock')
+}
+// embarcadero del lago (madera hacia el norte)
+SB(22, 0.34, 50, 2.4, 0.32, 9, 'wood')
+SB(20.9, 0.8, 51.4, 0.22, 0.62, 2.4, 'wood')
+SB(23.1, 0.8, 51.4, 0.22, 0.62, 2.4, 'wood')
+SB(20.9, 0.8, 45.4, 0.22, 0.62, 2.4, 'wood')
+SB(23.1, 0.8, 45.4, 0.22, 0.62, 2.4, 'wood')
 
-// --- ANTENAS (3): base + mástil ---
-for (const [ax, az] of [[30, -27], [-29, -28], [27, 29]] as [number, number][]) {
+// --- PUEBLO ALBA (centro del valle) ---
+// Plaza con fuente octogonal (x -6..6, z 6..20)
+for (let k = 0; k < 8; k++) {
+  const a = (k / 8) * Math.PI * 2
+  SB(Math.cos(a) * 2.3, 0.38, 13 + Math.sin(a) * 2.3, 1.5, 0.76, 1.5, 'rock')
+}
+SB(0, 0.5, 13, 1.2, 1.0, 1.2, 'rock')          // pilón central
+// bancos de la plaza
+SB(-3.5, 0.28, 10.5, 1.8, 0.12, 0.5, 'wood')
+SB(3.5, 0.28, 15.5, 1.8, 0.12, 0.5, 'wood')
+SB(-3.5, 0.28, 15.5, 1.8, 0.12, 0.5, 'wood')
+// terminal del ENLACE (norte de la plaza)
+SB(0, 0.15, 8, 3.4, 0.3, 3.4, 'concrete')
+SB(1.4, 1.25, 6.7, 0.35, 2.5, 0.35, 'metalGrey')
+
+// CASA DEL MOLINO (este, 11×9, interior; INTEL 1)
+SWX(9.5, 14.5, 25.5, 3.4, 'sand')              // norte
+SWX(18.5, 14.5, 25.5, 3.4, 'sand', 20)         // sur, puerta
+SWZ(14.5, 9.5, 18.5, 3.4, 'sand', 14)          // oeste, puerta a la plaza
+SWZ(25.5, 9.5, 18.5, 3.4, 'sand')
+SB(20, 3.55, 14, 11.4, 0.35, 9.4, 'roof')
+SB(23.5, 0.5, 11.5, 1.4, 1, 2.2, 'wood')       // mesa
+SB(16.6, 1.15, 16.5, 1.4, 2.3, 3.5, 'metalGreen') // estantería
+SB(24, 0.5, 17, 1.2, 1, 1.2, 'crate')
+
+// CASA DEL HERRERO (oeste, 10×8, interior)
+SWX(12, -25, -15, 3.2, 'sand')
+SWX(20, -25, -15, 3.2, 'sand')
+SWZ(-25, 12, 20, 3.2, 'sand')
+SWZ(-15, 12, 20, 3.2, 'sand', 16)              // este, puerta
+SB(-20, 3.35, 16, 10.4, 0.3, 8.6, 'roof')
+SB(-23.5, 0.5, 18.5, 1.4, 1, 1.1, 'crate')
+SB(-17.5, 0.45, 14, 1.6, 0.9, 1.2, 'wood')     // yunque/mesa
+
+// GRANERO (nordeste de la plaza, 9×8, puerta grande)
+SWX(-0.5, -18.5, -9.5, 4.2, 'wood')
+SWX(7.5, -18.5, -9.5, 4.2, 'wood')
+SWZ(-18.5, -0.5, 7.5, 4.2, 'wood')
+SWZ(-9.5, -0.5, 7.5, 4.2, 'wood', 3.5, 1.6)    // este, puerta grande
+SB(-14, 4.35, 3.5, 9.4, 0.3, 8.6, 'metalRed')
+SB(-16, 0.9, 1.5, 1.4, 1.8, 1.4, 'crate')
+SB(-12, 0.9, 2.5, 1.4, 1.8, 1.4, 'crate')
+
+// CAPILLA EN RUINAS (oeste; INTEL 2)
+SWX(3.5, -40, -28, 3.6, 'rock', -34, 1.4)      // sur, arco de entrada
+SWX(9, -40, -28, 2.4, 'rock')                  // norte (derruida, baja)
+SWZ(-40, 3.5, 9, 3.8, 'rock')
+SWZ(-28, 3.5, 9, 3.2, 'rock')
+SB(-34, 3.0, 6.5, 12, 0.3, 5.6, 'roof')        // tejado parcial (solo altar)
+SB(-38.5, 0.55, 7.5, 2.2, 1.1, 1.0, 'rock')    // altar
+// campanario (4×4, escalera exterior al mirador)
+SWX(1, -40.5, -36.5, 6.5, 'rock')
+SWX(5, -40.5, -36.5, 6.5, 'rock')
+SWZ(-40.5, 1, 5, 6.5, 'rock')
+SWZ(-36.5, 1, 5, 6.5, 'rock', 3, 1.0)
+SB(-38.5, 6.65, 3, 4.4, 0.3, 4.4, 'wood')      // plataforma del mirador
+SB(-38.5, 7.1, 1.1, 4.4, 0.35, 0.3, 'rock')    // pretil
+SB(-38.5, 7.1, 4.9, 4.4, 0.35, 0.3, 'rock')
+SST(-38.5, -4.5, 0, 1, 10, 0.64, 0.62, 1.6)     // escalera al campanario (cara sur)
+
+// TORRE DE VIGÍA (este, 3.4×3.4 H6 con interior; INTEL 3)
+SWX(8.6, 40.4, 43.8, 6, 'rock', 42.1, 1.0)     // sur, puerta
+SWX(11.4, 40.4, 43.8, 6, 'rock')
+SWZ(40.4, 8.6, 11.4, 6, 'rock')
+SWZ(43.8, 8.6, 11.4, 6, 'rock')
+SB(42.1, 6.15, 10, 4.9, 0.3, 4.9, 'wood')      // plataforma superior
+SB(42.1, 6.6, 8.4, 4.9, 0.35, 0.3, 'rock')     // pretiles
+SB(42.1, 6.6, 11.6, 4.9, 0.35, 0.3, 'rock')
+SB(44.2, 6.6, 10, 0.3, 0.35, 4.9, 'rock')
+SST(39.6, 7.4, 1, 0, 9, 0.68, 0.62, 1.5)       // escalera exterior
+
+// --- COMPLEJO CENIZA (norte, amurallado x -26..26, z -52..-16) ---
+SWX(-16, -26, 26, 2.8, 'concrete', 0)          // sur, puerta central
+SWX(-52, -26, 26, 2.8, 'concrete', 0)          // norte, puerta al helipuerto
+SWZ(-26, -52, -16, 2.8, 'concrete')
+SWZ(26, -52, -16, 2.8, 'concrete', -34, 1.3)   // este, puerta
+SB(0, 3.0, -15.8, 1.6, 0.6, 1.6, 'concrete')   // pilona de la puerta sur
+// EDIFICIO DE COMANDO (18×13, interior + tejado)
+SWX(-24, -9, 9, 3.4, 'sand', 0)
+SWX(-36, -9, 9, 3.4, 'sand', 0)
+SWZ(-9, -24, -36, 3.4, 'sand')
+SWZ(9, -24, -36, 3.4, 'sand', -30, 1.0)
+SB(0, 3.55, -30, 18.4, 0.35, 13.4, 'roof')
+SB(-4.5, 0.5, -28, 2.4, 1, 1.1, 'metalGrey')   // mesa de radio
+SB(-7.4, 1.15, -31.5, 1.4, 2.3, 3.5, 'metalGreen')
+SB(6.5, 0.5, -33.5, 1.2, 1, 1.2, 'crate')
+SST(10.6, -26, 0, -1, 6, 0.55, 0.62, 1.6)      // escalera exterior al tejado
+// ESTACIÓN DE RADAR (suroeste del patio): anillo + mástil
+for (let k = 0; k < 8; k++) {
+  if (k === 2 || k === 6) continue
+  const a = (k / 8) * Math.PI * 2 + Math.PI / 8
+  SB(-20 + Math.cos(a) * 5.5, 0.5, -34 + Math.sin(a) * 5.5, 3.2, 1.0, 1.1, 'concrete')
+}
+SB(-20, 0.5, -34, 3, 1, 3, 'concrete')
+SB(-20, 2.75, -34, 0.9, 3.5, 0.9, 'metalGrey')
+// DEPÓSITO DE COMBUSTIBLE (este): tanques
+SB(14, 1.3, -22, 6.4, 2.6, 2.6, 'metalOrange')
+SB(14, 1.3, -18.4, 6.4, 2.6, 2.6, 'metalOrange')
+SB(14, 1.3, -26.6, 6.4, 2.6, 2.6, 'metalOrange')
+// CUARTEL 1 (oeste, 12×8 interior)
+SWX(-40, -20, -8, 3.2, 'sand', -14)
+SWX(-48, -20, -8, 3.2, 'sand')
+SWZ(-20, -40, -48, 3.2, 'sand')
+SWZ(-8, -40, -48, 3.2, 'sand')
+SB(-14, 3.35, -44, 12.6, 0.3, 8.6, 'roof')
+SB(-18.5, 0.4, -42, 2, 0.8, 1.1, 'sandbag')
+SB(-10, 0.5, -46.5, 1.2, 1, 1.2, 'crate')
+// CUARTEL 2 (centro, 12×8 interior)
+SWX(-40, -4, 8, 3.2, 'sand', 2)
+SWX(-48, -4, 8, 3.2, 'sand')
+SWZ(-4, -40, -48, 3.2, 'sand')
+SWZ(8, -40, -48, 3.2, 'sand')
+SB(2, 3.35, -44, 12.6, 0.3, 8.6, 'roof')
+SB(6.5, 0.4, -42, 2, 0.8, 1.1, 'sandbag')
+// PRISIÓN (este, 6×5, celda con barrotes; CAPÍTULO 4)
+SWX(-41, 17, 23, 2.6, 'concrete', 20)
+SWX(-47, 17, 23, 2.6, 'concrete')
+SWZ(17, -41, -47, 2.6, 'concrete')
+SWZ(23, -41, -47, 2.6, 'concrete')
+SB(20, 2.75, -44, 6.4, 0.3, 6.4, 'roof')
+// barrotes de la celda (huecos de 0.6 entre barrote y barrote)
+for (let bx = 18.2; bx <= 21.8; bx += 0.9) {
+  SB(bx, 0.95, -42.4, 0.22, 1.9, 0.22, 'metalGrey')
+}
+SB(20, 0.5, -45.5, 1.2, 1, 1.2, 'crate')
+// PARQUE DE VEHÍCULOS (oeste del comando)
+SB(-22, 1.1, -22, 2.4, 2.2, 5.6, 'metalGreen')
+SB(-22, 1.3, -28.5, 6, 2.6, 2.4, 'metalRed')
+// ANTENAS: ALFA (colina este), BRAVO (fuera del muro oeste), CHARLIE (sureste del helipuerto)
+for (const [ax, az] of [[36, -18], [-36, -24], [30, -50]] as [number, number][]) {
   SB(ax, 0.4, az, 2.4, 0.8, 2.4, 'concrete')
   SB(ax, 5.4, az, 0.5, 10, 0.5, 'metalGrey')
-  SB(ax, 8.6, az + 0.7, 2.0, 2.8, 0.3, 'metalGrey')   // plato
+  SB(ax, 8.6, az + 0.7, 2.0, 2.8, 0.3, 'metalGrey')
 }
+SB(36, 1.0, -14.5, 7, 2, 5, 'rock')            // colina de ALFA (acceso por el sur)
+SST(32.2, -12.5, 1, -1, 3, 0.62, 0.62, 2.2)
+SB(-36, 1.0, -18.5, 6, 2, 5, 'rock')           // plataforma de BRAVO
+// HELIPUERTO (norte, fuera del muro)
+SB(0, 0.15, -60, 11, 0.3, 11, 'concrete')
 
-// --- CUARTELES (sur, 2× 12×8 con interior) ---
-SWX(30, -22, -10, 3.2, 'sand', -16)  // B1 norte, puerta
-SWX(38, -22, -10, 3.2, 'sand')
-SWZ(-22, 30, 38, 3.2, 'sand')
-SWZ(-10, 30, 38, 3.2, 'sand')
-SB(-16, 3.35, 34, 12.6, 0.3, 8.6, 'roof')
-SB(-20.5, 0.4, 32, 2, 0.8, 1.1, 'sandbag')
-SB(-20.5, 0.4, 35.5, 2, 0.8, 1.1, 'sandbag')
-SB(-12, 0.5, 36.5, 1.2, 1, 1.2, 'crate')
-SWX(30, 10, 22, 3.2, 'sand', 16)     // B2 norte, puerta
-SWX(38, 10, 22, 3.2, 'sand')
-SWZ(10, 30, 38, 3.2, 'sand')
-SWZ(22, 30, 38, 3.2, 'sand')
-SB(16, 3.35, 34, 12.6, 0.3, 8.6, 'roof')
-SB(20.5, 0.4, 32, 2, 0.8, 1.1, 'sandbag')
-SB(20.5, 0.4, 35.5, 2, 0.8, 1.1, 'sandbag')
-SB(12, 0.5, 36.5, 1.2, 1, 1.2, 'crate')
-
-// --- PARQUE DE VEHÍCULOS (sureste) ---
-SB(29, 1.1, 38, 2.4, 2.2, 5.6, 'metalGreen')
-SB(35, 1.1, 41, 2.4, 2.2, 5.6, 'metalBlue')
-SB(28, 1.3, 44.5, 6, 2.6, 2.4, 'metalRed')
-
-// --- TORRETAS DE VIGILANCIA (4 esquinas, con escalera) ---
-for (const [tx, tz, sx] of [[45, 45, 1], [-45, 45, -1], [45, -45, 1], [-45, -45, -1]] as [number, number, number][]) {
-  SB(tx, 3.75, tz, 3, 7.5, 3, 'concrete')
-  SB(tx, 7.6, tz, 4.4, 0.4, 4.4, 'wood')
-  SB(tx, 8.2, tz - 2.1, 4.4, 0.35, 0.22, 'concrete')
-  SB(tx, 8.2, tz + 2.1, 4.4, 0.35, 0.22, 'concrete')
-  SST(sx > 0 ? 35.3 : -35.3, tz, sx, 0, 12, 0.62, 0.62, 1.6)
-}
-
-// --- HELIPUERTO (norte) ---
-SB(0, 0.15, -40, 11, 0.3, 11, 'concrete')
-
-// --- COBERTURA: sacos, barreras y cajas esparcidas ---
-SB(-4, 0.4, 20, 2.6, 0.8, 0.6, 'sandbag')
-SB(4, 0.4, 16, 2.6, 0.8, 0.6, 'sandbag')
-SB(-10, 0.4, 26, 0.6, 0.8, 2.6, 'sandbag')
-SB(12, 0.4, 22, 2.6, 0.8, 0.6, 'sandbag')
-SB(-14, 0.4, 14, 2.6, 0.8, 0.6, 'sandbag')
-SB(18, 0.55, -12, 0.6, 1.1, 2.2, 'concrete')
-SB(-18, 0.55, -12, 0.6, 1.1, 2.2, 'concrete')
-SB(8, 0.55, -16, 2.2, 1.1, 0.6, 'concrete')
-SB(-8, 0.4, 24, 2.6, 0.8, 0.6, 'sandbag')
-SB(-3.5, 0.55, 30, 2.2, 1.1, 0.5, 'concrete')
-SB(3.5, 0.55, 34, 2.2, 1.1, 0.5, 'concrete')
-SB(-3.5, 0.55, 12, 2.2, 1.1, 0.5, 'concrete')
-SB(3.5, 0.55, 12, 2.2, 1.1, 0.5, 'concrete')
-for (const [cx, cz] of [[6, 18], [-6, 18], [24, 26], [-24, 26], [26, -16], [-26, -16], [10, -24], [-10, -24], [34, 22], [-34, 18]] as [number, number][]) {
+// --- COLINAS SUELTAS Y COBERTURA ---
+SB(-44, 1.6, 18, 9, 3.2, 9, 'rock')            // colina del oeste (tirolina)
+SST(-40.6, 21.4, 1, 0, 5, 0.62, 0.62, 2.0)
+SB(40, 1.2, 26, 8, 2.4, 7, 'rock')             // loma del lago
+SB(-30, 1.0, -6, 7, 2, 6, 'rock')
+// sacos y barreras del pueblo y el complejo
+SB(4, 0.4, 24, 2.6, 0.8, 0.6, 'sandbag')
+SB(-4, 0.4, 24, 2.6, 0.8, 0.6, 'sandbag')
+SB(-10, 0.4, 20, 0.6, 0.8, 2.6, 'sandbag')
+SB(10, 0.4, 22, 0.6, 0.8, 2.6, 'sandbag')
+SB(4, 0.55, -20, 2.2, 1.1, 0.6, 'concrete')
+SB(-8, 0.55, -34, 0.6, 1.1, 2.2, 'concrete')
+SB(8, 0.55, -38, 0.6, 1.1, 2.2, 'concrete')
+for (const [cx, cz] of [[-10, 10], [10, 6], [26, -8], [-27, 12], [34, -26], [-30, -14], [24, -36], [-24, -44], [12, -44], [44, 22], [-46, 8]] as [number, number][]) {
   SB(cx, 0.5, cz, 1.2, 1, 1.2, 'crate')
 }
 
-// --- Waypoints del complejo ---
+// --- Waypoints del valle ---
+// (los bots vadear el río por el agua: el puente y las piedras son
+//  atajos de escalón solo para el jugador)
 const STORY_WAYPOINTS: [number, number][] = [
-  [0, 48], [0, 38], [0, 26], [0, 14], [0, 10],
-  [0, 2], [5.5, 5],
-  [0, -7],
-  [13.5, 6], [13.5, -6],
-  [22, -2], [22, 10],
-  [30, -21],
-  [-29, -22],
-  [27, 23],
-  [-14, 8], [-14, -8],
-  [-16, 27], [-16, 34], [16, 27], [16, 34],
-  [32, 36], [38.5, 41.5],
-  [0, -30], [7.5, -38], [-7.5, -47],
-  [36, 36], [-36, 36], [36, -36], [-36, -36],
-  [18, 18], [-18, 18], [18, -18], [-18, -18],
-  [26, -26], [-22, -30],
-  [8, 0], [-8, -8], [40, 40], [-40, 40], [40, -40], [-40, -40],
-  [-27, 8], [-27, -8],
+  // inserción sur (ribera y borde del lago)
+  [0, 54], [-8, 50], [8, 50],
+  // río: vado del agua y extremos del puente
+  [-16, 40], [8, 40], [-6, 30], [-6, 48],
+  // piedras de paso (norte y sur del río)
+  [-30, 33], [-30, 47],
+  // pueblo: plaza y casas
+  [-6, 28], [6, 28], [0, 21], [3.5, 13], [-4.5, 13], [0, 5],
+  [14, 14], [20, 14], [20, 6.5],
+  [-14, 16], [-20, 16],
+  [-14, 5], [-8, 3], [-20, 10],
+  // capilla y alrededores
+  [-24, 6], [-34, -3], [-34, 1], [-34, 6], [-30, 10],
+  // torre de vigía
+  [34, 8], [42, 5], [42, 13],
+  // lago
+  [12, 30], [22, 30], [38, 44], [22, 56],
+  // camino al complejo
+  [0, -8], [0, -14],
+  // complejo: puertas y patio
+  [0, -18], [8, -20], [-8, -20], [0, -26], [12, -30], [-12, -30],
+  [0, -36], [-13, -30], [10, -22], [-16, -20], [-6, -38],
+  [-14, -38], [2, -38], [20, -38], [20, -41], [24, -33],
+  // antena ALFA (colina este) y puerta este
+  [28, -34], [30, -30], [30, -12], [36, -20],
+  // antena BRAVO (exterior oeste)
+  [-31, -18], [-36, -22], [-30, -40], [-34, -30], [-28, -22],
+  // norte exterior: helipuerto y antena CHARLIE
+  [0, -55], [0, -60], [14, -56], [26, -54], [30, -48], [30, -52],
+  [-14, -56], [-28, -54],
 ]
 const STORY_EDGES: number[][] = STORY_WAYPOINTS.map(() => [])
 {
-  const MAXD = 24
+  const MAXD = 22
   const storyAabbs = STORY_BOXES.map(boxToAABB)
   for (let i = 0; i < STORY_WAYPOINTS.length; i++) {
     for (let j = i + 1; j < STORY_WAYPOINTS.length; j++) {
@@ -1636,21 +1761,21 @@ const STORY_EDGES: number[][] = STORY_WAYPOINTS.map(() => [])
 // --- Objetivos de la misión (los usa el director del modo historia) ---
 export interface StoryObjective { x: number; z: number; label: string }
 export const STORY_INTEL: StoryObjective[] = [
-  { x: 2, z: 2, label: 'COMANDO' },
-  { x: -27, z: 3, label: 'RADAR' },
-  { x: 16, z: 34, label: 'CUARTEL' },
+  { x: 20, z: 14, label: 'MOLINO' },
+  { x: -34, z: 8, label: 'CAPILLA' },
+  { x: 42, z: 10, label: 'VIGÍA' },
 ]
-export const STORY_UPLINK: StoryObjective = { x: 13.5, z: 2, label: 'ENLACE' }
+export const STORY_UPLINK: StoryObjective = { x: 0, z: 8, label: 'ENLACE' }
 export const STORY_ANTENNAS: StoryObjective[] = [
-  { x: 30, z: -27, label: 'ANTENA ALFA' },
-  { x: -29, z: -28, label: 'ANTENA BRAVO' },
-  { x: 27, z: 29, label: 'ANTENA CHARLIE' },
+  { x: 36, z: -18, label: 'ANTENA ALFA' },
+  { x: -36, z: -24, label: 'ANTENA BRAVO' },
+  { x: 30, z: -50, label: 'ANTENA CHARLIE' },
 ]
-export const STORY_EXTRACTION: StoryObjective = { x: 0, z: -40, label: 'EXTRACCIÓN' }
+export const STORY_PRISONER: StoryObjective = { x: 20, z: -44, label: 'PRISIONERO' }
+export const STORY_EXTRACTION: StoryObjective = { x: 0, z: -60, label: 'EXTRACCIÓN' }
 
-const STORY_MAP_SPawn_A: [number, number, number] = [0, 0, 50]
-const STORY_SPAWN_B: [number, number, number] = [0, 0, -49]
-
+const STORY_MAP_SPawn_A: [number, number, number] = [0, 0, 54]
+const STORY_SPAWN_B: [number, number, number] = [0, 0, -21]
 // ============================================================
 // REGISTRO DE MAPAS — el motor y la simulación eligen el mapa
 // según el modo de juego (carga perezosa: solo se construye el
@@ -1670,6 +1795,10 @@ export interface MapData {
   pickups: PickupSpot[]
   neons: NeonSpec[]
   puddles: PuddleSpec[]
+  /** láminas de agua animadas (río/lago/fuente) — las dibuja el motor */
+  water: { x: number; z: number; w: number; d: number }[]
+  /** centro que custodian los bots en el modo historia (undefined = spawn) */
+  guard?: [number, number]
   spawnA: [number, number, number]
   spawnB: [number, number, number]
 }
@@ -1689,49 +1818,76 @@ export const MAPS: Record<MapId, MapData> = {
     pickups: PICKUP_SPOTS,
     neons: NEONS,
     puddles: PUDDLES,
+    water: [],
     spawnA: SPAWN_A,
     spawnB: SPAWN_B,
   },
   instalacion: {
-    half: 55,
+    half: 70,
     boxes: STORY_BOXES,
     aabbs: STORY_BOXES.map(boxToAABB),
     waypoints: STORY_WAYPOINTS,
     edges: STORY_EDGES,
-    trees: [],
-    lamps: [[0, 44], [10, 10], [-10, 10], [0, -32], [20, 30], [-20, 30], [24, 8]],
+    trees: [
+      // ribera norte del río
+      [-52, 34], [-44, 36], [-36, 33], [-28, 35], [-20, 33], [-12, 35], [-16, 31],
+      // alrededor del lago
+      [30, 50], [34, 46], [10, 48], [16, 52], [36, 52],
+      // pueblo
+      [10, 24], [-10, 26], [-24, 12], [12, 4], [-14, 4], [8, 28],
+      // orilla sur (inserción)
+      [-6, 52], [6, 54], [-18, 50], [18, 52],
+      // camino al complejo
+      [-10, -4], [10, -8],
+    ],
+    lamps: [
+      [5, 21], [-5, 21], [5, 5], [-5, 5], [0, 28],
+      [0, -14], [-16, -28], [16, -28], [0, -38], [-14, -40], [8, -40], [4, -56],
+    ],
     barrels: [
-      { x: 25.5, z: 0.5 }, { x: 25.5, z: 3 }, { x: 18.5, z: 7 },
-      { x: -13, z: -2 }, { x: 31.5, z: -24 }, { x: -30.5, z: -25 },
+      { x: 12, z: -20.5 }, { x: 16.5, z: -20.5 }, { x: 14, z: -28.5 },
+      { x: -24, z: -20 }, { x: -34, z: -20.5 }, { x: 34.5, z: -16.5 },
     ],
     ziplines: [
-      { from: [45, 7.9, 45], to: [9.2, 4.0, 2] },    // torreta SE → tejado del comando
-      { from: [-45, 7.9, -45], to: [0, 1.2, -40] },  // torreta NO → helipuerto
+      { from: [44.6, 6.4, 10], to: [4, 1.2, 13] },     // torre de vigía → plaza
+      { from: [-44, 4.4, 18], to: [-8, 1.2, 10] },     // colina oeste → plaza
     ],
     jumpPads: [
-      { x: 16, z: 42 },   // cuartel este → tejado
-      { x: -10, z: -14 }, // patio norte → tejado del comando
+      { x: 22, z: 20 },   // pueblo → tejado del molino
+      { x: -10, z: -28 }, // patio del complejo → tejado del comando
     ],
     pickups: [
-      { kind: 'medkit', x: -16, z: 34 },
-      { kind: 'shieldSmall', x: 13.5, z: 4.5 },
-      { kind: 'medkit', x: 0, z: 36 },
-      { kind: 'bandage', x: -27, z: 8 },
-      { kind: 'shieldBig', x: 22, z: 10 },
-      { kind: 'medkit', x: 30, z: -21 },
-      { kind: 'bandage', x: -29, z: -22 },
-      { kind: 'medkit', x: 36, z: 41 },
+      { kind: 'medkit', x: 20, z: 14 },
+      { kind: 'bandage', x: -20, z: 16 },
+      { kind: 'shieldSmall', x: 2, z: 12 },
+      { kind: 'medkit', x: -34, z: 7 },
+      { kind: 'shieldBig', x: -14, z: 3 },
+      { kind: 'bandage', x: -6, z: 32 },
+      { kind: 'medkit', x: -14, z: -44 },
+      { kind: 'shieldSmall', x: 2, z: -44 },
+      { kind: 'medkit', x: 0, z: -30 },
+      { kind: 'bandage', x: -20, z: -27 },
+      { kind: 'medkit', x: 20, z: -44 },
+      { kind: 'shieldBig', x: 42, z: 10 },
+      { kind: 'medkit', x: 0, z: -58 },
     ],
     neons: [
-      { text: 'COMANDO', x: 0, y: 3.7, z: 8.8, ry: 0, color: '#fbbf24', w: 4.5 },
-      { text: 'HELIPUERTO', x: 0, y: 2.4, z: -45.9, ry: 0, color: '#22d3ee', w: 5 },
-      { text: 'COMBUSTIBLE', x: 18.6, y: 2.4, z: 4.6, ry: Math.PI / 2, color: '#f87171', w: 4.5 },
-      { text: 'RADAR', x: -21, y: 2.0, z: 0, ry: Math.PI / 2, color: '#4ade80', w: 4 },
-      { text: 'CUARTEL', x: 16, y: 3.2, z: 29.7, ry: 0, color: '#f472b6', w: 4 },
+      { text: 'PUEBLO ALBA', x: 0, y: 2.9, z: 21.2, ry: 0, color: '#fbbf24', w: 5 },
+      { text: 'EXTRACCIÓN', x: 0, y: 2.4, z: -65.4, ry: 0, color: '#22d3ee', w: 5 },
+      { text: 'COMPLEJO CENIZA', x: 0, y: 3.2, z: -15.4, ry: 0, color: '#f87171', w: 5.5 },
+      { text: 'RADAR', x: -14.4, y: 2.0, z: -34, ry: Math.PI / 2, color: '#4ade80', w: 4 },
+      { text: 'COMBUSTIBLE', x: 17.6, y: 2.0, z: -22, ry: -Math.PI / 2, color: '#f87171', w: 4.5 },
+      { text: 'PRISIÓN', x: 20, y: 2.2, z: -41.4, ry: 0, color: '#f472b6', w: 4 },
     ],
     puddles: [
-      { x: 8, z: -20, r: 1.4 }, { x: -18, z: 18, r: 1.2 }, { x: 24, z: 30, r: 1.5 },
+      { x: -4, z: 24, r: 1.2 }, { x: 10, z: -36, r: 1.4 }, { x: -20, z: -30, r: 1.3 },
     ],
+    water: [
+      { x: -26, z: 40, w: 58, d: 7 },   // río (oeste → lago)
+      { x: 22, z: 44, w: 28, d: 20 },   // lago
+      { x: 0, z: 13, w: 3.6, d: 3.6 },  // fuente de la plaza
+    ],
+    guard: [0, -16],
     spawnA: STORY_MAP_SPawn_A,
     spawnB: STORY_SPAWN_B,
   },

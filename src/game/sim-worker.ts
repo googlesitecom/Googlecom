@@ -91,7 +91,7 @@ self.onmessage = (ev: MessageEvent) => {
       break
     }
     case 'storyCmd': {
-      const c = d as { id?: string; data?: { cmd?: string; botId?: string; weapon?: WeaponId } }
+      const c = d as { id?: string; data?: { cmd?: string; botId?: string; weapon?: WeaponId; count?: number; x?: number; z?: number } }
       const pid = c.id ?? ''
       if (sim && pid) sim.handleStoryCmd(pid, c.data ?? {})
       break

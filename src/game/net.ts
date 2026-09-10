@@ -429,7 +429,7 @@ export class NetClient {
   }
 
   /** Comandos del director del modo historia (jefe, entrega de armas) */
-  sendStoryCmd(data: { cmd: string; botId?: string; weapon?: WeaponId }): void {
+  sendStoryCmd(data: { cmd: string; botId?: string; weapon?: WeaponId; count?: number; x?: number; z?: number }): void {
     if (this.mode === 'guest') return   // la misión es local
     this.sendToSim({ e: 'storyCmd', d: { id: this.id, data } })
   }

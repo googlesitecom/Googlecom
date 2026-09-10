@@ -16,6 +16,7 @@ import { Slider } from '@/components/ui/slider'
 import {
   Crosshair, Play, Settings, Volume2, Mouse, Swords, Trophy, Zap,
   Shield, Bomb, Eye, Gauge, LogOut, Loader2, Coins, Gamepad2, Users, Link2, Bot,
+  Heart, Plane,
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
 } from 'lucide-react'
@@ -390,7 +391,7 @@ function SliderRow({ icon, label, value, min, max, step, format, onChange }: {
 // ============================================================
 const MECHANICS = [
   { icon: Swords, title: '5 modos de juego', desc: 'Equipos · FFA · bandera · dominación · OPERACIÓN CENIZA (historia)' },
-  { icon: Radio, title: 'Modo historia', desc: '4 capítulos, ~15-20 min, mapa militar nuevo con jefe final' },
+  { icon: Radio, title: 'Modo historia ampliado', desc: '6 capítulos, ~25-30 min, VALLE SERENO con cinemáticas y jefe final' },
   { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, caída por distancia, cajas y piernas' },
   { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, compra en tu base' },
   { icon: Package, title: 'Dos armas en el inventario', desc: 'Cómpralas y consérvalas aunque caigas: no se pierden' },
@@ -676,7 +677,7 @@ export function MainMenu() {
                   <ul className="space-y-1.5">
                     {[
                       'Audio real: disparos y música en MP3, con volumen ajustable',
-                      'OPERACIÓN CENIZA: modo historia de 15-20 min con mapa nuevo',
+                      'OPERACIÓN CENIZA: 6 capítulos (25-30 min) en el nuevo VALLE SERENO con cinemáticas',
                       'Multijugador P2P reforzado (reintentos y reconexión)',
                       'Sol de atardecer rehecho y gráficos mejorados sin coste de FPS',
                       'Sin vegetación de suelo: menos lag, mismos modelos',
@@ -715,19 +716,19 @@ export function MainMenu() {
                     <div>
                       <h3 className="text-white font-bold tracking-[0.2em] text-sm uppercase">Operación Ceniza</h3>
                       <p className="text-stone-500 text-[10px] tracking-widest uppercase mt-0.5">
-                        Campaña en solitario · instalación militar
+                        Campaña en solitario · Valle Sereno
                       </p>
                     </div>
                   </div>
                   <p className="text-stone-400 text-xs leading-relaxed mt-3">
-                    La red enemiga opera desde una instalación amurallada. Infiltra, sabotea y
-                    elimina a su comandante. Un mapa completamente distinto — comando central,
-                    radar, depósito de combustible, cuarteles, torretas y helipuerto — con
-                    diálogos de radio y jefe final.
+                    Un valle al atardecer cerrado por la sierra: río con puente de piedra, lago
+                    con embarcadero, pueblo con plaza, capilla en ruinas y el complejo militar
+                    al norte. Seis capítulos con cinemáticas de cámara, diálogos de radio,
+                    rescate, jefe final y extracción cronometrada.
                   </p>
                   <div className="flex flex-wrap gap-4 mt-3 text-[10px] font-bold tracking-widest uppercase text-stone-500">
-                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 15-20 min</span>
-                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> Instalación 112×112</span>
+                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 25-30 min</span>
+                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> Valle 140×140</span>
                     <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 1 jugador vs IA</span>
                   </div>
                 </div>
@@ -752,10 +753,12 @@ export function MainMenu() {
                   Estructura de la misión
                 </h3>
                 {[
-                  { n: '01', title: 'Infiltración', desc: 'Cruza la brecha sur y recupera 3 inteligencias: comando, radar y cuartel.', icon: Eye },
-                  { n: '02', title: 'El sitio', desc: 'Defiende el enlace de comunicaciones 4 minutos mientras la Red descarga el plan.', icon: Shield },
+                  { n: '01', title: 'La inserción', desc: 'Cruza la sierra, vadea el río y recupera 3 inteligencias: molino, capilla y torre de vigía.', icon: Eye },
+                  { n: '02', title: 'El sitio', desc: 'Defiende el enlace de la plaza del pueblo 4 minutos mientras la Red descarga el plan.', icon: Shield },
                   { n: '03', title: 'Sabotaje', desc: 'Coloca cargas en las 3 antenas (ALFA · BRAVO · CHARLIE) y apártate de la explosión.', icon: Bomb },
-                  { n: '04', title: 'El comandante', desc: 'Elimina al Cnel. Vega y corre al helipuerto para la extracción.', icon: Crosshair },
+                  { n: '04', title: 'El prisionero', desc: 'Abre la celda del Sargento Ríos manteniendo E y sobrevive a la alarma mientras escapa.', icon: Heart },
+                  { n: '05', title: 'El comandante', desc: 'Elimina al Cnel. Vega, blindado en el corazón del complejo.', icon: Crosshair },
+                  { n: '06', title: 'La extracción', desc: 'Corre al helipuerto norte contra el reloj antes de que el helicóptero despegue.', icon: Plane },
                 ].map(c => (
                   <div key={c.n} className="flex gap-3.5 bg-stone-950/60 border border-stone-800 rounded-md p-3.5">
                     <div className="shrink-0 w-9 h-9 rounded border border-stone-700 bg-stone-900 flex items-center justify-center">

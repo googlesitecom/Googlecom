@@ -11,6 +11,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
   PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS, FLAG_A, FLAG_B, DOM_ZONES,
+  STORY_EXTRACTION,
   getMapData,
   type MapData, type MapId,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
@@ -20,7 +21,7 @@ import { AudioEngine, getAudio } from './audio'
 import { Effects } from './effects'
 import { RemotePlayers } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
-import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture } from './textures'
+import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture, makeCloudTexture, makeWaterNoiseTexture, makeBirdTexture } from './textures'
 import { useGame } from './store'
 import { NetClient } from './net'
 import { preloadAssets, buildGLBWeapon, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
@@ -78,6 +79,7 @@ const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
   barrel: { roughness: 0.45, metalness: 0.5 },
   roof: { roughness: 0.65, metalness: 0.3 },
   explosive: { roughness: 0.42, metalness: 0.45 },
+  rock: { roughness: 0.96, metalness: 0.0 },
 }
 
 export class Game {
@@ -105,6 +107,7 @@ export class Game {
   net!: NetClient
   /** director del modo historia (solo en la misión) */
   story: StoryDirector | null = null
+  private storyStarted = false
   /** mapa activo: ciudad o instalación militar de la misión */
   mapId: MapId = 'ciudad'
   md!: MapData
@@ -182,7 +185,7 @@ export class Game {
   private smokeViews = new Map<string, { group: THREE.Group; sprites: THREE.Sprite[]; born: number; life: number }>()
   private smokeTex: THREE.Texture | null = null
 
-  // cinemática de entrada
+  // cinemática de entrada / cinemáticas del modo historia
   private cine = {
     active: false,
     played: false,
@@ -190,8 +193,22 @@ export class Game {
     dur: 9.5,
     curve: null as THREE.CatmullRomCurve3 | null,
     look: null as THREE.CatmullRomCurve3 | null,
+    kind: 'entry' as 'entry' | 'story',
+    title: '',
+    subtitle: '',
+    onDone: null as (() => void) | null,
   }
   private cineTitleFade = 0
+
+  // ---- ambiente v6: cielo con shader, nubes, agua, polvo y aves ----
+  private clouds: THREE.Sprite[] = []
+  private cloudSpeeds: number[] = []
+  private waterMat: THREE.ShaderMaterial | null = null
+  private dust: THREE.Points | null = null
+  private dustVel: Float32Array | null = null
+  private birds: THREE.Sprite[] = []
+  private birdPhase: number[] = []
+  private skyUniforms: { uSunDir: { value: THREE.Vector3 } } | null = null
 
   // pociones visibles
   private pickupViews = new Map<string, PickupView>()
@@ -289,6 +306,7 @@ export class Game {
     this.buildEnvironment()
     this.buildLights(quality)
     this.buildMap(quality)
+    this.buildAmbience(quality)
     if (this.mapId === 'ciudad') this.buildStreets()
     if (this.mapId !== 'instalacion') this.buildObjectives()
     this.buildMinimapStatic()
@@ -296,7 +314,7 @@ export class Game {
     // assets del usuario (GLB de armas + texturas; árboles solo en la ciudad
     // → carga perezosa según el modo): se cargan en segundo plano y se
     // integran al llegar (con fallback procedural hasta entonces)
-    preloadAssets({ trees: this.mapId === 'ciudad' }).then(() => {
+    preloadAssets({ trees: true }).then(() => {
       if (this.disposed) return
       // DIAGNÓSTICO: partes integradas por separado para localizar cuelgues
       const parts = (new URLSearchParams(location.search).get('assets') ?? 'all').split(',')
@@ -313,10 +331,11 @@ export class Game {
     this.effects = new Effects(this.scene)
     this.remotes = new RemotePlayers(this.scene)
 
-    // director de la misión (modo historia)
+    // director de la misión (modo historia): begin() espera al primer
+    // spawn — si no, la cinemática correría tapada por la pantalla de
+    // conexión mientras arranca el worker de simulación
     if (this.mapId === 'instalacion') {
       this.story = new StoryDirector(this)
-      this.story.begin()
     }
 
     // viewmodel holder
@@ -346,26 +365,74 @@ export class Game {
   }
 
   private buildSky(): void {
-    const skyTex = makeSkyTexture()
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(340, 32, 20),
-      new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
-    )
+    // ---- CIELO CON SHADER (v6): degradado atmosférico suave con resplandor
+    // solar real integrado — sustituye a la textura de canvas (sin
+    // estiramiento en los polos, sin banding y el halo del sol se funde con
+    // el horizonte). Coste: el mismo fragment de siempre en UNA esfera. ----
+    const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
+    const uniforms = {
+      uSunDir: { value: sunDir.clone() },
+    }
+    this.skyUniforms = uniforms
+    const skyMat = new THREE.ShaderMaterial({
+      uniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      vertexShader: /* glsl */`
+        varying vec3 vDir;
+        void main() {
+          vDir = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        varying vec3 vDir;
+        uniform vec3 uSunDir;
+        // paleta del atardecer (zenit → horizonte → suelo)
+        const vec3 ZENITH  = vec3(0.125, 0.204, 0.337);
+        const vec3 MID     = vec3(0.415, 0.525, 0.639);
+        const vec3 HORIZON = vec3(0.918, 0.627, 0.357);
+        const vec3 GLOWCOL = vec3(1.000, 0.678, 0.392);
+        const vec3 GROUND  = vec3(0.353, 0.243, 0.161);
+        void main() {
+          vec3 d = normalize(vDir);
+          float h = d.y;
+          // cielo arriba
+          float t = pow(clamp(h * 1.55 + 0.12, 0.0, 1.0), 0.58);
+          vec3 col = mix(HORIZON, mix(MID, ZENITH, clamp((h - 0.28) * 2.2, 0.0, 1.0)), t);
+          // cálido extra pegado al horizonte (lado del sol más intenso)
+          float sunSide = clamp(dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))) * 0.5 + 0.5, 0.0, 1.0);
+          col = mix(col, GLOWCOL * 0.85, (1.0 - clamp(abs(h) * 3.4, 0.0, 1.0)) * (0.25 + sunSide * 0.45));
+          // suelo/bajo horizonte
+          col = mix(col, GROUND, clamp(-h * 4.0, 0.0, 1.0));
+          // resplandor del sol: halo ancho + halo medio + disco
+          float s = clamp(dot(d, uSunDir), 0.0, 1.0);
+          col += GLOWCOL * 0.16 * pow(s, 6.0);
+          col += vec3(1.0, 0.88, 0.66) * 0.55 * pow(s, 48.0);
+          col += vec3(1.0, 0.97, 0.88) * smoothstep(0.99955, 0.99985, s);
+          // dithering anti-banding (1/255)
+          float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+          col += (n - 0.5) / 255.0;
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    })
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(340, 48, 28), skyMat)
     this.scene.add(sky)
     this.skyMesh = sky
-    // ---- SOL (v5): disco + corona + halo con degradado radial propio,
-    // alineado con la dirección de la luz direccional (antes usaba la
-    // textura del cielo entera como sprite y se veía como una mancha) ----
-    const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
+
+    // ---- SOL: disco + corona + halo con degradado radial propio,
+    // alineados con la dirección de la luz (y con el sol del shader) ----
     const sunTex = this.makeSunTexture()
     const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: sunTex, color: 0xffb566, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
+      map: sunTex, color: 0xffb566, transparent: true, opacity: 0.30, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
     }))
     halo.position.copy(sunDir).multiplyScalar(315)
     halo.scale.set(230, 230, 1)
     this.scene.add(halo)
     const corona = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: sunTex, color: 0xffd9a6, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
+      map: sunTex, color: 0xffd9a6, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
     }))
     corona.position.copy(sunDir).multiplyScalar(302)
     corona.scale.set(95, 95, 1)
@@ -396,21 +463,47 @@ export class Game {
     return tex
   }
 
-  /** Mapa de entorno para reflexiones PBR (PMREM del cielo de atardecer) */
+  /** Mapa de entorno para reflexiones PBR (PMREM del cielo shader de atardecer) */
   private buildEnvironment(): void {
     const pmrem = new THREE.PMREMGenerator(this.renderer)
     const envScene = new THREE.Scene()
-    const envSky = new THREE.Mesh(
-      new THREE.SphereGeometry(60, 24, 16),
-      new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide }),
-    )
+    // el mismo shader del cielo → reflexiones coherentes con lo que se ve
+    const skyMat = new THREE.ShaderMaterial({
+      uniforms: { uSunDir: { value: new THREE.Vector3(0.42, 0.32, -0.32).normalize() } },
+      side: THREE.BackSide,
+      vertexShader: /* glsl */`
+        varying vec3 vDir;
+        void main() {
+          vDir = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        varying vec3 vDir;
+        uniform vec3 uSunDir;
+        const vec3 ZENITH  = vec3(0.125, 0.204, 0.337);
+        const vec3 MID     = vec3(0.415, 0.525, 0.639);
+        const vec3 HORIZON = vec3(0.918, 0.627, 0.357);
+        const vec3 GLOWCOL = vec3(1.000, 0.678, 0.392);
+        const vec3 GROUND  = vec3(0.353, 0.243, 0.161);
+        void main() {
+          vec3 d = normalize(vDir);
+          float h = d.y;
+          float t = pow(clamp(h * 1.55 + 0.12, 0.0, 1.0), 0.58);
+          vec3 col = mix(HORIZON, mix(MID, ZENITH, clamp((h - 0.28) * 2.2, 0.0, 1.0)), t);
+          float sunSide = clamp(dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))) * 0.5 + 0.5, 0.0, 1.0);
+          col = mix(col, GLOWCOL * 0.85, (1.0 - clamp(abs(h) * 3.4, 0.0, 1.0)) * (0.25 + sunSide * 0.45));
+          col = mix(col, GROUND, clamp(-h * 4.0, 0.0, 1.0));
+          float s = clamp(dot(d, uSunDir), 0.0, 1.0);
+          col += GLOWCOL * 0.30 * pow(s, 6.0);
+          col += vec3(1.0, 0.88, 0.66) * 1.6 * pow(s, 48.0);
+          col += vec3(6.0, 5.2, 4.0) * smoothstep(0.9993, 0.9998, s);
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    })
+    const envSky = new THREE.Mesh(new THREE.SphereGeometry(60, 24, 16), skyMat)
     envScene.add(envSky)
-    const sunBall = new THREE.Mesh(
-      new THREE.SphereGeometry(5, 12, 12),
-      new THREE.MeshBasicMaterial({ color: 0xfff0c8 }),
-    )
-    sunBall.position.set(25, 19, -19)   // misma dirección que el sol visual
-    envScene.add(sunBall)
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(120, 120),
       new THREE.MeshBasicMaterial({ color: 0x93714e }),
@@ -453,9 +546,151 @@ export class Game {
     this.scene.add(fill)
   }
 
+  // ----------------------------------------------------------
+  // AMBIENTE V6 (sin coste de FPS apreciable): nubes a la deriva,
+  // agua animada con shader, motas de polvo y aves en el valle
+  // ----------------------------------------------------------
+  private buildAmbience(quality: 'baja' | 'media' | 'alta'): void {
+    // --- nubes: billboards altos a la deriva (12 sprites) ---
+    const cloudTex = makeCloudTexture()
+    for (let i = 0; i < 12; i++) {
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: cloudTex, transparent: true, opacity: 0.34 + Math.random() * 0.2,
+        depthWrite: false, fog: false, color: 0xffe8d0,
+      }))
+      const ang = (i / 12) * Math.PI * 2
+      const rad = 60 + Math.random() * 90
+      s.position.set(Math.cos(ang) * rad, 55 + Math.random() * 45, Math.sin(ang) * rad)
+      const sc = 60 + Math.random() * 70
+      s.scale.set(sc, sc * 0.42, 1)
+      this.scene.add(s)
+      this.clouds.push(s)
+      this.cloudSpeeds.push(1.2 + Math.random() * 1.8)
+    }
+
+    // --- agua animada (río/lago/fuente del valle) ---
+    if (this.md.water.length) {
+      const noiseTex = makeWaterNoiseTexture()
+      noiseTex.repeat.set(3, 3)
+      const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
+      this.waterMat = new THREE.ShaderMaterial({
+        transparent: true,
+        uniforms: {
+          uTime: { value: 0 },
+          uNoise: { value: noiseTex },
+          uSunDir: { value: sunDir },
+        },
+        vertexShader: /* glsl */`
+          varying vec2 vUv;
+          varying vec3 vWorldPos;
+          uniform float uTime;
+          void main() {
+            vUv = uv;
+            vec3 p = position;
+            // oleaje suave (2 ondas cruzadas)
+            float w = sin(p.x * 1.7 + uTime * 1.1) * 0.045 + sin(p.y * 2.3 + uTime * 0.8) * 0.04;
+            p.z += w;
+            vec4 wp = modelMatrix * vec4(p, 1.0);
+            vWorldPos = wp.xyz;
+            gl_Position = projectionMatrix * viewMatrix * wp;
+          }
+        `,
+        fragmentShader: /* glsl */`
+          varying vec2 vUv;
+          varying vec3 vWorldPos;
+          uniform float uTime;
+          uniform sampler2D uNoise;
+          uniform vec3 uSunDir;
+          const vec3 DEEP = vec3(0.045, 0.110, 0.135);
+          const vec3 SHALLOW = vec3(0.130, 0.310, 0.330);
+          const vec3 SKYH = vec3(0.880, 0.560, 0.320);
+          const vec3 SUNCOL = vec3(1.0, 0.72, 0.45);
+          void main() {
+            vec3 viewDir = normalize(cameraPosition - vWorldPos);
+            // normal perturbada por dos capas de ruido desplazándose
+            vec2 uv1 = vUv * 2.2 + vec2(uTime * 0.014, uTime * 0.009);
+            vec2 uv2 = vUv * 3.6 - vec2(uTime * 0.011, uTime * 0.017);
+            float n1 = texture2D(uNoise, uv1).r;
+            float n2 = texture2D(uNoise, uv2).r;
+            vec3 n = normalize(vec3((n1 - 0.5) * 0.55, 1.0, (n2 - 0.5) * 0.55));
+            // base del agua: teal con variación clara de ruido
+            vec3 base = mix(DEEP, SHALLOW, 0.25 + 0.65 * n1);
+            // fresnel (potencia 5): el cielo solo se refleja MUY rasante
+            float fres = pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
+            vec3 col = mix(base, SKYH, clamp(fres * 1.15, 0.0, 0.8));
+            // destello solar especular (brillante y compacto)
+            vec3 refl = reflect(-viewDir, n);
+            float spec = pow(max(dot(refl, uSunDir), 0.0), 160.0);
+            col += SUNCOL * spec * 2.2;
+            // chispeo del ruido (destellos sueltos, sin franjas)
+            col += SUNCOL * 0.12 * smoothstep(0.60, 0.82, n1 * (0.75 + 0.25 * n2));
+            gl_FragColor = vec4(col, 0.93);
+          }
+        `,
+      })
+      for (const w of this.md.water) {
+        const segs = Math.max(2, Math.round(w.w / 6))
+        const segsZ = Math.max(2, Math.round(w.d / 6))
+        const geo = new THREE.PlaneGeometry(w.w, w.d, segs, segsZ)
+        const mesh = new THREE.Mesh(geo, this.waterMat)
+        mesh.rotation.x = -Math.PI / 2
+        mesh.position.set(w.x, 0.052, w.z)
+        this.scene.add(mesh)
+        this.mapMeshes.push(mesh)
+      }
+    }
+
+    // --- motas de polvo flotando cerca de la cámara (180 puntos) ---
+    if (quality !== 'baja') {
+      const N = 180
+      const pos = new Float32Array(N * 3)
+      this.dustVel = new Float32Array(N * 3)
+      for (let i = 0; i < N; i++) {
+        pos[i * 3] = (Math.random() - 0.5) * 30
+        pos[i * 3 + 1] = Math.random() * 7
+        pos[i * 3 + 2] = (Math.random() - 0.5) * 30
+        this.dustVel[i * 3] = (Math.random() - 0.5) * 0.14
+        this.dustVel[i * 3 + 1] = -0.03 - Math.random() * 0.05
+        this.dustVel[i * 3 + 2] = (Math.random() - 0.5) * 0.14
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      const dustTex = makeSparkTexture()
+      const mat = new THREE.PointsMaterial({
+        map: dustTex, color: 0xffd9a8, size: 0.05, transparent: true, opacity: 0.32,
+        blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+      })
+      this.dust = new THREE.Points(geo, mat)
+      this.dust.frustumCulled = false
+      this.scene.add(this.dust)
+    }
+
+    // --- aves del valle (solo mapa de historia): 7 siluetas en círculo ---
+    if (this.mapId === 'instalacion') {
+      const birdTex = makeBirdTexture()
+      for (let i = 0; i < 7; i++) {
+        const s = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: birdTex, transparent: true, opacity: 0.75, depthWrite: false, fog: true,
+        }))
+        const sc = 1.1 + Math.random() * 0.7
+        s.scale.set(sc, sc * 0.7, 1)
+        this.scene.add(s)
+        this.birds.push(s)
+        this.birdPhase.push(Math.random() * Math.PI * 2)
+      }
+    }
+  }
+
   private buildMap(quality: 'baja' | 'media' | 'alta'): void {
     const texs = makeWorldTextures()
     const map = this.md
+
+    // anisotropía al máximo: los suelos y muros en ángulo se ven nítidos
+    // (coste de GPU ~nulo, gran mejora visual en perspectiva)
+    const maxAniso = this.renderer.capabilities.getMaxAnisotropy()
+    for (const key of Object.keys(texs) as MatKey[]) {
+      texs[key].anisotropy = Math.min(8, maxAniso)
+    }
 
     // suelo (ligeramente satinado para reflejar el cielo del atardecer)
     const groundMat = new THREE.MeshStandardMaterial({ map: texs.sand, roughness: 0.88, metalness: 0.05 })
@@ -556,7 +791,9 @@ export class Game {
         this.scene.add(ring)
       }
     } else {
-      // helipuerto de la misión: círculo con H (el director marca la extracción)
+      // helipuerto de la misión: círculo con H en la posición de extracción
+      const hx = STORY_EXTRACTION.x
+      const hz = STORY_EXTRACTION.z
       const heli = new THREE.Group()
       const circle = new THREE.Mesh(
         new THREE.RingGeometry(4.4, 4.7, 48),
@@ -572,7 +809,7 @@ export class Game {
         bar.position.set(bx, 0.32, bz)
         heli.add(bar)
       }
-      heli.position.set(0, 0, -40)
+      heli.position.set(hx, 0, hz)
       this.scene.add(heli)
     }
   }
@@ -1502,6 +1739,47 @@ export class Game {
   }
 
   // ----------------------------------------------------------
+  // Actualización del ambiente (nubes/agua/polvo/aves)
+  // ----------------------------------------------------------
+  private updateAmbience(dt: number, t: number): void {
+    // nubes a la deriva (dan vida al cielo con coste ~0)
+    for (let i = 0; i < this.clouds.length; i++) {
+      const c = this.clouds[i]
+      c.position.x += this.cloudSpeeds[i] * dt
+      if (c.position.x > 170) c.position.x = -170
+    }
+    // agua: reloj del shader
+    if (this.waterMat) this.waterMat.uniforms.uTime.value = t
+    // polvo: deriva lenta + envolvimiento alrededor de la cámara
+    if (this.dust && this.dustVel) {
+      const pos = this.dust.geometry.attributes.position as THREE.BufferAttribute
+      const arr = pos.array as Float32Array
+      const cx = this.camera.position.x, cz = this.camera.position.z
+      for (let i = 0; i < arr.length; i += 3) {
+        arr[i] += this.dustVel[i] * dt
+        arr[i + 1] += this.dustVel[i + 1] * dt
+        arr[i + 2] += this.dustVel[i + 2] * dt
+        if (arr[i + 1] < 0.1) arr[i + 1] = 7
+        if (arr[i] - cx > 15) arr[i] -= 30; else if (arr[i] - cx < -15) arr[i] += 30
+        if (arr[i + 2] - cz > 15) arr[i + 2] -= 30; else if (arr[i + 2] - cz < -15) arr[i + 2] += 30
+      }
+      pos.needsUpdate = true
+    }
+    // aves del valle: círculos amplios con aleteo
+    for (let i = 0; i < this.birds.length; i++) {
+      const b = this.birds[i]
+      const ph = this.birdPhase[i]
+      const ang = t * (0.11 + 0.02 * (i % 3)) + ph
+      const rad = 24 + (i % 4) * 6
+      b.position.set(Math.cos(ang) * rad + (i % 2 ? 8 : -6), 24 + Math.sin(t * 0.9 + ph) * 3, Math.sin(ang) * rad + 12)
+      const flap = 0.62 + 0.38 * Math.sin(t * 7 + ph)
+      const base = 1.1 + (i % 3) * 0.3
+      b.scale.y = base * 0.7 * flap
+      b.scale.x = base
+    }
+  }
+
+  // ----------------------------------------------------------
   // Bucle principal
   // ----------------------------------------------------------
   private loop = (): void => {
@@ -1528,7 +1806,7 @@ export class Game {
 
     // remotos (interpolación)
     const renderT = performance.now() - GAME.INTERP_DELAY
-    const states = this.remotes.update(dt, renderT, this.team, this.camera.position)
+    const states = this.remotes.update(dt, renderT, this.team, this.camera.position, this.cine.active)
     this.updateRemoteFootsteps(dt, states)
 
     // granadas visibles
@@ -1559,6 +1837,9 @@ export class Game {
     // mecánicas del mapa: barriles y saltadores
     this.updateBarrels()
     this.updateJumpPadFX(dt)
+
+    // ambiente v6: nubes, agua, polvo y aves
+    this.updateAmbience(dt, t)
 
     // HUD canvas
     this.drawOverlay(t)
@@ -2439,11 +2720,16 @@ export class Game {
   }
 
   // ----------------------------------------------------------
-  // Cinemática de entrada (sobrevuelo del mapa hasta el despliegue)
+  // Cinemáticas: sobrevuelo de entrada (PvP) e cinemáticas del
+  // modo historia (v6: título + subtítulo + callback al acabar)
   // ----------------------------------------------------------
   startCinematic(): void {
     if (this.cine.played || this.cine.active) return
     this.cine.played = true
+    this.cine.kind = 'entry'
+    this.cine.title = 'FRONTERA CERO'
+    this.cine.subtitle = 'ESTACIÓN MERIDIANO 59 · ZONA DE EXCLUSIÓN TOTAL'
+    this.cine.onDone = null
     this.cine.active = true
     this.cine.t0 = performance.now()
     this.cine.dur = 11   // segundos (updateCamera multiplica por 1000)
@@ -2472,12 +2758,48 @@ export class Game {
     this.audio.roundStart()
   }
 
+  /** cinemática del modo historia (la lanza el director) */
+  playStoryCine(spec: {
+    points: THREE.Vector3[]
+    looks: THREE.Vector3[]
+    dur: number
+    title: string
+    subtitle: string
+    onDone?: () => void
+  }): void {
+    if (this.cine.active) return
+    this.cine.played = true          // evita la cinemática de entrada después
+    this.cine.kind = 'story'
+    this.cine.title = spec.title
+    this.cine.subtitle = spec.subtitle
+    this.cine.onDone = spec.onDone ?? null
+    this.cine.active = true
+    this.cine.t0 = performance.now()
+    this.cine.dur = spec.dur
+    this.cine.curve = new THREE.CatmullRomCurve3(spec.points, false, 'catmullrom', 0.4)
+    this.cine.look = new THREE.CatmullRomCurve3(spec.looks, false, 'catmullrom', 0.4)
+    this.minimap.style.opacity = '0'
+    useGame.getState().setHud({ cineActive: true })
+  }
+
+  /** teletransporte suave del jugador (puntos de control de capítulo) */
+  setPlayerPos(x: number, z: number, yaw: number): void {
+    this.pos.set(x, 0.02, z)
+    this.vel.set(0, 0, 0)
+    this.yaw = yaw
+    this.pitch = 0
+    this.onGround = true
+  }
+
   endCinematic(): void {
     if (!this.cine.active) return
     this.cine.active = false
     this.minimap.style.opacity = '1'
     useGame.getState().setHud({ cineActive: false })
+    const cb = this.cine.onDone
+    this.cine.onDone = null
     this.requestLock()
+    cb?.()
   }
 
   // ----------------------------------------------------------
@@ -2516,8 +2838,14 @@ export class Game {
       deathInfo: null,
       owned: [...this.owned],
     })
-    // cinemática de entrada en el primer despliegue
-    if (!this.cine.played) this.startCinematic()
+    // modo historia: la misión (y su cinemática) arranca aquí, ya jugable
+    // — antes del chequeo de la cinemática de entrada para no duplicarla
+    if (this.story && !this.storyStarted) {
+      this.storyStarted = true
+      this.story.begin()
+    }
+    // cinemática de entrada en el primer despliegue (modos PvP)
+    if (!this.cine.played && !this.storyStarted) this.startCinematic()
   }
 
   onDeath(killerName: string, respawnIn: number): void {
@@ -2829,27 +3157,49 @@ export class Game {
     const s = useGame.getState()
     const cx = W / 2, cy = H / 2
 
-    // cinemática de entrada: barras de cine + título
+    // cinemáticas: barras de cine + título + subtítulo (v6: dinámicos)
     if (this.cine.active) {
       const tCine = (performance.now() - this.cine.t0) / 1000
+      const dur = this.cine.dur
       const barH = Math.min(1, tCine / 0.7) * H * 0.115
       ctx.fillStyle = '#000'
       ctx.fillRect(0, 0, W, barH)
       ctx.fillRect(0, H - barH, W, barH)
-      const fade = tCine < 0.8 ? tCine / 0.8 : tCine > 6.5 ? Math.max(0, 1 - (tCine - 6.5) / 1.5) : 1
+      // fundido de entrada/salida del texto
+      const fadeIn = Math.min(1, tCine / 0.8)
+      const fadeOut = Math.max(0, 1 - Math.max(0, tCine - (dur - 1.6)) / 1.5)
+      const fade = Math.min(fadeIn, fadeOut)
       if (fade > 0.01) {
         ctx.save()
         ctx.globalAlpha = fade
         ctx.textAlign = 'center'
-        ctx.font = `900 ${Math.min(78, W * 0.062)}px "Arial Black", system-ui, sans-serif`
+        ctx.font = `900 ${Math.min(64, W * 0.052)}px "Arial Black", system-ui, sans-serif`
         ctx.fillStyle = 'rgba(0,0,0,0.55)'
-        ctx.fillText('FRONTERA CERO', cx + 3, H * 0.28 + 3)
+        ctx.fillText(this.cine.title, cx + 3, H * 0.28 + 3)
         ctx.fillStyle = '#f5f0e6'
-        ctx.fillText('FRONTERA CERO', cx, H * 0.28)
+        ctx.fillText(this.cine.title, cx, H * 0.28)
         ctx.font = 'bold 15px monospace'
         ctx.fillStyle = 'rgba(216,164,24,0.95)'
-        ctx.fillText('ESTACIÓN MERIDIANO 59 · ZONA DE EXCLUSIÓN TOTAL', cx, H * 0.28 + 36)
+        ctx.fillText(this.cine.subtitle, cx, H * 0.28 + 34)
         ctx.restore()
+      }
+      // subtítulo de localización en el tercio inferior
+      if (fadeOut > 0.01 && this.cine.kind === 'story') {
+        ctx.save()
+        ctx.globalAlpha = Math.min(1, tCine / 1.2) * fadeOut
+        ctx.textAlign = 'center'
+        ctx.font = 'bold 17px "Courier New", monospace'
+        const tw = ctx.measureText(this.cine.subtitle).width
+        ctx.fillStyle = 'rgba(8,10,8,0.62)'
+        ctx.fillRect(cx - tw / 2 - 12, H * 0.78 - 22, tw + 24, 32)
+        ctx.fillStyle = 'rgba(255,229,180,0.96)'
+        ctx.fillText(this.cine.subtitle, cx, H * 0.78)
+        ctx.restore()
+      }
+      // fundido a negro al final de la cinemática de historia
+      if (this.cine.kind === 'story' && dur - tCine < 0.9 && dur > 2) {
+        ctx.fillStyle = `rgba(0,0,0,${Math.min(1, (0.9 - (dur - tCine)) / 0.9)})`
+        ctx.fillRect(0, 0, W, H)
       }
       const pulse = 0.6 + 0.4 * Math.sin(now / 300)
       ctx.textAlign = 'center'

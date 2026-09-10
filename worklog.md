@@ -315,3 +315,49 @@ Stage Summary:
 - https://googlesitecom.github.io/Googlecom/ JUGABLE en v5.0: audio MP3 con mezclador, modo historia Operación Ceniza (15-20 min, mapa nuevo), menú táctico, pantalla de carga, multijugador P2P restaurado y blindado, sol nuevo, sin vegetación de suelo (menos lag), dos armas permanentes
 - El multijugador no se pudo probar E2E en el sandbox (WebRTC bloqueado en headless); probado en navegador real por diseño (STUN + reintentos + reconexión)
 - Pendiente: recomendar al usuario ROTAR el PAT (expuesto en el chat)
+
+---
+Task ID: 11
+Agent: Super Z (agente principal)
+Task: v6.0 — Mejorar los gráficos, ampliar el modo historia con cinemáticas y un mapa hermoso (mensaje #15)
+
+Work Log:
+- GRÁFICOS (sin coste de FPS apreciable):
+  - CIELO CON SHADER propio (degradado atmosférico zenit→horizonte→suelo con resplandor solar integrado, cálido lateral hacia el sol y dithering anti-banding) sustituye la textura de canvas; PMREM del entorno rehecho desde el mismo shader → reflexiones PBR coherentes
+  - NUBES: 12 billboards altos a la deriva (coste ~0)
+  - AGUA ANIMADA (río + lago + fuente) con ShaderMaterial: oleaje en el vértice, dos capas de ruido desplazándose, fresnel potencia 5 (refleja el atardecer SOLO muy rasante), destello solar especular y chispeo — tras 3 iteraciones visuales con VLM (antes se leía como "carretera con líneas")
+  - MOTAS DE POLVO (180 puntos aditivos alrededor de la cámara, envolvimiento continuo), AVES del valle (7 siluetas en círculo con aleteo), ANISOTROPÍA máxima en las texturas del mundo
+  - Textura de ROCA nueva (estratos + musgo) para el anillo montañoso; helper ridge() con picos deterministas
+- MAPA HERMOSO "VALLE SERENO" (instalacion, 140×140):
+  - Anillo montañoso natural (sierra norte a -72 para abrir el helipuerto) — sin muros artificiales
+  - RÍO con puente de piedra (tablero alto + escalones) y PIEDRAS DE PASO (0.55 m, escalón del jugador); bots vadear por el agua (grafo conectado a través del río)
+  - LAGO con EMBARCADERO de madera; FUENTE octogonal en la plaza con lámina de agua
+  - PUEBLO ALBA: molino y herrero con interior, granero con puerta grande, capilla EN RUINAS con campanario + mirador, TORRE DE VIGÍA con plataforma
+  - COMPLEJO CENIZA amurallado: comando, radar (anillo con huecos), depósito, 2 cuarteles, PRISIÓN con celda de barrotes, 3 antenas en colinas, helipuerto con puerta norte
+  - 257 cajas · 70 waypoints · 142 aristas · story-map-check SIN ERRORES (corregidos: 12 waypoints dentro de geometría, grafo partido, spawns bloqueados, barrera/caja sobre rutas clave)
+- MODO HISTORIA AMPLIADO (4 → 6 capítulos, ~25-30 min):
+  - Cap 4 EL PRISIONERO nuevo (mantener E para liberar + sobrevivir la alarma 75 s con refuerzos) y Cap 6 LA EXTRACCIÓN (correr al helipuerto contra reloj 150 s; si despega sin ti, repite)
+  - Diálogos de radio ampliados (Ríos, la resistencia); menú táctico actualizado (6 capítulos, valle 140×140)
+- CINEMÁTICAS por capítulo (v6):
+  - playStoryCine() en el motor: curvas CatmullRom de cámara + barras de cine + título dinámico + subtítulo de localización + fundido final + omisión con clic/tecla; endCinematic ejecuta onDone
+  - 6 rutas de cámara sobre el valle (sierra sur → río → pueblo; barrido del pueblo; muro norte y antenas; descenso a la celda; rastreo del jefe; órbita final del helipuerto) — la entrada de cada capítulo termina donde empieza el jugador
+  - story.begin() se llama en el PRIMER SPAWN (antes corría tapada por la pantalla de conexión)
+  - Cinemática FINAL de victoria → pantalla MISIÓN COMPLETADA con tiempo y bajas
+- IA de la misión afinada:
+  - Visión de los bots limitada a 52 m en historia (antes avistaban a 75 m por el valle abierto) y ZONA SEGURA de 14 m en la inserción (sin acampar el spawn ni bucle de muertes)
+  - storyCmd 'protect' (invulnerable en cinemáticas), 'attack' (oleadas de asedio convergen sobre el enlace/celda cada 22-25 s), 'reinforce' hasta 12 bots
+  - Transiciones de capítulo con planificador dirigido por FRAMES (inmune a la limitación de setTimeout en pestañas ocultas — fue el causante de una transición que no llegaba a dispararse)
+  - No se recogen inteligencias estando muerto; spawn de historia 9 s de protección
+- HUD: aviso de tienda oculto en la misión; etiquetas de bots ocultas durante las cinemáticas
+- VERIFICACIÓN E2E en build de producción servida localmente (agent-browser + VLM, 17 capturas):
+  - Boot 3 s → menú táctico → OPERACIÓN → cine 1 con barras/título/subtítulo/omisión
+  - Flujo completo dirigido: 3 intel → cap 2 (asedio 240 s + oleadas + refuerzos) → cap 3 (carga en antena con E mantenido) → cap 4 (prisionero) → cap 5 (jefe Vega) → cap 6 (extracción 150 s) → CINE FINAL → MISIÓN COMPLETADA con TIEMPO/BAJAS
+  - Jugador vivo tras la cine sin bucle de muertes; 12 bots activos con refuerzos; partida de bots de la CIUDAD intacta (cinemática de entrada + HUD + mapa urbano)
+  - Nota del sandbox: el software rendering dilata el tiempo de juego (los holds de 2,5 s tardan ~20 s reales) — en GPU real es tiempo normal
+- DESPLIEGUE: build:pages + rama gh-pages + push main
+
+Stage Summary:
+- Gráficos: cielo shader + nubes + agua animada + polvo + aves + anisotropía + roca nueva, sin perder FPS
+- Modo historia: VALLE SERENO (río, lago, pueblo, ruinas, complejo), 6 capítulos ~25-30 min, cinemática por capítulo + final, jefe y extracción cronometrada
+- IA de misión robusta (zona segura, oleadas, refuerzos, protección en cines) y transiciones por frames
+- Flujo E2E verificado de principio a fin en producción local
