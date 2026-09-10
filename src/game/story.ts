@@ -145,6 +145,53 @@ const CHAPTER_CINES: { points: [number, number, number][]; looks: [number, numbe
   },
 ]
 
+/** v6.3 — DIÁLOGOS de las cinemáticas: conversación radio-táctica
+ *  sincronizada con el sobrevuelo (locutor + texto + segundo de inicio) */
+const CINE_DIALOGUES: { at: number; dur?: number; who: string; text: string }[][] = [
+  [   // 1 · LA INSERCIÓN
+    { at: 1.2, who: 'MANDO', text: 'Operativo, confirmo inserción en el Valle Sereno. Todo despejado… de momento.' },
+    { at: 5.0, who: 'RED', text: 'Recojo movimiento de milicianos en el pueblo. Patrullas ligeras, no esperaban visitas.' },
+    { at: 8.8, who: 'MANDO', text: 'Tres inteligencias te esperan: el molino, la capilla y la torre de vigía. Silencio y sombras.' },
+  ],
+  [   // 2 · EL SITIO
+    { at: 1.2, who: 'RED', text: '¡Me siento en el canal! Soy Red. Subo el enlace desde la plaza del pueblo…' },
+    { at: 4.6, who: 'MANDO', text: 'La milicia ya sabe que estás ahí. Prepara el asedio, operativo.' },
+    { at: 7.6, who: 'RED', text: '¡Aquí vienen! ¡Aguanta hasta que la transmisión llegue al cien por cien!' },
+  ],
+  [   // 3 · SABOTAJE
+    { at: 1.4, who: 'MANDO', text: 'Complejo Ceniza: tres antenas guían sus defensas. ALFA en la colina, BRAVO al oeste, CHARLIE junto al helipuerto.' },
+    { at: 5.6, who: 'RED', text: 'La vigilancia es densa… avanza pegado al muro y coloca una carga en cada mástil.' },
+    { at: 9.2, who: 'MANDO', text: 'Sin red de comunicaciones quedan ciegos. Haz cantar ese valle.' },
+  ],
+  [   // 4 · EL PRISIONERO
+    { at: 1.2, who: 'RÍOS', text: '¿Hay alguien ahí?… Soy el sargento Ríos, de la resistencia local. ¡Ábreme esta celda!' },
+    { at: 5.0, who: 'RED', text: 'Celda este del complejo. La alarma saltará en cuanto abras esa puerta.' },
+    { at: 8.2, who: 'MANDO', text: 'Sácalo con vida, operativo. Lo que sabe vale más que todo el valle.' },
+  ],
+  [   // 5 · EL COMANDANTE
+    { at: 1.0, who: 'VEGA', text: 'Así que tú eres el operativo que ha destrozado mi red… Impresionante, de verdad.' },
+    { at: 4.4, who: 'VEGA', text: 'Este valle es MÍO. El complejo es MÍO. Y tú… eres un cadáver de vacaciones.' },
+    { at: 7.4, who: 'MANDO', text: 'Es el Cnel. Vega: blindado y letal. Acaba con esto y ven a casa.' },
+  ],
+  [   // 6 · LA EXTRACCIÓN
+    { at: 1.4, who: 'MANDO', text: 'Helicóptero en posición, 150 segundos de ventana. ¡Corre por la puerta norte!' },
+    { at: 5.2, who: 'RED', text: 'El humo del complejo se ve desde la sierra… lo has conseguido, amigo.' },
+    { at: 8.8, who: 'MANDO', text: 'Últimos metros, operativo. El valle ya es leyenda.' },
+  ],
+]
+
+/** v6.3 — BATALLAS de las cinemáticas: frentes con soldados enfrentados
+ *  que intercambian fuego mientras la cámara sobrevuela (cx/cz = centro
+ *  del tiroteo, yaw = orientación del frente, count = soldados por bando) */
+const CINE_BATTLES: { cx: number; cz: number; yaw: number; count: number }[] = [
+  { cx: 0, cz: 18, yaw: Math.PI / 2, count: 3 },       // 1: escaramuza en la entrada del pueblo
+  { cx: 0, cz: 13, yaw: 0, count: 4 },                  // 2: asedio en la plaza (fuente)
+  { cx: 0, cz: -28, yaw: Math.PI / 2, count: 4 },       // 3: combate en el patio del complejo
+  { cx: 14, cz: -40, yaw: 0.5, count: 3 },              // 4: cobertura del rescate junto a la prisión
+  { cx: 8, cz: -26, yaw: Math.PI / 2, count: 4 },       // 5: duelo final ante el comando
+  { cx: 0, cz: -44, yaw: 0, count: 3 },                 // 6: última batalla hacia el helipuerto
+]
+
 export class StoryDirector {
   private game: Game
   private scene: THREE.Scene
@@ -218,6 +265,7 @@ export class StoryDirector {
 
     if (withCine) {
       // cinemática de capítulo → al terminar (u omitirse) se activa
+      // v6.3: con DIÁLOGOS radio-tácticos y BATALLA visible en el frente
       const c = CHAPTER_CINES[n]
       this.game.playStoryCine({
         points: c.points.map(p => new THREE.Vector3(...p)),
@@ -225,6 +273,8 @@ export class StoryDirector {
         dur: c.dur,
         title: 'OPERACIÓN CENIZA',
         subtitle: CHAPTER_PLACES[n],
+        dialogues: CINE_DIALOGUES[n],
+        battle: CINE_BATTLES[n],
         onDone: () => this.activateChapter(),
       })
     } else {
@@ -681,6 +731,11 @@ export class StoryDirector {
         dur: c.dur,
         title: 'OPERACIÓN CENIZA',
         subtitle: 'MISIÓN CUMPLIDA · HÉROE DEL VALLE',
+        dialogues: [
+          { at: 1.2, who: 'RED', text: '¡Levante! ¡Despega, despega! El operativo está a bordo.' },
+          { at: 4.8, who: 'RÍOS', text: 'El valle te debe una, operativo. La resistencia no olvida.' },
+          { at: 8.4, who: 'MANDO', text: 'Operación Ceniza completada. Sacúdete el polvo, héroe.' },
+        ],
         onDone: () => {
           useGame.getState().setStory({ status: 'victory', dialogue: null })
         },

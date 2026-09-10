@@ -1,0 +1,732 @@
+     1→// ============================================================
+     2→// EMERGENCY STRIKE — Director del MODO HISTORIA (v6)
+     3→// "OPERACIÓN CENIZA" en el VALLE SERENO: 6 capítulos, ~25-30
+     4→// minutos. Cada capítulo abre con una CINEMÁTICA de cámara
+     5→// (sobrevuelo con barras de cine, título y subtítulo, omisible),
+     6→// objetivos con balizas 3D, diálogos de radio por capítulo,
+     7→// temporizadores, jefe final y extracción cronometrada.
+     8→//
+     9→// Cap 1 LA INSERCIÓN  — recoger 3 inteligencias (pueblo)
+    10→// Cap 2 EL SITIO      — sobrevivir defendiendo el enlace
+    11→// Cap 3 SABOTAJE      — cargas en las 3 antenas + escape
+    12→// Cap 4 EL PRISIONERO — liberar al sargento y sobrevivir la alarma
+    13→// Cap 5 EL COMANDANTE — eliminar al Cnel. Vega
+    14→// Cap 6 LA EXTRACCIÓN — correr al helipuerto contra reloj
+    15→// ============================================================
+    16→import * as THREE from 'three'
+    17→import type { Game } from './engine'
+    18→import { useGame } from './store'
+    19→import {
+    20→  STORY_INTEL, STORY_UPLINK, STORY_ANTENNAS, STORY_PRISONER, STORY_EXTRACTION,
+    21→  type StoryObjective, type NetSnapshot,
+    22→} from './shared'
+    23→
+    24→interface Marker {
+    25→  obj: StoryObjective
+    26→  group: THREE.Group
+    27→  beam: THREE.Mesh
+    28→  ring: THREE.Mesh
+    29→  label: THREE.Sprite
+    30→  done: boolean
+    31→}
+    32→
+    33→const N_CHAPTERS = 6
+    34→
+    35→const t1000 = (): number => performance.now()
+    36→
+    37→const CHAPTER_TITLES = [
+    38→  'CAPÍTULO 1 · LA INSERCIÓN',
+    39→  'CAPÍTULO 2 · EL SITIO',
+    40→  'CAPÍTULO 3 · SABOTAJE',
+    41→  'CAPÍTULO 4 · EL PRISIONERO',
+    42→  'CAPÍTULO 5 · EL COMANDANTE',
+    43→  'CAPÍTULO 6 · LA EXTRACCIÓN',
+    44→]
+    45→
+    46→/** subtítulo de localización mostrado en la cinemática del capítulo */
+    47→const CHAPTER_PLACES = [
+    48→  'VALLE SERENO · RIBERA SUR DEL RÍO',
+    49→  'PUEBLO ALBA · DEFENSA DEL ENLACE',
+    50→  'COMPLEJO CENIZA · TRES ANTENAS',
+    51→  'PRISIÓN DEL COMPLEJO · RESCATE',
+    52→  'Cnel. VEGA · OBJETIVO PRIORITARIO',
+    53→  'EXTRACCIÓN · HELIPUERTO NORTE',
+    54→]
+    55→
+    56→/** punto de control (teletransporte) al activar cada capítulo */
+    57→const CHAPTER_START: { x: number; z: number; yaw: number }[] = [
+    58→  { x: 0, z: 54, yaw: 0 },       // ribera sur, mirando al norte
+    59→  { x: 0, z: 24, yaw: 0 },       // entrada sur del pueblo
+    60→  { x: 0, z: -12, yaw: 0 },      // puerta sur del complejo
+    61→  { x: 0, z: -30, yaw: -0.78 },  // patio, mirando a la prisión
+    62→  { x: 8, z: -26, yaw: 0.2 },    // patio este, mirando al comando
+    63→  { x: 0, z: -38, yaw: 0 },      // patio norte, puerta del helipuerto
+    64→]
+    65→
+    66→/** diálogos de radio por capítulo (quien habla, texto) */
+    67→const RADIO: { who: string; text: string }[][] = [
+    68→  [
+    69→    { who: 'MANDO', text: 'Operativo, has cruzado la sierra. El Valle Sereno duerme al atardecer.' },
+    70→    { who: 'MANDO', text: 'Tres inteligencias esperan: el MOLINO, la CAPILLA en ruinas y la TORRE DE VIGÍA.' },
+    71→    { who: 'RED', text: 'Te siento en el canal. Soy Red, tu apoyo en la red. Muévete con cuidado.' },
+    72→    { who: 'MANDO', text: 'Primera inteligencia recuperada. Quedan dos.' },
+    73→    { who: 'RED', text: 'Los milicianos patrullan el pueblo. No dejes que te rodeen.' },
+    74→    { who: 'MANDO', text: 'Intel completa. El plan de invasión ya es nuestro. Avanzamos.' },
+    75→  ],
+    76→  [
+    77→    { who: 'RED', text: 'Subo el enlace desde la plaza del pueblo… ¡van a venir directos a por mí!' },
+    78→    { who: 'RED', text: 'Transmisión al 50 %. ¡Aguanta el asedio!' },
+    79→    { who: 'MANDO', text: 'Refuerzos enemigos en camino. No claudiques.' },
+    80→    { who: 'RED', text: '¡Últimos segundos! Aguanten…' },
+    81→    { who: 'RED', text: '¡ENLACE COMPLETO! Tienen el plan de defensa completo.' },
+    82→  ],
+    83→  [
+    84→    { who: 'MANDO', text: 'Tres antenas guían sus defensas: ALFA en la colina, BRAVO al oeste, CHARLIE junto al helipuerto.' },
+    85→    { who: 'RED', text: 'Coloca una carga en cada mástil. Mantén la tecla de interactuar.' },
+    86→    { who: 'MANDO', text: 'Cargas colocadas. ¡Apártate, van a volar los repetidores!' },
+    87→    { who: 'RED', text: '¡Qué espectáculo! Red enemiga: destruida.' },
+    88→    { who: 'MANDO', text: 'El complejo queda ciego. Siguiente fase.' },
+    89→  ],
+    90→  [
+    91→    { who: 'RED', text: 'Detecto un prisionero en la celda este… es el Sargento Ríos, resistencia local.' },
+    92→    { who: 'MANDO', text: 'Rescátalo. La prisión está en el ala este del complejo.' },
+    93→    { who: 'RÍOS', text: 'Gracias, operativo… la llave del comandante ya es tuya. Cubre mi huida.' },
+    94→    { who: 'MANDO', text: '¡La alarma ha saltado! Sobrevive mientras Ríos escapa.' },
+    95→    { who: 'RÍOS', text: '¡Estoy fuera! Vega está en el edificio de comando. Acaba con esto.' },
+    96→    { who: 'MANDO', text: 'Capítulo superado. El complejo es tuyo… casi.' },
+    97→  ],
+    98→  [
+    99→    { who: 'MANDO', text: 'El Cnel. Vega comanda desde el norte del patio. Blindado y letal.' },
+   100→    { who: 'RED', text: '¡Vega abatido! Helicóptero en camino al helipuerto norte.' },
+   101→    { who: 'MANDO', text: '¡Vamos operativo! Corre a la EXTRACCIÓN.' },
+   102→    { who: 'MANDO', text: 'La puerta norte está abierta. ¡Muévete!' },
+   103→  ],
+   104→  [
+   105→    { who: 'MANDO', text: 'El helicóptero mantiene posición 150 segundos. ¡Corre por la puerta norte!' },
+   106→    { who: 'RED', text: 'Vientos de cola, operativo. El valle ya es leyenda.' },
+   107→    { who: 'MANDO', text: '¡Ahí viene! Últimos metros.' },
+   108→    { who: 'MANDO', text: 'Operación Ceniza completada. Sacúdete el polvo, héroe.' },
+   109→  ],
+   110→]
+   111→
+   112→/** rutas de cámara de la cinemática de cada capítulo (VALLE SERENO) */
+   113→const CHAPTER_CINES: { points: [number, number, number][]; looks: [number, number, number][]; dur: number }[] = [
+   114→  {   // 1 · LA INSERCIÓN: desde la sierra sur, sobre el río y el pueblo,
+   115→    //     vuelve a caer junto al operativo en la ribera
+   116→    points: [[8, 36, 96], [4, 20, 66], [0, 10, 44], [-6, 6, 26], [0, 4, 18], [6, 3, 32], [0, 1.9, 50]],
+   117→    looks: [[0, 3, 60], [0, 2, 44], [0, 2, 20], [0, 1.5, 13], [0, 1.5, 13], [0, 2, 16], [0, 2, 36]],
+   118→    dur: 12,
+   119→  },
+   120→  {   // 2 · EL SITIO: barrido del pueblo hasta la entrada sur de la plaza
+   121→    points: [[-38, 26, 34], [-18, 14, 22], [0, 9, 4], [14, 6, 18], [0, 2.2, 28]],
+   122→    looks: [[-8, 2, 18], [0, 2, 16], [0, 1.6, 12], [0, 1.6, 10], [0, 1.6, 10]],
+   123→    dur: 10,
+   124→  },
+   125→  {   // 3 · SABOTAJE: sobre el muro norte, helipuerto y antenas
+   126→    points: [[0, 30, -84], [0, 16, -62], [26, 10, -50], [28, 7, -30], [6, 5, -28], [0, 2.0, -14]],
+   127→    looks: [[0, 2, -60], [0, 2, -60], [30, 2, -50], [14, 1.5, -26], [0, 1.5, -30], [0, 1.5, -30]],
+   128→    dur: 12,
+   129→  },
+   130→  {   // 4 · EL PRISIONERO: descenso del muro norte hasta la celda,
+   131→    //     luego al patio junto al comando
+   132→    points: [[0, 14, -70], [14, 9, -60], [26, 6, -50], [22, 3.4, -46], [8, 2.6, -36], [0, 2.4, -30]],
+   133→    looks: [[0, 2, -60], [10, 1.5, -50], [20, 1.5, -44], [20, 1.2, -44], [12, 1.4, -40], [16, 1.2, -42]],
+   134→    dur: 10,
+   135→  },
+   136→  {   // 5 · EL COMANDANTE: rastreo bajo y dramático del patio
+   137→    points: [[-24, 4, -46], [-12, 3.2, -40], [-4, 2.6, -38], [6, 3.0, -38], [8, 1.9, -26]],
+   138→    looks: [[0, 1.8, -40], [0, 1.8, -40], [0, 1.8, -42], [0, 1.8, -42], [0, 1.8, -40]],
+   139→    dur: 9,
+   140→  },
+   141→  {   // 6 · EXTRACCIÓN y FINAL: órbita del helipuerto al atardecer
+   142→    points: [[20, 12, -74], [18, 9, -62], [0, 7, -48], [-16, 8, -58], [-14, 10, -70], [0, 2.2, -46]],
+   143→    looks: [[0, 2, -60], [0, 2, -60], [0, 2, -60], [0, 2, -60], [0, 2, -60], [0, 1.6, -60]],
+   144→    dur: 12,
+   145→  },
+   146→]
+   147→
+   148→export class StoryDirector {
+   149→  private game: Game
+   150→  private scene: THREE.Scene
+   151→  private chapter = 0          // 0..5
+   152→  private markers: Marker[] = []
+   153→  private dialogueLine = -1
+   154→  private dialogueT = 0
+   155→  /** segundos restantes del temporizador activo (0 = ninguno) */
+   156→  private timer = 0
+   157→  /** progreso del capítulo (texto) */
+   158→  private progress = ''
+   159→  private objective = ''
+   160→  private holdT = 0            // tiempo manteniendo E sobre un objetivo
+   161→  private holdTarget: Marker | null = null
+   162→  private startedAt = 0
+   163→  private kills = 0
+   164→  private lastKillId = 0
+   165→  private bossSpawned = false
+   166→  private bossDead = false
+   167→  /** capítulo activo de verdad (la cinemática ya terminó) */
+   168→  private chapterLive = false
+   169→  private finished = false
+   170→  private beaconMat!: THREE.MeshBasicMaterial
+   171→
+   172→  constructor(game: Game) {
+   173→    this.game = game
+   174→    this.scene = game.getStoryScene()
+   175→  }
+   176→
+   177→  /** acceso a la escena/estado — el motor lo llama al iniciar */
+   178→  begin(): void {
+   179→    useGame.getState().setStory({ active: true, chapter: 1, status: 'playing' })
+   180→    this.startedAt = performance.now()
+   181→    this.setChapter(0, true)
+   182→  }
+   183→
+   184→  // ----------------------------------------------------------
+   185→  // Capítulos
+   186→  // ----------------------------------------------------------
+   187→  private setChapter(n: number, withCine: boolean): void {
+   188→    this.chapter = n
+   189→    this.scheduled = null
+   190→    this.clearMarkers()
+   191→    this.dialogueLine = -1
+   192→    this.timer = 0
+   193→    this.holdT = 0
+   194→    this.holdTarget = null
+   195→    this.chapterLive = false
+   196→    this.siegeDone = false
+   197→    this.siegeHalf = false
+   198→    this.siegeQuarter = false
+   199→    this.boomDone = false
+   200→    this.rescueFreed = false
+   201→    this.rescueDone = false
+   202→    this.bossSpawned = false
+   203→    this.bossDead = false
+   204→    const st = { chapter: n + 1, chapterTitle: CHAPTER_TITLES[n], timer: 0, progress: '', hint: '', objective: '' }
+   205→
+   206→    // objetivo de cabecera (se pule al activar el capítulo)
+   207→    const OBJECTIVES = [
+   208→      'Recupera las 3 INTELIGENCIAS del pueblo',
+   209→      'DEFIENDE el enlace hasta completar la subida',
+   210→      'SABOTEA las 3 antenas (mantén E)',
+   211→      'Libera al SARGENTO RÍOS',
+   212→      'Elimina al CNEL. VEGA',
+   213→      'Alcanza la EXTRACCIÓN antes de que despegue',
+   214→    ]
+   215→    this.objective = OBJECTIVES[n]
+   216→    st.objective = this.objective
+   217→    useGame.getState().setStory(st)
+   218→
+   219→    if (withCine) {
+   220→      // cinemática de capítulo → al terminar (u omitirse) se activa
+   221→      const c = CHAPTER_CINES[n]
+   222→      this.game.playStoryCine({
+   223→        points: c.points.map(p => new THREE.Vector3(...p)),
+   224→        looks: c.looks.map(p => new THREE.Vector3(...p)),
+   225→        dur: c.dur,
+   226→        title: 'OPERACIÓN CENIZA',
+   227→        subtitle: CHAPTER_PLACES[n],
+   228→        onDone: () => this.activateChapter(),
+   229→      })
+   230→    } else {
+   231→      this.activateChapter()
+   232→    }
+   233→  }
+   234→
+   235→  /** arranca el capítulo de verdad: posición, balizas, diálogos, red */
+   236→  private activateChapter(): void {
+   237→    const n = this.chapter
+   238→    this.chapterLive = true
+   239→    const cp = CHAPTER_START[n]
+   240→    this.game.setPlayerPos(cp.x, cp.z, cp.yaw)
+   241→    this.game.audio.roundStart()
+   242→
+   243→    const st: Partial<ReturnType<typeof useGame.getState>['story']> = {}
+   244→
+   245→    if (n === 0) {
+   246→      this.spawnMarkers(STORY_INTEL, 0xd9a05b)
+   247→      this.nextDialogue()
+   248→      st.progress = '0 / 3'
+   249→      st.timer = 0
+   250→    } else if (n === 1) {
+   251→      this.spawnMarkers([STORY_UPLINK], 0x4ade80)
+   252→      this.timer = 240            // 4 minutos de asedio
+   253→      this.nextDialogue()
+   254→      st.timer = 240
+   255→      // recompensa de supervivencia: un AR-47 para el resto de la misión
+   256→      this.game.net.sendStoryCmd({ cmd: 'give', weapon: 'ar47' })
+   257→    } else if (n === 2) {
+   258→      this.spawnMarkers(STORY_ANTENNAS, 0xf87171)
+   259→      this.nextDialogue()
+   260→      st.progress = '0 / 3'
+   261→    } else if (n === 3) {
+   262→      this.spawnMarkers([STORY_PRISONER], 0x60a5fa)
+   263→      this.nextDialogue()
+   264→      st.progress = 'CAUTIVO'
+   265→    } else if (n === 4) {
+   266→      this.objective = 'Elimina al CNEL. VEGA'
+   267→      this.game.net.sendStoryCmd({ cmd: 'boss' })
+   268→      this.nextDialogue()
+   269→      st.progress = 'OBJETIVO PRIORITARIO'
+   270→    } else {
+   271→      // capítulo 6: extracción cronometrada
+   272→      this.timer = 150
+   273→      this.spawnMarkers([STORY_EXTRACTION], 0x4ade80)
+   274→      this.nextDialogue()
+   275→      st.timer = 150
+   276→      this.objective = 'EXTRACCIÓN en el helipuerto norte'
+   277→      st.objective = this.objective
+   278→      this.game.audio.announceDing()
+   279→    }
+   280→    useGame.getState().setStory(st)
+   281→  }
+   282→
+   283→  private completeChapter(): void {
+   284→    if (this.chapter >= N_CHAPTERS - 1) return
+   285→    this.nextDialogue()
+   286→    this.game.audio.roundEnd()
+   287→    this.setChapter(this.chapter + 1, true)
+   288→  }
+   289→
+   290→  // ----------------------------------------------------------
+   291→  // Balizas de objetivos
+   292→  // ----------------------------------------------------------
+   293→  private spawnMarkers(objs: StoryObjective[], color: number): void {
+   294→    this.beaconMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, depthWrite: false })
+   295→    for (const o of objs) this.spawnMarker(o)
+   296→  }
+   297→
+   298→  private spawnMarker(o: StoryObjective): void {
+   299→    const group = new THREE.Group()
+   300→    const beam = new THREE.Mesh(
+   301→      new THREE.CylinderGeometry(0.5, 0.5, 26, 10, 1, true),
+   302→      this.beaconMat,
+   303→    )
+   304→    beam.position.y = 13
+   305→    group.add(beam)
+   306→    const ring = new THREE.Mesh(
+   307→      new THREE.RingGeometry(1.1, 1.5, 28),
+   308→      new THREE.MeshBasicMaterial({ color: this.beaconMat.color.getHex(), transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+   309→    )
+   310→    ring.rotation.x = -Math.PI / 2
+   311→    ring.position.y = 0.06
+   312→    group.add(ring)
+   313→    const label = this.makeLabel(o.label)
+   314→    label.position.y = 2.6
+   315→    group.add(label)
+   316→    group.position.set(o.x, 0, o.z)
+   317→    this.scene.add(group)
+   318→    this.markers.push({ obj: o, group, beam, ring, label, done: false })
+   319→  }
+   320→
+   321→  private makeLabel(text: string): THREE.Sprite {
+   322→    const c = document.createElement('canvas')
+   323→    c.width = 512
+   324→    c.height = 128
+   325→    const ctx = c.getContext('2d')!
+   326→    ctx.fillStyle = 'rgba(10,12,10,0.82)'
+   327→    ctx.fillRect(0, 34, 512, 60)
+   328→    ctx.strokeStyle = 'rgba(217,160,91,0.9)'
+   329→    ctx.lineWidth = 3
+   330→    ctx.strokeRect(0, 34, 512, 60)
+   331→    ctx.font = 'bold 40px "Arial Narrow", Arial, sans-serif'
+   332→    ctx.fillStyle = '#ffe9c4'
+   333→    ctx.textAlign = 'center'
+   334→    ctx.textBaseline = 'middle'
+   335→    ctx.fillText(text, 256, 66)
+   336→    const tex = new THREE.CanvasTexture(c)
+   337→    tex.colorSpace = THREE.SRGBColorSpace
+   338→    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
+   339→    sprite.scale.set(7.5, 1.9, 1)
+   340→    return sprite
+   341→  }
+   342→
+   343→  private clearMarkers(): void {
+   344→    for (const m of this.markers) {
+   345→      this.scene.remove(m.group)
+   346→      m.label.material.dispose()
+   347→      ;(m.ring.material as THREE.Material).dispose()
+   348→    }
+   349→    this.markers.length = 0
+   350→    this.beaconMat?.dispose()
+   351→  }
+   352→
+   353→  /** marcadores para el minimapa (los dibuja el motor) */
+   354→  minimapMarkers(): { x: number; z: number; color: string }[] {
+   355→    const out: { x: number; z: number; color: string }[] = []
+   356→    for (const m of this.markers) {
+   357→      if (m.done) continue
+   358→      out.push({ x: m.obj.x, z: m.obj.z, color: '#ffb547' })
+   359→    }
+   360→    return out
+   361→  }
+   362→
+   363→  // ----------------------------------------------------------
+   364→  // Diálogos de radio
+   365→  // ----------------------------------------------------------
+   366→  private nextDialogue(): void {
+   367→    const lines = RADIO[this.chapter]
+   368→    if (!lines) return
+   369→    this.dialogueLine++
+   370→    if (this.dialogueLine >= lines.length) { this.dialogueLine = lines.length - 1; return }
+   371→    useGame.getState().setStory({ dialogue: lines[this.dialogueLine] })
+   372→    this.dialogueT = 6.5
+   373→  }
+   374→
+   375→  // ----------------------------------------------------------
+   376→  // Bucle
+   377→  // ----------------------------------------------------------
+   378→  update(dt: number, t: number): void {
+   379→    if (this.finished) return
+   380→    const st = useGame.getState()
+   381→    if (st.phase !== 'playing' && st.phase !== 'dead') return
+   382→    // durante la cinemática el capítulo no avanza (el jugador no juega):
+   383→    // invulnerable mientras no pueda moverse
+   384→    // transición aplazada (inmune a la limitación de setTimeout)
+   385→    if (this.scheduled && performance.now() >= this.scheduled.at) {
+   386→      const fn = this.scheduled.fn
+   387→      this.scheduled = null
+   388→      fn()
+   389→    }
+   390→    if (st.cineActive) {
+   391→      if (!this.cineProtected) {
+   392→        this.cineProtected = true
+   393→        this.game.net.sendStoryCmd({ cmd: 'protect', count: 22 })
+   394→      }
+   395→      return
+   396→    }
+   397→    this.cineProtected = false
+   398→
+   399→    // diálogo en pantalla
+   400→    if (this.dialogueT > 0) {
+   401→      this.dialogueT -= dt
+   402→      if (this.dialogueT <= 0) useGame.getState().setStory({ dialogue: null })
+   403→    }
+   404→
+   405→    // balizas: pulso
+   406→    for (const m of this.markers) {
+   407→      if (m.done) continue
+   408→      const pulse = 0.35 + 0.3 * Math.sin(t * 3)
+   409→      ;(m.beam.material as THREE.MeshBasicMaterial).opacity = pulse
+   410→      const rs = 1 + 0.35 * Math.sin(t * 3)
+   411→      m.ring.scale.set(rs, rs, 1)
+   412→      m.label.position.y = 2.6 + 0.18 * Math.sin(t * 2)
+   413→    }
+   414→
+   415→    // estadísticas
+   416→    const kills = this.countKills()
+   417→    const time = (performance.now() - this.startedAt) / 1000
+   418→
+   419→    if (!this.chapterLive) return
+   420→
+   421→    // ---- lógica por capítulo ----
+   422→    if (this.chapter === 0) this.updateIntel(dt)
+   423→    else if (this.chapter === 1) this.updateSiege(dt)
+   424→    else if (this.chapter === 2) this.updateSabotage(dt)
+   425→    else if (this.chapter === 3) this.updateRescue(dt)
+   426→    else if (this.chapter === 4) this.updateBoss(dt)
+   427→    else this.updateExtraction(dt)
+   428→
+   429→    // temporizador visible
+   430→    const timer = Math.ceil(Math.max(0, this.timer))
+   431→    useGame.getState().setStory({
+   432→      timer,
+   433→      stats: { time: Math.round(time), kills },
+   434→    })
+   435→  }
+   436→
+   437→  /** Cap 1: acercarse a las balizas las recoge */
+   438→  private updateIntel(dt: number): void {
+   439→    void dt
+   440→    let done = 0
+   441→    for (const m of this.markers) {
+   442→      if (m.done) { done++; continue }
+   443→      if (this.game.dead) break
+   444→      const d = Math.hypot(this.game.pos.x - m.obj.x, this.game.pos.z - m.obj.z)
+   445→      if (d < 2.6) {
+   446→        m.done = true
+   447→        this.scene.remove(m.group)
+   448→        this.game.audio.pickup(false)
+   449→        this.game.audio.announceDing()
+   450→        done++
+   451→        this.progress = `${done} / 3`
+   452→        useGame.getState().setStory({ progress: this.progress })
+   453→        this.nextDialogue()
+   454→        // capítulo 1: entrega una MP-9 para el asedio
+   455→        if (done === 1) this.game.net.sendStoryCmd({ cmd: 'give', weapon: 'mp9' })
+   456→        if (done === 3) {
+   457→          this.schedule(1.4, () => this.completeChapter())
+   458→        }
+   459→      }
+   460→    }
+   461→  }
+   462→
+   463→  /** Cap 2: sobrevivir 240 s cerca del enlace */
+   464→  private updateSiege(dt: number): void {
+   465→    const up = this.markers[0]
+   466→    this.timer = Math.max(0, this.timer - dt)
+   467→    const d = up ? Math.hypot(this.game.pos.x - up.obj.x, this.game.pos.z - up.obj.z) : 0
+   468→    const far = d > 26
+   469→    useGame.getState().setStory({
+   470→      hint: far ? '¡VUELVE AL ENLACE! La subida se interrumpe si te alejas' : '',
+   471→      timer: Math.ceil(this.timer),
+   472→    })
+   473→    // oleadas: los enemigos convergen sobre el enlace cada 22 s
+   474→    if (t1000() - this.siegeWaveAt > 22000) {
+   475→      this.siegeWaveAt = t1000()
+   476→      this.game.net.sendStoryCmd({ cmd: 'attack', x: STORY_UPLINK.x, z: STORY_UPLINK.z })
+   477→    }
+   478→    if (far) return      // el temporizador no avanza lejos del enlace
+   479→    const half = this.timer < 120
+   480→    const quarter = this.timer < 60
+   481→    if (half && !this.siegeHalf) {
+   482→      this.siegeHalf = true
+   483→      this.nextDialogue()
+   484→      this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 3 })
+   485→    }
+   486→    if (quarter && !this.siegeQuarter) {
+   487→      this.siegeQuarter = true
+   488→      this.nextDialogue()
+   489→      this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 2 })
+   490→    }
+   491→    if (this.timer <= 0 && !this.siegeDone) {
+   492→      this.siegeDone = true
+   493→      this.schedule(1.2, () => this.completeChapter())
+   494→    }
+   495→  }
+   496→
+   497→  private siegeHalf = false
+   498→  private siegeQuarter = false
+   499→  private siegeDone = false
+   500→  private siegeWaveAt = 0
+   501→
+   502→  /** Cap 3: mantener E junto a cada antena */
+   503→  private updateSabotage(dt: number): void {
+   504→    const code = this.game.bindCode('zipline') || 'KeyE'
+   505→    const held = this.game.heldKeys().has(code)
+   506→    let done = 0
+   507→    let near: Marker | null = null
+   508→    for (const m of this.markers) {
+   509→      if (m.done) { done++; continue }
+   510→      const d = Math.hypot(this.game.pos.x - m.obj.x, this.game.pos.z - m.obj.z)
+   511→      if (d < 3.2) near = m
+   512→    }
+   513→    if (near) {
+   514→      if (held && !this.game.dead) {
+   515→        this.holdT += dt
+   516→        this.holdTarget = near
+   517→        if (this.holdT >= 2.5) {
+   518→          near.done = true
+   519→          this.scene.remove(near.group)
+   520→          this.holdT = 0
+   521→          this.holdTarget = null
+   522→          done++
+   523→          this.game.audio.reload('pump')
+   524→          this.game.audio.announceDing()
+   525→          this.nextDialogue()
+   526→          useGame.getState().setStory({ progress: `${done} / 3` })
+   527→          if (done === 3) {
+   528→            // cuenta atrás de explosión
+   529→            this.timer = 45
+   530→            this.objective = '¡APÁRTATE! Cargas activas'
+   531→            useGame.getState().setStory({ objective: this.objective })
+   532→          }
+   533→        }
+   534→      } else if (this.holdTarget === near) {
+   535→        this.holdT = Math.max(0, this.holdT - dt * 3)
+   536→      }
+   537→      const pct = Math.round((this.holdT / 2.5) * 100)
+   538→      useGame.getState().setStory({
+   539→        hint: this.holdT > 0.05 ? `COLOCANDO CARGA… ${pct}%` : 'MANTÉN [E] PARA COLOCAR LA CARGA',
+   540→      })
+   541→    } else {
+   542→      this.holdT = 0
+   543→      this.holdTarget = null
+   544→      useGame.getState().setStory({ hint: '' })
+   545→    }
+   546→    // fase de explosión: cuenta atrás y ¡bum! (una sola vez)
+   547→    if (this.timer > 0 && !this.boomDone) {
+   548→      this.timer = Math.max(0, this.timer - dt)
+   549→      useGame.getState().setStory({ timer: Math.ceil(this.timer) })
+   550→      if (this.timer <= 0) {
+   551→        this.boomDone = true
+   552→        for (const a of STORY_ANTENNAS) this.game.onGrenadeExplode([a.x, 1.5, a.z])
+   553→        this.game.audio.explosion(0)
+   554→        this.game.audio.roundEnd()
+   555→        this.schedule(1.6, () => this.completeChapter())
+   556→      }
+   557→    }
+   558→  }
+   559→
+   560→  private boomDone = false
+   561→
+   562→  /** Cap 4: liberar al prisionero (mantener E) y sobrevivir la alarma 75 s */
+   563→  private rescueFreed = false
+   564→  private rescueDone = false
+   565→
+   566→  private updateRescue(dt: number): void {
+   567→    const code = this.game.bindCode('zipline') || 'KeyE'
+   568→    const held = this.game.heldKeys().has(code)
+   569→
+   570→    if (!this.rescueFreed) {
+   571→      const m = this.markers[0]
+   572→      if (!m || m.done) return
+   573→      const d = Math.hypot(this.game.pos.x - m.obj.x, this.game.pos.z - m.obj.z)
+   574→      if (d < 3.4) {
+   575→        if (held && !this.game.dead) {
+   576→          this.holdT += dt
+   577→          if (this.holdT >= 3.0) {
+   578→            this.rescueFreed = true
+   579→            m.done = true
+   580→            this.scene.remove(m.group)
+   581→            this.holdT = 0
+   582→            this.timer = 75          // alarma: sobrevivir mientras Ríos huye
+   583→            this.nextDialogue()
+   584→            this.objective = 'SOBREVIVE la alarma mientras Ríos escapa'
+   585→            useGame.getState().setStory({ objective: this.objective, progress: 'ALERTA MÁXIMA', timer: 75 })
+   586→            this.game.audio.announceDing()
+   587→            this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 4 })
+   588→          }
+   589→        } else {
+   590→          this.holdT = Math.max(0, this.holdT - dt * 3)
+   591→        }
+   592→        const pct = Math.round((this.holdT / 3.0) * 100)
+   593→        useGame.getState().setStory({
+   594→          hint: this.holdT > 0.05 ? `ABRIENDO LA CELDA… ${pct}%` : 'MANTÉN [E] PARA LIBERAR AL PRISIONERO',
+   595→        })
+   596→      } else {
+   597→        this.holdT = 0
+   598→        useGame.getState().setStory({
+   599→          hint: `PRISIONERO A ${Math.round(d)} m · alcanza la celda y mantén [E]`,
+   600→        })
+   601→      }
+   602→      return
+   603→    }
+   604→
+   605→    // fase de alarma: cronómetro con refuerzo final y presión constante
+   606→    this.timer = Math.max(0, this.timer - dt)
+   607→    useGame.getState().setStory({ timer: Math.ceil(this.timer) })
+   608→    if (t1000() - this.rescueWaveAt > 25000) {
+   609→      this.rescueWaveAt = t1000()
+   610→      this.game.net.sendStoryCmd({ cmd: 'attack', x: STORY_PRISONER.x, z: STORY_PRISONER.z })
+   611→    }
+   612→    if (this.timer < 30 && !this.rescueReinforced) {
+   613→      this.rescueReinforced = true
+   614→      this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 2 })
+   615→    }
+   616→    if (this.timer <= 0 && !this.rescueDone) {
+   617→      this.rescueDone = true
+   618→      useGame.getState().setStory({ hint: '', progress: '' })
+   619→      this.schedule(1.2, () => this.completeChapter())
+   620→    }
+   621→  }
+   622→
+   623→  private rescueReinforced = false
+   624→  private rescueWaveAt = 0
+   625→  /** protección enviada al sim durante la cinemática en curso */
+   626→  private cineProtected = false
+   627→  /** acción aplazada (transiciones de capítulo: dirigida por frames,
+   628→   *  inmune a la limitación de setTimeout en pestañas ocultas) */
+   629→  private scheduled: { at: number; fn: () => void } | null = null
+   630→
+   631→  private schedule(delayS: number, fn: () => void): void {
+   632→    this.scheduled = { at: performance.now() + delayS * 1000, fn }
+   633→  }
+   634→
+   635→  /** Cap 5: jefe */
+   636→  private updateBoss(dt: number): void {
+   637→    void dt
+   638→    if (!this.bossSpawned) {
+   639→      this.bossSpawned = true
+   640→      return
+   641→    }
+   642→    if (!this.bossDead) {
+   643→      // el killfeed informa cuando Vega cae
+   644→      const feed = useGame.getState().killfeed
+   645→      for (const k of feed) {
+   646→        if (k.id > this.lastKillId) {
+   647→          this.lastKillId = k.id
+   648→          if (k.victim === 'Cnel. Vega') {
+   649→            this.bossDead = true
+   650→            this.nextDialogue()
+   651→            this.schedule(2.6, () => this.completeChapter())
+   652→          }
+   653→        }
+   654→      }
+   655→    }
+   656→  }
+   657→
+   658→  /** Cap 6: extracción cronometrada */
+   659→  private updateExtraction(dt: number): void {
+   660→    this.timer = Math.max(0, this.timer - dt)
+   661→    const d = Math.hypot(this.game.pos.x - STORY_EXTRACTION.x, this.game.pos.z - STORY_EXTRACTION.z)
+   662→    useGame.getState().setStory({
+   663→      timer: Math.ceil(this.timer),
+   664→      hint: `EXTRACCIÓN A ${Math.round(d)} m`,
+   665→    })
+   666→    if (d < 4.5 && !this.finished) {
+   667→      this.finished = true
+   668→      this.nextDialogue()
+   669→      const time = Math.round((performance.now() - this.startedAt) / 1000)
+   670→      useGame.getState().setStory({
+   671→        hint: '',
+   672→        timer: 0,
+   673→        stats: { time, kills: this.countKills() },
+   674→      })
+   675→      this.game.audio.roundEnd()
+   676→      // cinemática final: órbita del helipuerto → pantalla de victoria
+   677→      const c = CHAPTER_CINES[5]
+   678→      this.game.playStoryCine({
+   679→        points: c.points.map(p => new THREE.Vector3(...p)),
+   680→        looks: c.looks.map(p => new THREE.Vector3(...p)),
+   681→        dur: c.dur,
+   682→        title: 'OPERACIÓN CENIZA',
+   683→        subtitle: 'MISIÓN CUMPLIDA · HÉROE DEL VALLE',
+   684→        onDone: () => {
+   685→          useGame.getState().setStory({ status: 'victory', dialogue: null })
+   686→        },
+   687→      })
+   688→      return
+   689→    }
+   690→    if (this.timer <= 0 && !this.finished) {
+   691→      // el helicóptero se fue: repetir el capítulo 6 (sin cinemática)
+   692→      this.finished = false
+   693→      useGame.getState().addAnnouncement('El helicóptero despegó sin ti… repitiendo la extracción', 'info')
+   694→      this.game.audio.announceDing()
+   695→      this.setChapter(5, false)
+   696→    }
+   697→  }
+   698→
+   699→  // ----------------------------------------------------------
+   700→  // Eventos del motor
+   701→  // ----------------------------------------------------------
+   702→  onSnapshot(snap: NetSnapshot): void {
+   703→    void snap
+   704→  }
+   705→
+   706→  /** el jugador murió: el capítulo en curso se reinicia sin cinemática */
+   707→  onPlayerDeath(): void {
+   708→    if (this.finished) return
+   709→    this.game.audio.announceDing()
+   710→    // el respawn del servidor tarda 3 s → reiniciar justo después
+   711→    this.schedule(3.6, () => {
+   712→      if (this.finished) return
+   713→      useGame.getState().addAnnouncement('MISIÓN: repitiendo el capítulo actual', 'info')
+   714→      // el inventario se conserva (v5); reiniciar solo el capítulo
+   715→      this.setChapter(this.chapter, false)
+   716→    })
+   717→  }
+   718→
+   719→  dispose(): void {
+   720→    this.clearMarkers()
+   721→    useGame.getState().setStory({ active: false, dialogue: null, hint: '' })
+   722→  }
+   723→
+   724→  private countKills(): number {
+   725→    const me = useGame.getState().playerName
+   726→    let kills = 0
+   727→    const feed = useGame.getState().killfeed
+   728→    for (const k of feed) if (k.killer === me) kills++
+   729→    return this.kills + kills
+   730→  }
+   731→}
+   732→

@@ -266,6 +266,95 @@ function buildSoldier(team: Team): THREE.Object3D | null {
   return rig
 }
 
+// ----------------------------------------------------------
+// v6.3 — Soldado estático para las BATALLAS de cinemática
+// (clon del soldado GLB o humanoide low-poly, en pose de
+// apuntado con arma; el motor lo anima con fogonazos/trazas)
+// ----------------------------------------------------------
+export interface CineSoldierParts {
+  root: THREE.Group
+  body: THREE.Group
+  weaponHolder: THREE.Group
+  muzzle: THREE.Object3D | null
+  usingSoldier: boolean
+}
+
+export function buildCineSoldier(team: Team, weapon: WeaponId): CineSoldierParts {
+  const root = new THREE.Group()
+  const body = new THREE.Group()
+  root.add(body)
+  const rig = buildSoldier(team)
+  const weaponHolder = new THREE.Group()
+
+  if (rig) {
+    // ---- soldado GLB: pose de APUNTADO estática (aim = 1) ----
+    body.add(rig)
+    const arms = [findBone(rig, /^mixamorigLeftArm_/), findBone(rig, /^mixamorigRightArm_/)]
+    const fores = [findBone(rig, /^mixamorigLeftForeArm_/), findBone(rig, /^mixamorigRightForeArm_/)]
+    if (arms[0]) arms[0].rotation.set(SOLDIER_AIM.sArm.x, SOLDIER_AIM.sArm.y, SOLDIER_AIM.sArm.z)
+    if (arms[1]) arms[1].rotation.set(SOLDIER_AIM.tArm.x, SOLDIER_AIM.tArm.y, SOLDIER_AIM.tArm.z)
+    if (fores[0]) fores[0].rotation.set(SOLDIER_AIM.sFore.x, 0, SOLDIER_AIM.sFore.z)
+    if (fores[1]) fores[1].rotation.set(SOLDIER_AIM.tFore.x, 0, SOLDIER_AIM.tFore.z)
+    const legs = [findBone(rig, /^mixamorigLeftUpLeg_/), findBone(rig, /^mixamorigRightUpLeg_/)]
+    const knees = [findBone(rig, /^mixamorigLeftLeg_/), findBone(rig, /^mixamorigRightLeg_/)]
+    if (legs[0]) legs[0].rotation.x = -0.14
+    if (legs[1]) legs[1].rotation.x = 0.1
+    if (knees[0]) knees[0].rotation.x = 0.16
+    if (knees[1]) knees[1].rotation.x = 0.06
+    body.add(weaponHolder)
+    // IK de una sola pasada: manos tras la pose → posición del arma
+    const handT = findBone(rig, /^mixamorigRightHand_/)
+    const handS = findBone(rig, /^mixamorigLeftHand_/)
+    if (handT && handS) {
+      handT.updateWorldMatrix(true, false)
+      handS.updateWorldMatrix(true, false)
+      const v1 = new THREE.Vector3().setFromMatrixPosition(handT.matrixWorld)
+      const v2 = new THREE.Vector3().setFromMatrixPosition(handS.matrixWorld)
+      body.worldToLocal(v1)
+      body.worldToLocal(v2)
+      const dir = v2.clone().sub(v1).multiplyScalar(0.8)
+      dir.y -= 0.06
+      dir.z += 0.85
+      dir.normalize()
+      weaponHolder.position.copy(v1)
+      weaponHolder.position.y += 0.02
+      weaponHolder.quaternion.setFromUnitVectors(_Z, dir)
+    } else {
+      weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
+    }
+  } else {
+    // ---- humanoide low-poly (fallback sin GLB): brazos al arma ----
+    const h = buildHumanoid(team)
+    body.add(h.bodyGroup)
+    h.tag.visible = false
+    h.tagBg.visible = false
+    h.arms[0].rotation.set(HUM_AIM.tArm.x, 0, HUM_AIM.tArm.z)
+    h.arms[1].rotation.set(HUM_AIM.sArm.x, 0, HUM_AIM.sArm.z)
+    // el holder del humanoide ya cuelga de su bodyGroup (movido a body)
+    h.weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
+    h.weaponHolder.rotation.x = -0.06
+    return finalizeCineSoldier(root, body, h.weaponHolder, weapon, false)
+  }
+
+  return finalizeCineSoldier(root, body, weaponHolder, weapon, true)
+}
+
+/** acopla el arma al soporte y devuelve las partes listas */
+function finalizeCineSoldier(root: THREE.Group, body: THREE.Group, holder: THREE.Group, weapon: WeaponId, usingSoldier: boolean): CineSoldierParts {
+  let muzzle: THREE.Object3D | null = null
+  if (weapon && weapon !== 'knife') {
+    const built = buildGLBWeapon(weapon) ?? buildWeaponModel(weapon)
+    const group = built.group
+    group.scale.setScalar(0.95)
+    group.rotation.y = Math.PI
+    group.position.set(0, 0.06, 0.05)
+    holder.add(group)
+    muzzle = built.muzzle
+  }
+  root.traverse(o => { if (o instanceof THREE.Mesh) o.castShadow = true })
+  return { root, body, weaponHolder: holder, muzzle, usingSoldier }
+}
+
 export class RemotePlayers {
   scene: THREE.Scene
   map = new Map<string, RemotePlayer>()

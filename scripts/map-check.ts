@@ -6,9 +6,12 @@ import {
 
 let errors = 0
 
-// 1) cajas dentro de límites
+// 1) cajas dentro de límites (v6.3: la SIERRA perimetral de roca puede
+//    sobresalir hasta ±100 — es el límite natural del mapa, como el
+//    anillo montañoso del modo historia)
 for (const b of MAP_BOXES) {
-  if (Math.abs(b.x) > 72 || Math.abs(b.z) > 72) { console.error(`FUERA DE LÍMITES: box(${b.x},${b.z})`); errors++ }
+  const limit = b.mat === 'rock' ? 100 : 72
+  if (Math.abs(b.x) > limit || Math.abs(b.z) > limit) { console.error(`FUERA DE LÍMITES: box(${b.x},${b.z}) mat=${b.mat}`); errors++ }
   if (b.h <= 0 || b.w <= 0 || b.d <= 0) { console.error(`DIMENSIÓN INVÁLIDA: box(${b.x},${b.y},${b.z})`); errors++ }
 }
 console.log(`Cajas: ${MAP_BOXES.length}`)

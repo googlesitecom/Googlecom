@@ -14,14 +14,14 @@ import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
   PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS, FLAG_A, FLAG_B, DOM_ZONES,
   STORY_EXTRACTION,
-  getMapData,
+  getMapData, keyLabel,
   type MapData, type MapId,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
   isMouseButton, mouseButtonIndex,
 } from './shared'
 import { AudioEngine, getAudio } from './audio'
 import { Effects } from './effects'
-import { RemotePlayers } from './remote-players'
+import { RemotePlayers, buildCineSoldier } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
 import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture, makeCloudTexture, makeWaterNoiseTexture, makeBirdTexture } from './textures'
 import { useGame } from './store'
@@ -52,6 +52,36 @@ interface ZiplineView {
   to: THREE.Vector3
   dir: THREE.Vector3
   len: number
+}
+
+/** línea de diálogo de una cinemática (v6.3) */
+export interface CineDialogue {
+  at: number
+  dur?: number
+  who: string
+  text: string
+}
+
+/** batalla visible durante una cinemática (v6.3) */
+export interface CineBattleSpec {
+  cx: number
+  cz: number
+  /** orientación de la línea de frente (rad; los bandos miran perpendicular) */
+  yaw: number
+  /** soldados por bando */
+  count: number
+}
+
+interface CineSoldier {
+  root: THREE.Group
+  body: THREE.Group
+  muzzle: THREE.Object3D | null
+  team: Team
+  weapon: WeaponId
+  fallen: boolean
+  fallT: number
+  /** variación de fase para no disparar en sincronía */
+  phase: number
 }
 
 interface JumpPadView {
@@ -85,6 +115,15 @@ const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
   roof: { roughness: 0.65, metalness: 0.3 },
   explosive: { roughness: 0.42, metalness: 0.45 },
   rock: { roughness: 0.96, metalness: 0.0 },
+}
+
+/** colores de locutor para los diálogos de cinemática (v6.3) */
+const CINE_SPEAKERS: Record<string, string> = {
+  MANDO: '#f5c04a',   // ámbar de mando
+  RED: '#6ee7a0',     // verde de red
+  RÍOS: '#7db8f5',    // azul de resistencia
+  VEGA: '#f06a6a',    // rojo del villano
+  OPERATIVO: '#ffe9c4',
 }
 
 export class Game {
@@ -206,8 +245,16 @@ export class Game {
     title: '',
     subtitle: '',
     onDone: null as (() => void) | null,
+    dialogues: null as CineDialogue[] | null,
   }
   private cineTitleFade = 0
+
+  // ---- v6.3: batalla visible durante la cinemática ----
+  private cineSoldiers: CineSoldier[] = []
+  private cineBattle: CineBattleSpec | null = null
+  private cineShotNext = 0
+  private cineBoomNext = 0
+  private cineBattlePos = new THREE.Vector3()
 
   // ---- ambiente v6: cielo con shader, nubes, agua, polvo y aves ----
   private clouds: THREE.Sprite[] = []
@@ -851,7 +898,8 @@ export class Game {
       this.cloudSpeeds.push(1.2 + Math.random() * 1.8)
     }
 
-    // --- agua animada (río/lago/fuente del valle) ---
+    // --- agua animada (río/lago/fuente del valle; v6.3: fuentes urbanas
+    //     también, con su propia altura de lámina) ---
     if (this.md.water.length) {
       this.ensureWaterMaterial()
       this.waterMeshes = []
@@ -861,7 +909,7 @@ export class Game {
         const geo = new THREE.PlaneGeometry(w.w, w.d, segs, segsZ)
         const mesh = new THREE.Mesh(geo, this.waterMat!)
         mesh.rotation.x = -Math.PI / 2
-        mesh.position.set(w.x, 0.052, w.z)
+        mesh.position.set(w.x, w.y ?? 0.052, w.z)
         this.scene.add(mesh)
         this.mapMeshes.push(mesh)
         this.waterMeshes.push(mesh)
@@ -2042,6 +2090,9 @@ export class Game {
     // director del modo historia
     this.story?.update(dt, t)
 
+    // v6.3: batalla de la cinemática (fogonazos/trazas/explosiones)
+    if (this.cine.active && this.cineBattle) this.updateCineBattle(dt)
+
     // remotos (interpolación)
     const renderT = performance.now() - GAME.INTERP_DELAY
     const states = this.remotes.update(dt, renderT, this.team, this.camera.position, this.cine.active)
@@ -2212,11 +2263,13 @@ export class Game {
     }
 
     // salto / gravedad (con salto-agarre de tirolina y salto-deslizamiento)
+    // v6.3: el agarre también vale EN EL AIRE — saltar hacia el cable y
+    // pulsar salto/interactuar lo coge a media trayectoria
     const wantJump = inputActive && (this.keys.has(this.kb('jump')) || this.consumePadJump())
-    if (wantJump && this.onGround && (!this.crouching || sliding)) {
+    if (wantJump) {
       if (this.tryAttachZipline()) {
-        // agarrado a la tirolina
-      } else {
+        // agarrado a la tirolina (suelo o aire)
+      } else if (this.onGround && (!this.crouching || sliding)) {
         this.vel.y = sliding ? 6.2 : 5.6
         this.slideT = 0
         this.onGround = false
@@ -2332,50 +2385,74 @@ export class Game {
     }
   }
 
-  /** Aviso contextual: tirolina cerca */
+  /** Aviso contextual: tirolina cerca (v6.3: en CUALQUIER punto del cable) */
   private updateInteractHint(): void {
     this.interactHint = ''
-    if (this.ziplineIdx >= 0 || this.dead) return
-    if (performance.now() < this.ziplineCooldownUntil) return
-    for (const z of this.ziplines) {
-      const d = Math.hypot(z.from.x - this.pos.x, z.from.z - this.pos.z)
-      if (d < 2.6 && Math.abs(this.pos.y - z.from.y) < 2.6) {
-        this.interactHint = '[E / ESPACIO] TIROLINA'
-        return
-      }
+    if (this.dead) return
+    if (this.ziplineIdx >= 0) {
+      this.interactHint = `[${keyLabel(this.kb('jump'))}] SOLTAR TIROLINA`
+      return
     }
+    if (performance.now() < this.ziplineCooldownUntil) return
+    const reach = this.ziplineReach()
+    if (reach) this.interactHint = `[${keyLabel(this.kb('zipline'))} / ${keyLabel(this.kb('jump'))}] TIROLINA`
   }
 
   // ----------------------------------------------------------
-  // Tirolinas (montar/descender)
+  // Tirolinas (v6.3: agarre en cualquier punto del cable —
+  // antes solo valía pegado al poste de salida, y mantener el
+  // salto pulsado te soltaba nada más agarrarte)
   // ----------------------------------------------------------
   private ziplineCooldownUntil = 0
+  /** estaba pulsado el salto el frame anterior (detección de flanco) */
+  private ziplineJumpPrev = false
+
+  /** punto más cercano del cable al jugador (si está al alcance) */
+  private ziplineReach(): { idx: number; t: number } | null {
+    for (let i = 0; i < this.ziplines.length; i++) {
+      const z = this.ziplines[i]
+      // proyección del jugador sobre el segmento del cable
+      const px = this.pos.x - z.from.x
+      const pz = this.pos.z - z.from.z
+      const t = Math.min(0.97, Math.max(0, (px * z.dir.x + pz * z.dir.z) / z.len))
+      const cx = z.from.x + z.dir.x * z.len * t
+      const cy = z.from.y + z.dir.y * z.len * t
+      const cz = z.from.z + z.dir.z * z.len * t
+      const dh = Math.hypot(cx - this.pos.x, cz - this.pos.z)
+      const dy = cy - this.pos.y
+      // alcance horizontal 2,8 m y el cable entre las rodillas y ~2,9 m sobre los pies
+      if (dh <= 2.8 && dy >= -1.2 && dy <= 2.9) return { idx: i, t }
+    }
+    return null
+  }
 
   private tryAttachZipline(): boolean {
     if (this.ziplineIdx >= 0 || this.dead) return false
     if (performance.now() < this.ziplineCooldownUntil) return false
-    for (let i = 0; i < this.ziplines.length; i++) {
-      const z = this.ziplines[i]
-      const d = Math.hypot(z.from.x - this.pos.x, z.from.z - this.pos.z)
-      if (d < 2.4 && Math.abs(this.pos.y - z.from.y) < 2.6) {
-        this.ziplineIdx = i
-        this.ziplineT = 0
-        this.crouching = false
-        this.slideT = 0
-        this.vel.set(0, 0, 0)
-        this.audio.throwSound()
-        return true
-      }
-    }
-    return false
+    const reach = this.ziplineReach()
+    if (!reach) return false
+    const z = this.ziplines[reach.idx]
+    this.ziplineIdx = reach.idx
+    // se engancha DONDE está el jugador (sin teletransporte al poste)
+    this.ziplineT = Math.max(0.02, reach.t)
+    this.crouching = false
+    this.slideT = 0
+    this.vel.set(0, 0, 0)
+    // recordar si el salto ya estaba pulsado: la MISMA pulsación no soltará
+    this.ziplineJumpPrev = this.keys.has(this.kb('jump'))
+    this.audio.throwSound()
+    void z
+    return true
   }
 
   private updateZiplineRide(dt: number): void {
     const z = this.ziplines[this.ziplineIdx]
     if (!z) { this.ziplineIdx = -1; return }
-    // soltar con salto
-    const wantOff = this.keys.has(this.kb('jump')) || this.consumePadJump()
-    if (wantOff && this.ziplineT > 0.06) {
+    // soltar: PULSACIÓN NUEVA de salto (la que te enganchó no cuenta)
+    const jumpHeld = this.keys.has(this.kb('jump'))
+    const freshPress = jumpHeld && !this.ziplineJumpPrev
+    this.ziplineJumpPrev = jumpHeld
+    if ((freshPress || this.consumePadJump()) && this.ziplineT > 0.05) {
       this.detachZipline(false)
       return
     }
@@ -2396,7 +2473,7 @@ export class Game {
   private detachZipline(atEnd: boolean): void {
     const z = this.ziplines[this.ziplineIdx]
     this.ziplineIdx = -1
-    this.ziplineCooldownUntil = performance.now() + 1400
+    this.ziplineCooldownUntil = performance.now() + 700
     this.onGround = false
     if (z) {
       const keep = atEnd ? 8.5 : 4
@@ -3028,6 +3105,8 @@ export class Game {
     dur: number
     title: string
     subtitle: string
+    dialogues?: CineDialogue[]
+    battle?: CineBattleSpec
     onDone?: () => void
   }): void {
     if (this.cine.active) return
@@ -3036,6 +3115,7 @@ export class Game {
     this.cine.title = spec.title
     this.cine.subtitle = spec.subtitle
     this.cine.onDone = spec.onDone ?? null
+    this.cine.dialogues = spec.dialogues ?? null
     this.cine.active = true
     this.cine.t0 = performance.now()
     this.cine.dur = spec.dur
@@ -3043,6 +3123,8 @@ export class Game {
     this.cine.look = new THREE.CatmullRomCurve3(spec.looks, false, 'catmullrom', 0.4)
     this.minimap.style.opacity = '0'
     useGame.getState().setHud({ cineActive: true })
+    // v6.3: batalla visible durante el sobrevuelo
+    if (spec.battle) this.startCineBattle(spec.battle)
   }
 
   /** teletransporte suave del jugador (puntos de control de capítulo) */
@@ -3057,12 +3139,117 @@ export class Game {
   endCinematic(): void {
     if (!this.cine.active) return
     this.cine.active = false
+    this.cine.dialogues = null
+    this.endCineBattle()
     this.minimap.style.opacity = '1'
     useGame.getState().setHud({ cineActive: false })
     const cb = this.cine.onDone
     this.cine.onDone = null
     this.requestLock()
     cb?.()
+  }
+
+  // ----------------------------------------------------------
+  // v6.3 — BATALLA de cinemática: soldados enfrentados que
+  // intercambian fuego (fogonazos, trazadoras, caídas y
+  // explosiones) mientras la cámara sobrevuela la escena
+  // ----------------------------------------------------------
+  private startCineBattle(spec: CineBattleSpec): void {
+    this.endCineBattle()
+    this.cineBattle = spec
+    this.cineBattlePos.set(spec.cx, 1.3, spec.cz)
+    this.cineShotNext = performance.now() + 400
+    this.cineBoomNext = performance.now() + 2200 + Math.random() * 1800
+    const dir = new THREE.Vector2(Math.sin(spec.yaw), Math.cos(spec.yaw))
+    const perp = new THREE.Vector2(-dir.y, dir.x)
+    const gap = 7.5          // media distancia entre bandos
+    const weapons: WeaponId[] = ['ar47', 'ar47', 'mp9', 'p9']
+    for (let side = 0; side < 2; side++) {
+      const team: Team = side === 0 ? 'A' : 'B'
+      const sgn = side === 0 ? -1 : 1
+      for (let i = 0; i < spec.count; i++) {
+        // línea de frente: separación a lo largo del eje perpendicular,
+        // pequeño escalonamiento en profundidad para que no parezcan latas
+        const along = (i - (spec.count - 1) / 2) * 2.6 + (Math.random() - 0.5) * 0.8
+        const depth = gap + Math.random() * 2.2
+        const x = spec.cx + perp.x * along + dir.x * depth * sgn
+        const z = spec.cz + perp.y * along + dir.y * depth * sgn
+        const w = weapons[(i + side) % weapons.length]
+        const parts = buildCineSoldier(team, w)
+        // mirar al bando contrario (el modelo mira a +Z: yaw = atan2(dx,dz))
+        // bando A (lado −dir) mira a +dir; bando B (lado +dir) mira a −dir
+        parts.root.position.set(x, 0.02, z)
+        parts.root.rotation.y = (sgn === -1 ? spec.yaw : spec.yaw + Math.PI) + (Math.random() - 0.5) * 0.14
+        this.scene.add(parts.root)
+        this.cineSoldiers.push({
+          root: parts.root, body: parts.body, muzzle: parts.muzzle,
+          team, weapon: w, fallen: false, fallT: 0,
+          phase: Math.random() * Math.PI * 2,
+        })
+      }
+    }
+  }
+
+  private updateCineBattle(dt: number): void {
+    const spec = this.cineBattle
+    if (!spec || !this.cineSoldiers.length) return
+    const now = performance.now()
+    // caídas en curso
+    for (const s of this.cineSoldiers) {
+      if (!s.fallen) continue
+      s.fallT = Math.min(1, s.fallT + dt * 2.4)
+      s.body.rotation.x = Math.PI / 2 * s.fallT
+      s.body.position.y = -0.62 * s.fallT
+    }
+    // disparos: fogonazo + trazadora + sonido lejano
+    if (now >= this.cineShotNext) {
+      this.cineShotNext = now + 130 + Math.random() * 260
+      const standing = this.cineSoldiers.filter(s => !s.fallen)
+      if (standing.length > 1) {
+        const shooter = standing[Math.floor(Math.random() * standing.length)]
+        const enemies = this.cineSoldiers.filter(s => s.team !== shooter.team)
+        if (enemies.length) {
+          const target = enemies[Math.floor(Math.random() * enemies.length)]
+          const from = new THREE.Vector3()
+          if (shooter.muzzle) {
+            shooter.muzzle.updateWorldMatrix(true, false)
+            from.setFromMatrixPosition(shooter.muzzle.matrixWorld)
+          } else {
+            from.copy(shooter.root.position).setY(1.35)
+          }
+          // apuntar al pecho del objetivo (con dispersión: fallan a veces)
+          const to = target.root.position.clone().setY(1.25)
+          to.x += (Math.random() - 0.5) * 1.7
+          to.z += (Math.random() - 0.5) * 1.7
+          this.effects.muzzleFlash(from, 1.15)
+          this.effects.tracer(from, to, true)
+          const dist = from.distanceTo(this.camera.position)
+          this.audio.gunshot(shooter.weapon === 'p9' ? 'pistol' : 'rifle', Math.max(18, dist))
+          // impacto del bando rival: chispas + a veces cae
+          if (!target.fallen && Math.random() < 0.16) {
+            this.effects.impact(to, new THREE.Vector3(0, 1, 0))
+            const alive = this.cineSoldiers.filter(s => s.team === target.team && !s.fallen).length
+            if (alive > 1) target.fallen = true
+          }
+        }
+      }
+    }
+    // explosión periódica en el frente
+    if (now >= this.cineBoomNext) {
+      this.cineBoomNext = now + 3400 + Math.random() * 3200
+      const p = this.cineBattlePos.clone()
+      p.x += (Math.random() - 0.5) * 13
+      p.z += (Math.random() - 0.5) * 13
+      p.y = 0.6 + Math.random() * 1.2
+      this.effects.explosion(p)
+      this.audio.explosion(Math.max(24, p.distanceTo(this.camera.position)))
+    }
+  }
+
+  private endCineBattle(): void {
+    for (const s of this.cineSoldiers) this.scene.remove(s.root)
+    this.cineSoldiers.length = 0
+    this.cineBattle = null
   }
 
   // ----------------------------------------------------------
@@ -3458,6 +3645,55 @@ export class Game {
         ctx.fillStyle = 'rgba(255,229,180,0.96)'
         ctx.fillText(this.cine.subtitle, cx, H * 0.78)
         ctx.restore()
+      }
+      // v6.3 — DIÁLOGOS de la cinemática: subtítulos con locutor,
+      // estilo radio táctica (la caja baja junto a la barra de cine)
+      if (this.cine.dialogues) {
+        const line = this.cine.dialogues.find(d => tCine >= d.at && tCine < d.at + (d.dur ?? 5.4))
+        if (line) {
+          const lineDur = line.dur ?? 5.4
+          const aIn = Math.min(1, (tCine - line.at) / 0.3)
+          const aOut = Math.min(1, Math.max(0, (line.at + lineDur - tCine) / 0.4))
+          ctx.save()
+          ctx.globalAlpha = Math.min(aIn, aOut)
+          ctx.textAlign = 'left'
+          ctx.font = 'bold 16px "Courier New", monospace'
+          // color del locutor
+          const whoColor = CINE_SPEAKERS[line.who] ?? '#ffd9a6'
+          const whoW = ctx.measureText(line.who).width
+          ctx.font = '15px "Courier New", monospace'
+          // partir en dos líneas si es largo
+          const maxW = Math.min(W * 0.72, 860)
+          const words = line.text.split(' ')
+          const lines: string[] = []
+          let cur = ''
+          for (const wd of words) {
+            const test = cur ? `${cur} ${wd}` : wd
+            if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = wd } else cur = test
+          }
+          if (cur) lines.push(cur)
+          const boxW = Math.max(whoW + 18, ...lines.map(l => ctx.measureText(l).width)) + 28
+          const boxH = 30 + lines.length * 22
+          const bx = cx - boxW / 2
+          const by = H - Math.min(1, tCine / 0.7) * H * 0.115 - boxH - 26
+          ctx.fillStyle = 'rgba(6,8,6,0.74)'
+          ctx.fillRect(bx, by, boxW, boxH)
+          ctx.strokeStyle = 'rgba(216,164,24,0.55)'
+          ctx.lineWidth = 1.5
+          ctx.strokeRect(bx, by, boxW, boxH)
+          // barra lateral del color del locutor
+          ctx.fillStyle = whoColor
+          ctx.fillRect(bx, by, 4, boxH)
+          ctx.font = 'bold 16px "Courier New", monospace'
+          ctx.fillStyle = whoColor
+          ctx.fillText(line.who, bx + 16, by + 21)
+          ctx.font = '15px "Courier New", monospace'
+          ctx.fillStyle = 'rgba(245,240,230,0.96)'
+          for (let li = 0; li < lines.length; li++) {
+            ctx.fillText(lines[li], bx + 16 + whoW + 14, by + 21 + li * 22)
+          }
+          ctx.restore()
+        }
       }
       // fundido a negro al final de la cinemática de historia
       if (this.cine.kind === 'story' && dur - tCine < 0.9 && dur > 2) {

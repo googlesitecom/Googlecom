@@ -1223,6 +1223,56 @@ export const DOM_ZONES: DomZoneSpec[] = [
   { id: 'C', name: 'CHARLIE', x: 46, z: 58 },    // parque SE
 ]
 
+// ------------------------------------------------------------
+// v6.3 — GRÁFICOS DEL VALLE PARA TODOS LOS MODOS (ciudad):
+// sierra perimetral natural (el mismo anillo montañoso del modo
+// historia cierra el horizonte urbano y limita el mapa) y rocas
+// de cobertura. Debe añadirse ANTES de calcular MAP_AABBS.
+// ------------------------------------------------------------
+{
+  // sierra alrededor de la ciudad, FUERA de la zona jugable (±70) y de
+  // los anillos de compra (spawns ±62 + radio 8): masas de roca con la
+  // misma textura de estratos del valle
+  const R = 84          // este/oeste
+  const RN = 86         // norte/sur
+  const ridge = (x: number, z: number, w: number, d: number, h: number): void => B(x, h / 2 - 1.4, z, w, h, d, 'rock')
+  ridge(0, R, 200, 18, 15)
+  ridge(0, -RN, 200, 18, 13)
+  ridge(R, 0, 18, 200, 14)
+  ridge(-R, 0, 18, 200, 12)
+  // macizos en las cuatro esquinas (más altos: cierran las diagonales)
+  ridge(84, 84, 28, 28, 26)
+  ridge(-84, 84, 28, 28, 22)
+  ridge(84, -84, 28, 28, 24)
+  ridge(-84, -84, 28, 28, 20)
+  // picos irregulares deterministas a lo largo del anillo
+  let rs = 104729
+  const rnd = (): number => { rs = (rs * 16807) % 2147483647; return rs / 2147483647 }
+  for (let k = 0; k < 40; k++) {
+    const u = -76 + rnd() * 152
+    const h = 9 + rnd() * 13
+    const w = 10 + rnd() * 9
+    const side = k % 4
+    if (side === 0) ridge(u, R + 5, w, 12, h)
+    else if (side === 1) ridge(u, -(RN + 5), w, 12, h)
+    else if (side === 2) ridge(R + 5, u, 12, w, h)
+    else ridge(-(R + 5), u, 12, w, h)
+  }
+}
+// rocas sueltas de cobertura (parques y perímetro verde)
+for (const [rx, rz, rw, rh] of [
+  // parque SE (junto a los árboles, fuera de la zona CHARLIE, waypoints y spawns)
+  [39.5, 44, 2.0, 1.1], [41.5, 45.5, 1.4, 0.8], [64.8, 46.5, 1.8, 1.0], [57, 63.5, 1.5, 0.9],
+  // perímetro (cobertura exterior junto a los árboles de borde)
+  [63.5, 21.5, 2.2, 1.3], [-63.5, -21.5, 2.0, 1.2], [21.5, 64, 1.7, 1.0], [-21.5, -64, 1.9, 1.1],
+  // junto a la gasolinera y el radar
+  [-45, 55, 1.6, 0.9], [-57.5, 38, 2.1, 1.2],
+  // borde norte (acceso al mercado/torre)
+  [-12, -63.5, 1.8, 1.0], [30, -62.5, 1.5, 0.9],
+] as [number, number, number, number][]) {
+  B(rx, rh / 2, rz, rw, rh, rw, 'rock')
+}
+
 export const MAP_BOXES: MapBox[] = MAP
 
 // --- Spawns ---
@@ -1795,8 +1845,9 @@ export interface MapData {
   pickups: PickupSpot[]
   neons: NeonSpec[]
   puddles: PuddleSpec[]
-  /** láminas de agua animadas (río/lago/fuente) — las dibuja el motor */
-  water: { x: number; z: number; w: number; d: number }[]
+  /** láminas de agua animadas (río/lago/fuente) — las dibuja el motor;
+   *  y = altura de la lámina (por defecto 0.052: a ras de suelo) */
+  water: { x: number; z: number; w: number; d: number; y?: number }[]
   /** centro que custodian los bots en el modo historia (undefined = spawn) */
   guard?: [number, number]
   spawnA: [number, number, number]
@@ -1818,7 +1869,12 @@ export const MAPS: Record<MapId, MapData> = {
     pickups: PICKUP_SPOTS,
     neons: NEONS,
     puddles: PUDDLES,
-    water: [],
+    // v6.3: agua animada del valle también en la ciudad — las dos
+    // fuentes (rotonda central y parque SE) con su lámina en alto
+    water: [
+      { x: 0, z: 0, w: 4.8, d: 4.8, y: 0.78 },    // fuente de la rotonda
+      { x: 51, z: 46, w: 2.9, d: 2.9, y: 0.58 },  // fuente del parque SE
+    ],
     spawnA: SPAWN_A,
     spawnB: SPAWN_B,
   },
