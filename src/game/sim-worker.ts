@@ -3,8 +3,13 @@
 // Ejecuta la simulación autoritativa fuera del hilo principal
 // para evitar la limitación de temporizadores en pestañas
 // ocultas o sin foco (los workers no se estrangulan).
+// El MAPA se elige al iniciar: solo se construye el del modo
+// jugado (PvP o historia).
 // ============================================================
-import { GameSim } from './sim'
+import { GameSim, initSimMap } from './sim'
+import { setActiveMap } from './map-types'
+import { buildPvpMap } from './map-pvp'
+import { buildStoryMap } from './map-story'
 import type { BotDifficulty, Team, WeaponId, GameMode } from './shared'
 
 interface JoinCmd { id: string; name: string; team: Team; announce?: boolean }
@@ -22,6 +27,7 @@ interface HitsCmd {
 interface GrenadeCmd { id: string; data: { pos: [number, number, number]; vel: [number, number, number]; kind?: 'frag' | 'smoke' } }
 interface PlayerShotCmd { id: string; data: { origin: [number, number, number]; hit: [number, number, number] } }
 interface BarrelCmd { id: string; data: { pos: [number, number, number] } }
+interface StoryHitCmd { id: string; data: { targetId: string; dmg: number } }
 
 let sim: GameSim | null = null
 
@@ -37,6 +43,11 @@ self.onmessage = (ev: MessageEvent) => {
   switch (msg.e) {
     case 'init': {
       const cfg = d as { difficulty: BotDifficulty; bots: number; mode?: GameMode }
+      // MAPA SEGÚN EL MODO: la historia usa su propio mapa.
+      // initSimMap puebla los datos perezosos del módulo de simulación
+      // (NUNCA se leen en la carga del módulo, solo tras fijar el mapa)
+      setActiveMap(cfg.mode === 'historia' ? buildStoryMap() : buildPvpMap())
+      initSimMap()
       sim?.stop()
       sim = new GameSim(cfg.difficulty, cfg.mode ?? 'escaramuza')
       sim.onRoute((e, data, to) => post(e, data, to))
@@ -86,6 +97,12 @@ self.onmessage = (ev: MessageEvent) => {
       const c = d as BarrelCmd
       const p = sim?.getPlayer(c.id)
       if (p && sim && c.data) sim.handleBarrelShot(p, c.data.pos)
+      break
+    }
+    case 'storyHit': {
+      const c = d as StoryHitCmd
+      const p = sim?.getPlayer(c.id)
+      if (p && sim && c.data) sim.handleStoryTargetHit(p, c.data.targetId, c.data.dmg)
       break
     }
     case 'leave': {

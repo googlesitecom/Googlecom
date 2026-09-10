@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Sí, se ve el panel de misión arriba (FASE 1 DESEMBARCO).\n2) No, no hay una columna de luz amarilla como marcador de objetivo.\n3) Sí, el ambiente es azul/frío distinto a un desierto cálido.\n4) Sí, se ven elementos militares como contenedores y una estructura que parece una barcaza o muelle.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788998443,
+  "id": "2026091008004060a19aeeb4d84c7c",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026091008004060a19aeeb4d84c7c",
+  "usage": {
+    "completion_tokens": 88,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 984,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1072
+  }
+}

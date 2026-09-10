@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) **Sí.** Abajo a la izquierda se ve la barra de vida (100) y el escudo (0). Abajo a la derecha se muestra la munición del arma actual (15/90) y los huecos para las armas 2 (P9) y 3 (Cuchillo).\n2) Se ve un **minimapa** en la esquina superior izquierda que muestra el layout del mapa con paredes, puntos de interés y posiciones de los jugadores.\n3) **Sí.** En la parte superior central se ve el marcador con las puntuaciones de los equipos (Ámbar 0 - Verde 3), el temporizador (2:49) y la ronda actual (Ronda 1).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788998101,
+  "id": "202609100754471a7405f686e74b29",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609100754471a7405f686e74b29",
+  "usage": {
+    "completion_tokens": 159,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 954,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1113
+  }
+}

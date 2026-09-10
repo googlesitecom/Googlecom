@@ -9,11 +9,13 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
-  GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
-  PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS, FLAG_A, FLAG_B, DOM_ZONES,
+  GAME, WEAPONS,
+  PICKUP_INFO,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
-  isMouseButton, mouseButtonIndex,
+  isMouseButton, mouseButtonIndex, computeDamage,
 } from './shared'
+import { activeMap } from './map-types'
+import type { StoryState } from './story-director'
 import { AudioEngine } from './audio'
 import { Effects } from './effects'
 import { RemotePlayers } from './remote-players'
@@ -100,7 +102,7 @@ export class Game {
   net!: NetClient
 
   // estado del jugador local
-  pos = new THREE.Vector3(SPAWN_A[0], 0.02, SPAWN_A[2])
+  pos = new THREE.Vector3(activeMap().spawnA[0], 0.02, activeMap().spawnA[2])
   private vel = new THREE.Vector3()
   yaw = Math.PI * 0.25
   pitch = 0
@@ -198,14 +200,18 @@ export class Game {
   private slideDir = new THREE.Vector3()
   /** aviso contextual ([E] tirolina) */
   interactHint = ''
-  // pasto instanciado (viento)
-  private grassUniform = { value: 0 }
-  private grassMesh: THREE.InstancedMesh | null = null
 
   // ---- objetivos de los modos (banderas / zonas) ----
   private flagViews = new Map<'a' | 'b', { group: THREE.Group; cloth: THREE.Mesh; beam: THREE.Mesh }>()
   private zoneViews: { id: 'A' | 'B' | 'C'; ring: THREE.Mesh; ring2: THREE.Mesh; letter: THREE.Sprite }[] = []
   private zoneMatCache = new Map<string, THREE.MeshBasicMaterial>()
+
+  // historia (modo campaña)
+  private storyMarker: THREE.Group | null = null
+  private storyMarkerMat: THREE.MeshBasicMaterial | null = null
+  private supplyCrate: THREE.Group | null = null
+  private crateRing: THREE.Mesh | null = null
+  private storyTargets = new Map<string, { group: THREE.Group; core: THREE.Mesh; light: THREE.PointLight }>()
 
   // botones del ratón pulsados (para binds de disparar/apuntar)
   private mouseButtons = new Set<number>()
@@ -229,6 +235,10 @@ export class Game {
   private scoreboardT = 0
   private mapMeshes: THREE.Mesh[] = []
   private disposed = false
+
+  /** mapa activo (PvP o historia) — fijado antes de crear el motor */
+  private map = activeMap()
+  private mapHalf = activeMap().mapHalf
 
   // pool de luces de farola (6 luces recolocables en las 18 farolas)
   private lampLights: THREE.PointLight[] = []
@@ -272,6 +282,17 @@ export class Game {
     this.buildSky()
     this.buildEnvironment()
     this.buildLights(quality)
+    // ambiente del mapa: la historia juega con un ocaso azul más frío
+    if (this.map.mood === 'ocaso-norte') {
+      this.scene.fog = new THREE.FogExp2(0x8fa4bd, 0.0082)
+      this.sunLight.color.setHex(0xd8e4f2)
+      this.sunLight.intensity = 1.7
+      this.renderer.toneMappingExposure = 1.02
+      this.scene.background = null
+      if (this.skyMesh) {
+        ;(this.skyMesh.material as THREE.MeshBasicMaterial).color.setHex(0x9db6d4)
+      }
+    }
     this.buildMap(quality)
     this.buildStreets()
     this.buildObjectives()
@@ -405,6 +426,7 @@ export class Game {
 
   private buildMap(quality: 'baja' | 'media' | 'alta'): void {
     const texs = makeWorldTextures()
+    const map = this.map
 
     // suelo (ligeramente satinado para reflejar el cielo del atardecer)
     const groundMat = new THREE.MeshStandardMaterial({ map: texs.sand, roughness: 0.88, metalness: 0.05 })
@@ -432,7 +454,7 @@ export class Game {
     const geoCache = new Map<string, THREE.BufferGeometry>()
     let barrelSeq = 0
     const staticGeos = new Map<MatKey, THREE.BufferGeometry[]>()
-    for (const b of MAP_BOXES) {
+    for (const b of map.boxes) {
       if (b.mat === 'barrel' || b.mat === 'explosive') {
         // los barriles siguen siendo meshes individuales (explotan/desaparecen)
         const key = `b${b.h}`
@@ -486,22 +508,26 @@ export class Game {
     // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
     this.buildDecor(texs)
 
-    // ---- mecánicas del mapa: pasto, arbustos, flores, tirolinas, plataformas ----
-    this.buildGrass(quality)
-    this.buildBushes(quality)
-    this.buildFlowers(quality)
+    // ---- mecánicas del mapa: tirolinas y plataformas de salto ----
+    // (el pasto/arbustos/flores del suelo se QUITARON para reducir el lag,
+    //  petición del usuario — los árboles GLB del usuario se mantienen)
     this.buildZiplines()
     this.buildJumpPads()
 
-    // marcas de spawn (zonas de compra)
-    for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(GAME.BUY_RADIUS - 0.15, GAME.BUY_RADIUS, 40),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
-      )
-      ring.rotation.x = -Math.PI / 2
-      ring.position.set(sp[0], 0.03, sp[2])
-      this.scene.add(ring)
+    // ---- modo historia: generadores + marcador de objetivo ----
+    if (map.kind === 'historia') this.buildStoryObjects()
+
+    // marcas de spawn (zonas de compra) — solo PvP
+    if (map.kind === 'pvp') {
+      for (const [sp, color] of [[map.spawnA, 0xf59e0b], [map.spawnB, 0x22c55e]] as [number[], number][]) {
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(GAME.BUY_RADIUS - 0.15, GAME.BUY_RADIUS, 40),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+        )
+        ring.rotation.x = -Math.PI / 2
+        ring.position.set(sp[0], 0.03, sp[2])
+        this.scene.add(ring)
+      }
     }
   }
 
@@ -529,7 +555,7 @@ export class Game {
   private buildContactShadows(): void {
     const pos: number[] = []
     const uvs: number[] = []
-    for (const b of MAP_BOXES) {
+    for (const b of this.map.boxes) {
       if (b.h < 1.0) continue                       // solo objetos altos
       if (b.y - b.h / 2 > 0.6) continue             // apoyados en el suelo
       if (b.w > 26 || b.d > 26) continue            // sin muros de perímetro
@@ -561,7 +587,7 @@ export class Game {
     const leafMatA = new THREE.MeshStandardMaterial({ color: 0x55683d, roughness: 0.95, flatShading: true })
     const leafMatB = new THREE.MeshStandardMaterial({ color: 0x47592f, roughness: 0.95, flatShading: true })
     const leafGeo = new THREE.SphereGeometry(1, 8, 7)
-    for (const [tx, tz] of TREES) {
+    for (const [tx, tz] of this.map.trees) {
       for (const [ox, oy, oz, s, m] of [
         [0, 4.6, 0, 2.1, leafMatA], [0.9, 3.8, 0.4, 1.5, leafMatB], [-0.8, 3.9, -0.3, 1.4, leafMatB],
       ] as [number, number, number, number, THREE.MeshStandardMaterial][]) {
@@ -585,8 +611,8 @@ export class Game {
     const headMat = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.6, metalness: 0.7 })
     const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc26b, emissiveIntensity: 4, roughness: 0.4 })
     const sparkTex = makeSparkTexture()
-    this.lampPos = LAMPS.map(([lx, lz]) => [lx, lz] as [number, number])
-    for (const [lx, lz] of LAMPS) {
+    this.lampPos = this.map.lamps.map(([lx, lz]) => [lx, lz] as [number, number])
+    for (const [lx, lz] of this.map.lamps) {
       const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.22, 0.42), headMat)
       head.position.set(lx, 5.15, lz)
       head.castShadow = true
@@ -601,16 +627,16 @@ export class Game {
       glow.scale.setScalar(1.6)
       this.scene.add(glow)
     }
-    const nLampLights = Math.min(6, LAMPS.length)
+    const nLampLights = Math.min(6, this.map.lamps.length)
     for (let i = 0; i < nLampLights; i++) {
       const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
-      light.position.set(LAMPS[i][0], 4.85, LAMPS[i][1])
+      light.position.set(this.map.lamps[i][0], 4.85, this.map.lamps[i][1])
       this.scene.add(light)
       this.lampLights.push(light)
     }
 
     // --- letreros de neón ---
-    for (const n of NEONS) {
+    for (const n of this.map.neons) {
       const tex = makeNeonTexture(n.text, n.color)
       const aspect = tex.image ? (tex.image as HTMLCanvasElement).width / (tex.image as HTMLCanvasElement).height : 4
       const h = n.w / aspect
@@ -633,7 +659,7 @@ export class Game {
     const puddleMat = new THREE.MeshStandardMaterial({
       color: 0x2a3038, roughness: 0.12, metalness: 0.85, envMapIntensity: 1.8,
     })
-    for (const p of PUDDLES) {
+    for (const p of this.map.puddles) {
       const puddle = new THREE.Mesh(new THREE.CircleGeometry(p.r, 20), puddleMat)
       puddle.rotation.x = -Math.PI / 2
       puddle.position.set(p.x, 0.024, p.z)
@@ -641,229 +667,25 @@ export class Game {
       this.scene.add(puddle)
     }
 
-    // --- neumáticos apilados (barrio y gasolinera) ---
-    const tireMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95 })
-    const tireGeo = new THREE.TorusGeometry(0.46, 0.2, 8, 16)
-    for (const [tx, tz, count] of [
-      [-46.5, -9.6, 3], [33.5, -25.5, 2], [-33.5, 25.5, 2], [41.5, -26.5, 3],
-    ] as [number, number, number][]) {
-      for (let i = 0; i < count; i++) {
-        const tire = new THREE.Mesh(tireGeo, tireMat)
-        tire.rotation.x = -Math.PI / 2
-        tire.rotation.z = Math.random() * Math.PI
-        tire.position.set(tx + (Math.random() - 0.5) * 0.15, 0.2 + i * 0.38, tz + (Math.random() - 0.5) * 0.15)
-        tire.castShadow = true
-        tire.receiveShadow = true
-        this.scene.add(tire)
+    // --- neumáticos apilados (barrio y gasolinera — solo mapa PvP) ---
+    if (this.map.kind === 'pvp') {
+      const tireMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95 })
+      const tireGeo = new THREE.TorusGeometry(0.46, 0.2, 8, 16)
+      for (const [tx, tz, count] of [
+        [-46.5, -9.6, 3], [33.5, -25.5, 2], [-33.5, 25.5, 2], [41.5, -26.5, 3],
+      ] as [number, number, number][]) {
+        for (let i = 0; i < count; i++) {
+          const tire = new THREE.Mesh(tireGeo, tireMat)
+          tire.rotation.x = -Math.PI / 2
+          tire.rotation.z = Math.random() * Math.PI
+          tire.position.set(tx + (Math.random() - 0.5) * 0.15, 0.2 + i * 0.38, tz + (Math.random() - 0.5) * 0.15)
+          tire.castShadow = true
+          tire.receiveShadow = true
+          this.scene.add(tire)
+        }
       }
     }
     void texs
-  }
-
-  // ----------------------------------------------------------
-  // Pasto instanciado (1 draw call, viento en el vertex shader)
-  // ----------------------------------------------------------
-  private buildGrass(quality: 'baja' | 'media' | 'alta'): void {
-    const bladeH = 0.55
-    // dos quads cruzados por brizna
-    const plane = new THREE.PlaneGeometry(0.095, bladeH)
-    plane.translate(0, bladeH / 2, 0)
-    const plane2 = plane.clone()
-    plane2.rotateY(Math.PI / 2)
-    const geo = mergeGeometries([plane, plane2])!
-    const mat = new THREE.MeshLambertMaterial({
-      color: 0xffffff, side: THREE.DoubleSide, fog: true,
-    })
-    // viento: balanceo en el vertex shader usando la fase por instancia
-    mat.onBeforeCompile = shader => {
-      shader.uniforms.uTime = this.grassUniform
-      // declarar el uniform en el GLSL (sin esto el programa no compila)
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        '#include <common>\nuniform float uTime;',
-      )
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-        #ifdef USE_INSTANCING
-          float gwx = instanceMatrix[3][0];
-          float gwz = instanceMatrix[3][2];
-          float gph = gwx * 0.35 + gwz * 0.41;
-          float gsway = sin(uTime * 1.7 + gph) * 0.5 + sin(uTime * 2.6 + gph * 1.7) * 0.5;
-          float ghFac = max(0.0, position.y) / ${bladeH.toFixed(2)};
-          transformed.x += gsway * 0.085 * ghFac;
-          transformed.z += cos(uTime * 1.3 + gph) * 0.045 * ghFac;
-        #endif`,
-      )
-    }
-
-    const count = quality === 'alta' ? 14000 : quality === 'media' ? 9000 : 3200
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    mesh.frustumCulled = false
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
-    const pos = new THREE.Vector3()
-    const col = new THREE.Color()
-    let placed = 0
-    // matones alrededor de puntos abiertos (evitando AABBs y charcos)
-    const clumps = Math.floor(count / 78)
-    for (let c = 0; c < clumps && placed < count; c++) {
-      const cx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      const cz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      // cerca de árboles: matones más densos y verdes
-      let nearTree = 0
-      for (const [tx, tz] of TREES) {
-        const d = Math.hypot(tx - cx, tz - cz)
-        if (d < 18) { nearTree = Math.max(nearTree, 1 - d / 18); break }
-      }
-      if (this.grassBlocked(cx, cz, 1.4)) continue
-      const per = 58 + Math.floor(Math.random() * 34) + Math.floor(nearTree * 34)
-      for (let i = 0; i < per && placed < count; i++) {
-        const a = Math.random() * Math.PI * 2
-        const r = Math.pow(Math.random(), 0.6) * 1.5
-        const gx = cx + Math.cos(a) * r
-        const gz = cz + Math.sin(a) * r
-        if (this.grassBlocked(gx, gz, 0.45)) continue
-        pos.set(gx, 0, gz)
-        q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
-        const hS = 0.65 + Math.random() * 0.75 + nearTree * 0.25
-        sc.set(1, hS, 1)
-        m.compose(pos, q, sc)
-        mesh.setMatrixAt(placed, m)
-        // tonos de pasto seco del desierto (más verde cerca de árboles)
-        const t = Math.random()
-        // verde oliva más marcado (tonos pajizos claros se leían como palos
-        // pálidos en la distancia; el usuario pidió pasto más verde)
-        col.setRGB(
-          0.30 + t * 0.11 + nearTree * 0.04,
-          0.44 + t * 0.16 + nearTree * 0.16,
-          0.18 + t * 0.07,
-        )
-        mesh.setColorAt(placed, col)
-        placed++
-      }
-    }
-    // rellenar hasta el total con briznas sueltas si faltó
-    while (placed < count) {
-      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      if (this.grassBlocked(gx, gz, 0.45)) { mesh.setMatrixAt(placed, m.makeScale(0, 0, 0)); placed++; continue }
-      pos.set(gx, 0, gz)
-      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
-      sc.set(1, 0.6 + Math.random() * 0.6, 1)
-      m.compose(pos, q, sc)
-      mesh.setMatrixAt(placed, m)
-      col.setRGB(0.30 + Math.random() * 0.08, 0.44 + Math.random() * 0.14, 0.18 + Math.random() * 0.06)
-      mesh.setColorAt(placed, col)
-      placed++
-    }
-    mesh.count = placed
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.instanceMatrix.needsUpdate = true
-    this.grassMesh = mesh
-    this.scene.add(mesh)
-  }
-
-  /** ¿hay un obstáculo, charco o CALLE en (x,z)? (para no plantar pasto en el asfalto) */
-  private grassBlocked(x: number, z: number, margin: number): boolean {
-    // calles y aceras (más un margen)
-    if (Math.abs(x) < 6.2 + margin || Math.abs(z) < 6.2 + margin) return true
-    if (Math.abs(Math.abs(x) - 35) < 4.2 + margin || Math.abs(Math.abs(z) - 35) < 4.2 + margin) return true
-    if (Math.hypot(x, z) < 10.4 + margin) return true   // rotonda
-    for (let i = 0; i < MAP_AABBS.length; i++) {
-      const b = MAP_AABBS[i]
-      if (b.minY > 0.6) continue // encima del suelo (techos) no importa
-      if (x > b.minX - margin && x < b.maxX + margin && z > b.minZ - margin && z < b.maxZ + margin) {
-        if (b.maxY > 0.25) return true
-      }
-    }
-    for (const p of PUDDLES) {
-      if (Math.hypot(p.x - x, p.z - z) < p.r + 0.3) return true
-    }
-    return false
-  }
-
-  // ----------------------------------------------------------
-  // Arbustos instanciados (1 draw call, sombra suave)
-  // ----------------------------------------------------------
-  private buildBushes(quality: 'baja' | 'media' | 'alta'): void {
-    const count = quality === 'alta' ? 170 : quality === 'media' ? 110 : 50
-    const geo = new THREE.IcosahedronGeometry(0.55, 1)
-    geo.translate(0, 0.3, 0)
-    geo.scale(1, 0.65, 1)
-    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true })
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
-    const pos = new THREE.Vector3()
-    const col = new THREE.Color()
-    let placed = 0
-    let guard = 0
-    while (placed < count && guard++ < count * 30) {
-      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      if (this.grassBlocked(gx, gz, 0.8)) continue
-      pos.set(gx, 0, gz)
-      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI * 2)
-      const s = 0.7 + Math.random() * 0.9
-      sc.set(s, s * (0.75 + Math.random() * 0.5), s)
-      m.compose(pos, q, sc)
-      mesh.setMatrixAt(placed, m)
-      const t = Math.random()
-      col.setRGB(0.26 + t * 0.12, 0.36 + t * 0.16, 0.18 + t * 0.08)
-      mesh.setColorAt(placed, col)
-      placed++
-    }
-    mesh.count = placed
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.instanceMatrix.needsUpdate = true
-    this.scene.add(mesh)
-  }
-
-  // ----------------------------------------------------------
-  // Flores silvestres instanciadas (toques de color)
-  // ----------------------------------------------------------
-  private buildFlowers(quality: 'baja' | 'media' | 'alta'): void {
-    const count = quality === 'alta' ? 700 : quality === 'media' ? 420 : 140
-    const plane = new THREE.PlaneGeometry(0.17, 0.17)
-    plane.translate(0, 0.12, 0)
-    const plane2 = plane.clone()
-    plane2.rotateY(Math.PI / 2)
-    const geo = mergeGeometries([plane, plane2])!
-    // Lambert (NO Basic): instanceColor no se aplica en MeshBasicMaterial
-    // (las flores salían blancas); con Lambert el color por instancia funciona
-    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide, fog: true })
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
-    const pos = new THREE.Vector3()
-    const col = new THREE.Color()
-    const palette = [0xffd94d, 0xfff3c8, 0xb18cff, 0xff8fb0]
-    let placed = 0
-    let guard = 0
-    while (placed < count && guard++ < count * 30) {
-      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      if (this.grassBlocked(gx, gz, 0.4)) continue
-      pos.set(gx, 0, gz)
-      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
-      const s = 0.7 + Math.random() * 0.7
-      sc.set(s, s, s)
-      m.compose(pos, q, sc)
-      mesh.setMatrixAt(placed, m)
-      col.setHex(palette[Math.floor(Math.random() * palette.length)])
-      mesh.setColorAt(placed, col)
-      placed++
-    }
-    mesh.count = placed
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.instanceMatrix.needsUpdate = true
-    this.scene.add(mesh)
   }
 
   // ----------------------------------------------------------
@@ -872,7 +694,7 @@ export class Game {
   private buildZiplines(): void {
     const cableMat = new THREE.MeshStandardMaterial({ color: 0x2a2c2e, roughness: 0.35, metalness: 0.85 })
     const postMat = new THREE.MeshStandardMaterial({ color: 0x4a4235, roughness: 0.8, metalness: 0.2 })
-    for (const z of ZIPLINES) {
+    for (const z of this.map.ziplines) {
       const from = new THREE.Vector3(...z.from)
       const to = new THREE.Vector3(...z.to)
       const dir = to.clone().sub(from)
@@ -912,7 +734,7 @@ export class Game {
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x1f2326, roughness: 0.5, metalness: 0.6 })
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
     const sparkTex = makeSparkTexture()
-    for (const p of JUMP_PADS) {
+    for (const p of this.map.jumpPads) {
       const g = new THREE.Group()
       g.position.set(p.x, 0, p.z)
       const base = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.5, 0.14, 20), baseMat)
@@ -956,37 +778,24 @@ export class Game {
     const Y_SIDEWALK = 0.06
     const Y_RING = 0.05
     const Y_DASH = 0.08
-    const planes: [number, number, number, number][] = [
-      // [cx, cz, w, d] — avenidas y calles secundarias
-      [0, 0, 140, 12],      // avenida E-O
-      [0, 0, 12, 140],      // avenida N-S
-      [35, 0, 140, 8], [-35, 0, 140, 8],    // secundarias N-S
-      [0, 35, 8, 140], [0, -35, 8, 140],    // secundarias E-O
-    ]
-    for (const [cx, cz, w, d] of planes) {
+    const st = this.map.streets
+    for (const [cx, cz, w, d] of st.planes) {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), asphalt)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_ASPHALT, cz)
       m.receiveShadow = true
       this.scene.add(m)
     }
-    // rotonda: anillo de asfalto + pavimento interior
-    const ring = new THREE.Mesh(new THREE.RingGeometry(2.8, 9.8, 40), asphalt)
-    ring.rotation.x = -Math.PI / 2
-    ring.position.set(0, Y_RING, 0)
-    this.scene.add(ring)
-    const inner = new THREE.Mesh(new THREE.CircleGeometry(2.9, 32), sidewalk)
-    inner.rotation.x = -Math.PI / 2
-    inner.position.set(0, Y_RING + 0.01, 0)
-    this.scene.add(inner)
+    // plaza central de hormigón (pisa sobre el asfalto)
+    if (st.plaza) {
+      const plaza = new THREE.Mesh(new THREE.PlaneGeometry(st.plaza.w, st.plaza.d), sidewalk)
+      plaza.rotation.x = -Math.PI / 2
+      plaza.position.set(st.plaza.cx, Y_RING, st.plaza.cz)
+      plaza.receiveShadow = true
+      this.scene.add(plaza)
+    }
     // aceras (franjas claras junto a las avenidas)
-    const walks: [number, number, number, number][] = [
-      [0, 7.1, 140, 1.4], [0, -7.1, 140, 1.4],
-      [7.1, 0, 1.4, 140], [-7.1, 0, 1.4, 140],
-      [35, 4.6, 140, 1.2], [35, -4.6, 140, 1.2], [-35, 4.6, 140, 1.2], [-35, -4.6, 140, 1.2],
-      [4.6, 35, 1.2, 140], [-4.6, 35, 1.2, 140], [4.6, -35, 1.2, 140], [-4.6, -35, 1.2, 140],
-    ]
-    for (const [cx, cz, w, d] of walks) {
+    for (const [cx, cz, w, d] of st.walks) {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), sidewalk)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_SIDEWALK, cz)
@@ -1002,14 +811,8 @@ export class Game {
       g.translate(x, Y_DASH, z)
       dashes.push(g)
     }
-    for (let x = -66; x <= 66; x += 4) {
-      if (Math.abs(x) < 11) continue          // rotonda
-      addDash(x, 0, false)
-    }
-    for (let z = -66; z <= 66; z += 4) {
-      if (Math.abs(z) < 11) continue
-      addDash(0, z, true)
-    }
+    for (const x of st.dashXs) addDash(x, 0, false)
+    for (const z of st.dashZs) addDash(0, z, true)
     if (dashes.length) {
       const merged = mergeGeometries(dashes, false)!
       const lines = new THREE.Mesh(merged, lineMat)
@@ -1023,7 +826,7 @@ export class Game {
   // ----------------------------------------------------------
   private buildObjectives(): void {
     const mode = useGame.getState().gameMode
-    if (mode === 'bandera') {
+    if (mode === 'bandera' && this.map.flagA && this.map.flagB) {
       const mk = (key: 'a' | 'b', pos: [number, number], team: Team): void => {
         const color = team === 'A' ? 0xf59e0b : 0x22c55e
         const group = new THREE.Group()
@@ -1050,11 +853,11 @@ export class Game {
         this.scene.add(group)
         this.flagViews.set(key, { group, cloth, beam })
       }
-      mk('a', FLAG_A, 'A')
-      mk('b', FLAG_B, 'B')
+      mk('a', this.map.flagA!, 'A')
+      mk('b', this.map.flagB!, 'B')
     }
-    if (mode === 'dominacion') {
-      for (const z of DOM_ZONES) {
+    if (mode === 'dominacion' && this.map.domZones) {
+      for (const z of this.map.domZones) {
         const group = new THREE.Group()
         const mat = this.zoneMat(null)
         const ring = new THREE.Mesh(new THREE.RingGeometry(GAME.DOM_ZONE_RADIUS - 0.4, GAME.DOM_ZONE_RADIUS, 48), mat)
@@ -1084,6 +887,144 @@ export class Game {
         this.scene.add(group)
         this.zoneViews.push({ id: z.id, ring, ring2, letter })
       }
+    }
+  }
+
+  // ----------------------------------------------------------
+  // MODO HISTORIA: generadores, marcador de objetivo y caja
+  // ----------------------------------------------------------
+  private buildStoryObjects(): void {
+    // --- generadores (objetivos destructibles de la fase 2) ---
+    for (const tg of this.map.storyTargets ?? []) {
+      const group = new THREE.Group()
+      group.position.set(tg.x, 0, tg.z)
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4048, roughness: 0.55, metalness: 0.75 })
+      const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.9, 2.0), bodyMat)
+      body.position.y = 0.95
+      body.castShadow = true
+      body.receiveShadow = true
+      body.userData.storyTargetId = tg.id
+      group.add(body)
+      const ribMat = new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 0.7, metalness: 0.4 })
+      for (const rz of [-0.55, 0, 0.55]) {
+        const rib = new THREE.Mesh(new THREE.BoxGeometry(2.06, 0.16, 0.3), ribMat)
+        rib.position.set(0, 0.45 + (rz + 0.55) * 1.1, rz)
+        rib.userData.storyTargetId = tg.id
+        group.add(rib)
+      }
+      // núcleo naranja (punto débil visible)
+      const core = new THREE.Mesh(
+        new THREE.BoxGeometry(0.62, 0.62, 0.24),
+        new THREE.MeshStandardMaterial({ color: 0xff8c1a, emissive: 0xff6a00, emissiveIntensity: 2.4, roughness: 0.35 }),
+      )
+      core.position.set(0, 1.05, 1.02)
+      core.userData.storyTargetId = tg.id
+      group.add(core)
+      const light = new THREE.PointLight(0xff7b1a, 9, 7, 1.8)
+      light.position.set(0, 1.4, 1.2)
+      group.add(light)
+      this.scene.add(group)
+      this.shootables.push(body, core)
+      this.storyTargets.set(tg.id, { group, core, light })
+    }
+
+    // --- marcador de objetivo (columna de luz que se mueve por fases) ---
+    const marker = new THREE.Group()
+    this.storyMarkerMat = new THREE.MeshBasicMaterial({ color: 0xffc21a, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false })
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.6, 14, 14, 1, true), this.storyMarkerMat)
+    beam.position.y = 7
+    marker.add(beam)
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xffc21a, transparent: true, opacity: 0.75, side: THREE.DoubleSide })
+    const ring = new THREE.Mesh(new THREE.RingGeometry(2.6, 3.1, 36), ringMat)
+    ring.rotation.x = -Math.PI / 2
+    ring.position.y = 0.06
+    marker.add(ring)
+    const ring2 = new THREE.Mesh(new THREE.RingGeometry(3.9, 4.1, 36), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.28, side: THREE.DoubleSide }))
+    ring2.rotation.x = -Math.PI / 2
+    ring2.position.y = 0.06
+    marker.add(ring2)
+    marker.visible = false
+    this.scene.add(marker)
+    this.storyMarker = marker
+
+    // --- caja de suministros (zona de compra de la historia) ---
+    const crate = new THREE.Group()
+    const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6d3b, roughness: 0.85 })
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 1.2), crateMat)
+    box.position.y = 0.6
+    box.castShadow = true
+    box.receiveShadow = true
+    crate.add(box)
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.22, 1.3), new THREE.MeshStandardMaterial({ color: 0x6e5629, roughness: 0.9 }))
+    lid.position.y = 1.25
+    crate.add(lid)
+    const glow = new THREE.Mesh(
+      new THREE.RingGeometry(GAME.BUY_RADIUS - 0.18, GAME.BUY_RADIUS, 40),
+      new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.4, side: THREE.DoubleSide }),
+    )
+    glow.rotation.x = -Math.PI / 2
+    glow.position.y = 0.05
+    crate.add(glow)
+    this.crateRing = glow
+    crate.visible = false
+    this.scene.add(crate)
+    this.supplyCrate = crate
+  }
+
+  /** recibe el estado del modo historia desde la simulación */
+  onStoryEvent(s: StoryState): void {
+    const store = useGame.getState()
+    store.setHud({ story: s })
+    // marcador de objetivo
+    if (this.storyMarker) {
+      if (s.marker && !s.done) {
+        this.storyMarker.visible = true
+        this.storyMarker.position.set(s.marker[0], 0, s.marker[1])
+        const color = s.markerKind === 'defend' || s.markerKind === 'extract' ? 0x38bdf8 : s.markerKind === 'boss' ? 0xff4444 : s.markerKind === 'destroy' ? 0xff8c1a : 0xffc21a
+        this.storyMarkerMat!.color.setHex(color)
+      } else {
+        this.storyMarker.visible = false
+      }
+    }
+    // caja de suministros de la fase
+    if (this.supplyCrate) {
+      if (s.buyZone && !s.done) {
+        this.supplyCrate.visible = true
+        this.supplyCrate.position.set(s.buyZone[0], 0, s.buyZone[1])
+      } else {
+        this.supplyCrate.visible = false
+      }
+    }
+    // radio → anuncios
+    for (const msg of s.radio) {
+      store.addAnnouncement(msg, 'info')
+      this.audio.announceDing()
+    }
+  }
+
+  /** un generador ha sido destruido: FX + apagar el núcleo */
+  onStoryTargetDestroyed(id: string, pos: [number, number, number]): void {
+    const tg = this.storyTargets.get(id)
+    if (tg) {
+      tg.core.visible = false
+      tg.light.intensity = 0
+      const bodyMat = (tg.group.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial
+      bodyMat.color.setHex(0x1c1e22)
+      bodyMat.emissive?.setHex(0x000000)
+    }
+    this.onGrenadeExplode(pos)
+    this.audio.gunshot('shotgun', 0)
+  }
+
+  /** pulso del marcador de objetivo (anillo que respira) */
+  private updateStoryMarkerFX(t: number): void {
+    if (!this.storyMarker?.visible) return
+    const s = 1 + Math.sin(t * 3.2) * 0.09
+    this.storyMarker.scale.set(s, 1, s)
+    if (this.storyMarkerMat) this.storyMarkerMat.opacity = 0.26 + Math.sin(t * 3.2) * 0.08
+    if (this.crateRing) {
+      const cr = this.crateRing.material as THREE.MeshBasicMaterial
+      cr.opacity = 0.3 + Math.sin(t * 2.4) * 0.14
     }
   }
 
@@ -1235,7 +1176,8 @@ export class Game {
         this.procTrees.remove(c)
       }
       // número de árboles según calidad (el modelo es detallado: ~12k tris)
-      const count = quality === 'alta' ? TREES.length : quality === 'media' ? Math.min(TREES.length, 28) : Math.min(TREES.length, 16)
+      const trees = this.map.trees
+      const count = quality === 'alta' ? trees.length : quality === 'media' ? Math.min(trees.length, 28) : Math.min(trees.length, 16)
       const s = 9.5 / tree.rawHeight
       // hornear las transformaciones de todos los árboles en UNA geometría por
       // material (4 draw calls, sin instancing: el combo instancing+alphaTest
@@ -1249,7 +1191,7 @@ export class Game {
         if (onlyBark && !/^sugar_maple_bark$/i.test(part.mat.name)) continue
         const geos: THREE.BufferGeometry[] = []
         for (let i = 0; i < count; i++) {
-          const [tx, tz] = TREES[i]
+          const [tx, tz] = trees[i]
           pos.set(tx, 0, tz)
           q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI * 2)
           const v = 0.8 + Math.random() * 0.45
@@ -1375,11 +1317,15 @@ export class Game {
     else if (code === this.kb('lastWeapon')) this.switchTo(this.lastWeapon)
     else if (code === this.kb('zipline')) this.tryAttachZipline()
     else if (code === this.kb('slot1')) {
-      const p = PRIMARY_PREF.find(w => this.owned.includes(w))
-      if (p) this.switchTo(p)
+      // hueco 1: primera arma comprada (o la mejor principal)
+      const kept = this.owned.filter(w => w !== 'knife' && w !== 'p9')
+      const p = kept[0] ?? PRIMARY_PREF.find(w => this.owned.includes(w)) ?? 'p9'
+      this.switchTo(p)
     } else if (code === this.kb('slot2')) {
-      const p = SECONDARY_PREF.find(w => this.owned.includes(w))
-      if (p) this.switchTo(p)
+      // hueco 2: segunda arma comprada (o pistola)
+      const kept = this.owned.filter(w => w !== 'knife' && w !== 'p9')
+      const p = kept[1] ?? SECONDARY_PREF.find(w => this.owned.includes(w)) ?? 'p9'
+      this.switchTo(p)
     } else if (code === this.kb('slot3')) this.switchTo('knife')
   }
 
@@ -1665,10 +1611,10 @@ export class Game {
     // pociones flotantes
     this.updatePickupViews(dt, t)
 
-    // mecánicas del mapa: viento del pasto, barriles, saltadores
-    this.grassUniform.value = t
+    // mecánicas del mapa: barriles, saltadores
     this.updateBarrels()
     this.updateJumpPadFX(dt)
+    this.updateStoryMarkerFX(t)
 
     // HUD canvas
     this.drawOverlay(t)
@@ -1713,8 +1659,8 @@ export class Game {
     const minX = x - HALF_W, maxX = x + HALF_W
     const minY = y, maxY = y + h
     const minZ = z - HALF_W, maxZ = z + HALF_W
-    for (let i = 0; i < MAP_AABBS.length; i++) {
-      const b = MAP_AABBS[i]
+    for (let i = 0; i < this.map.aabbs.length; i++) {
+      const b = this.map.aabbs[i]
       if (maxX > b.minX && minX < b.maxX && maxY > b.minY && minY < b.maxY && maxZ > b.minZ && minZ < b.maxZ) {
         return true
       }
@@ -1843,8 +1789,8 @@ export class Game {
     if (this.vel.y <= 0) {
       // buscar suelo
       let groundY = 0
-      for (let i = 0; i < MAP_AABBS.length; i++) {
-        const b = MAP_AABBS[i]
+      for (let i = 0; i < this.map.aabbs.length; i++) {
+        const b = this.map.aabbs[i]
         if (this.pos.x + HALF_W > b.minX && this.pos.x - HALF_W < b.maxX &&
             this.pos.z + HALF_W > b.minZ && this.pos.z - HALF_W < b.maxZ) {
           if (b.maxY <= this.pos.y + 0.01 && b.maxY > groundY) groundY = b.maxY
@@ -1867,7 +1813,7 @@ export class Game {
       }
     }
     this.pos.y = Math.max(0, ny)
-    const lim = GAME.MAP_HALF - 0.8
+    const lim = this.mapHalf - 0.8
     this.pos.x = Math.max(-lim, Math.min(lim, this.pos.x))
     this.pos.z = Math.max(-lim, Math.min(lim, this.pos.z))
 
@@ -1909,7 +1855,15 @@ export class Game {
 
   /** Zona de compra (anillo de la base) */
   private updateBuyZone(): void {
-    const sp = this.team === 'A' ? SPAWN_A : SPAWN_B
+    const st = useGame.getState()
+    if (this.map.kind === 'historia') {
+      // historia: zona de compra = caja de suministros de la fase actual
+      const bz = st.story?.buyZone ?? null
+      const inZone2 = !!bz && Math.hypot(this.pos.x - bz[0], this.pos.z - bz[1]) < GAME.BUY_RADIUS
+      if (inZone2 !== st.buyZone) st.setHud({ buyZone: inZone2 })
+      return
+    }
+    const sp = this.team === 'A' ? this.map.spawnA : this.map.spawnB
     const inZone = Math.hypot(this.pos.x - sp[0], this.pos.z - sp[2]) < GAME.BUY_RADIUS
     if (inZone !== useGame.getState().buyZone) {
       useGame.getState().setHud({ buyZone: inZone })
@@ -2286,6 +2240,13 @@ export class Game {
         this.igniteBarrel(hit.barrel)
         continue
       }
+      if (hit.storyTargetId) {
+        // objetivo de la historia (generador): daño autoritativo en el worker
+        const dmg = Math.max(1, Math.round(computeDamage(w, 'body', hit.dist)))
+        this.net.sendStoryHit(hit.storyTargetId, dmg)
+        this.effects.impact(hit.point, hit.normal ?? dir.clone().negate(), true)
+        continue
+      }
       if (hit.player) {
         this.effects.impact(hit.point, dir.clone().negate(), true)
         hits.push({ target: hit.player, part: hit.part, dist: hit.dist, point: hit.point })
@@ -2359,7 +2320,7 @@ export class Game {
   /** Raycast local: mapa + hitboxes de jugadores remotos (hitboxes cacheadas) */
   private castBullet(eye: THREE.Vector3, dir: THREE.Vector3, maxDist: number,
     hbCache?: Map<string, { head: THREE.Box3; body: THREE.Box3; legs: THREE.Box3 } | null>): {
-    player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3; barrel?: number
+    player: string | null; part: 'head' | 'body' | 'legs'; dist: number; point: THREE.Vector3; normal?: THREE.Vector3; barrel?: number; storyTargetId?: string
   } | null {
     const cache = hbCache ?? this.buildHitboxCache()
 
@@ -2407,7 +2368,8 @@ export class Game {
     if (mapHit) {
       const normal = mapHit.face ? mapHit.face.normal.clone().transformDirection(mapHit.object.matrixWorld) : dir.clone().negate()
       const barrelIdx = (mapHit.object.userData as { barrelIdx?: number }).barrelIdx
-      return { player: null, part: 'body', dist: mapHit.distance, point: mapHit.point, normal, barrel: barrelIdx }
+      const storyTargetId = (mapHit.object.userData as { storyTargetId?: string }).storyTargetId
+      return { player: null, part: 'body', dist: mapHit.distance, point: mapHit.point, normal, barrel: barrelIdx, storyTargetId }
     }
     return null
   }
@@ -3130,10 +3092,10 @@ export class Game {
     const ctx = c.getContext('2d')!
     ctx.fillStyle = 'rgba(12,14,10,0.88)'
     ctx.fillRect(0, 0, 240, 240)
-    const S = 240 / (GAME.MAP_HALF * 2 + 2) // escala px/m
+    const S = 240 / (this.mapHalf * 2 + 2) // escala px/m
     const O = 120
     // cajas (solo muros altos visibles)
-    for (const b of MAP_BOXES) {
+    for (const b of this.map.boxes) {
       if (b.h < 1.0) continue
       const x = O + b.x * S, y = O + b.z * S
       ctx.fillStyle = b.h > 2.5 ? 'rgba(150,140,120,0.65)' : 'rgba(120,112,96,0.45)'
@@ -3141,12 +3103,14 @@ export class Game {
     }
     // zonas de spawn
     ctx.strokeStyle = 'rgba(245,158,11,0.5)'
-    ctx.beginPath(); ctx.arc(O + SPAWN_A[0] * S, O + SPAWN_A[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
-    ctx.strokeStyle = 'rgba(34,197,94,0.5)'
-    ctx.beginPath(); ctx.arc(O + SPAWN_B[0] * S, O + SPAWN_B[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+    if (this.map.kind === 'pvp') {
+      ctx.beginPath(); ctx.arc(O + this.map.spawnA[0] * S, O + this.map.spawnA[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+      ctx.strokeStyle = 'rgba(34,197,94,0.5)'
+      ctx.beginPath(); ctx.arc(O + this.map.spawnB[0] * S, O + this.map.spawnB[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+    }
     // barriles explosivos (puntos rojos)
     ctx.fillStyle = 'rgba(220,60,40,0.85)'
-    for (const b of EXPLODING_BARRELS) {
+    for (const b of this.map.barrels) {
       ctx.beginPath()
       ctx.arc(O + b.x * S, O + b.z * S, 2.2, 0, Math.PI * 2)
       ctx.fill()
@@ -3154,7 +3118,7 @@ export class Game {
     // tirolinas (líneas)
     ctx.strokeStyle = 'rgba(190,200,210,0.55)'
     ctx.lineWidth = 1.4
-    for (const z of ZIPLINES) {
+    for (const z of this.map.ziplines) {
       ctx.beginPath()
       ctx.moveTo(O + z.from[0] * S, O + z.from[2] * S)
       ctx.lineTo(O + z.to[0] * S, O + z.to[2] * S)
@@ -3162,7 +3126,7 @@ export class Game {
     }
     // plataformas de salto (cuadrados naranjas)
     ctx.fillStyle = 'rgba(255,140,26,0.9)'
-    for (const p of JUMP_PADS) {
+    for (const p of this.map.jumpPads) {
       ctx.fillRect(O + p.x * S - 2.5, O + p.z * S - 2.5, 5, 5)
     }
     this.mapStatic = c
@@ -3173,7 +3137,7 @@ export class Game {
     const W = this.minimap.width
     ctx.clearRect(0, 0, W, W)
     ctx.drawImage(this.mapStatic, 0, 0)
-    const S = 240 / (GAME.MAP_HALF * 2 + 2)
+    const S = 240 / (this.mapHalf * 2 + 2)
     const O = 120
     const now = performance.now()
 

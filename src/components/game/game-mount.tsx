@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { Game } from '@/game/engine'
 import { setGame, getGame } from '@/game/game-instance'
 import { useGame } from '@/game/store'
+import { setActiveMap } from '@/game/map-types'
 
 export function GameMount() {
   const canvas3dRef = useRef<HTMLCanvasElement>(null)
@@ -18,26 +19,39 @@ export function GameMount() {
     if (initRef.current) return
     if (phase === 'menu') return
     initRef.current = true
-    const game = new Game()
-    setGame(game)
-    game.audio.start()
-    game.audio.setVolume(useGame.getState().settings.volume)
-    game.init(canvas3dRef.current!, overlayRef.current!, minimapRef.current!)
-    const st = useGame.getState()
-    game.net.connect(playerName || 'Operador', {
-      mode: st.mode,
-      roomCode: st.roomCode,
-      fillBots: st.fillBots,
-      difficulty: st.botDifficulty,
-      gameMode: st.gameMode,
-    })
-    if (process.env.NODE_ENV === 'development') {
-      ;(window as unknown as Record<string, unknown>).__game = game
-    }
+    let game: Game | null = null
+    let cancelled = false
+
+    // CARGA PEREZOSA DE MODOS: solo se importa y construye el mapa
+    // del modo elegido (la historia NO carga el mapa PvP ni al revés)
+    void (async () => {
+      const st = useGame.getState()
+      const gameMode = st.gameMode
+      const map = gameMode === 'historia'
+        ? (await import('@/game/map-story')).buildStoryMap()
+        : (await import('@/game/map-pvp')).buildPvpMap()
+      if (cancelled) return
+      setActiveMap(map)
+
+      game = new Game()
+      setGame(game)
+      game.audio.start()
+      game.audio.setVolume(useGame.getState().settings.volume)
+      game.init(canvas3dRef.current!, overlayRef.current!, minimapRef.current!)
+      game.net.connect(playerName || 'Operador', {
+        mode: 'solo',
+        difficulty: st.botDifficulty,
+        gameMode,
+      })
+      if (process.env.NODE_ENV === 'development') {
+        ;(window as unknown as Record<string, unknown>).__game = game
+      }
+    })()
 
     return () => {
+      cancelled = true
       initRef.current = false
-      game.dispose()
+      if (game) game.dispose()
       setGame(null)
     }
   }, [])

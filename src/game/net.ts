@@ -1,23 +1,21 @@
 // ============================================================
 // FRONTERA CERO — Cliente de red
-// - solo:  simulación local con bots (sin servidor)
-// - host:  simulación local + sala 1v1 por PeerJS (P2P)
-// - guest: se conecta a la sala del anfitrión por PeerJS
+// La simulación local corre en un Web Worker (30 Hz). El
+// multijugador P2P (PeerJS) se RETIRÓ porque no funcionaba en
+// el despliegue estático de GitHub Pages y pedía lag extra.
 // ============================================================
-import { Peer, type DataConnection } from 'peerjs'
 import type { Game } from './engine'
 import { useGame } from './store'
 import {
-  GAME, generateRoomCode, peerIdForRoom,
+  GAME,
   type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode,
 } from './shared'
+import type { StoryState } from './story-director'
 
-export type NetMode = 'solo' | 'host' | 'guest'
+export type NetMode = 'solo'
 
 export interface ConnectOpts {
   mode: NetMode
-  roomCode?: string
-  fillBots?: number
   difficulty?: BotDifficulty
   gameMode?: GameMode
 }
@@ -27,22 +25,14 @@ interface InputMsg {
   crouch: boolean; speed: number; weapon: string
 }
 
-interface PeerMsg { e: string; d: unknown }
-
 const HOST_ID = 'p1'
-const GUEST_ID = 'p2'
 
 export class NetClient {
-  id = ''
+  id = HOST_ID
   game: Game
   mode: NetMode = 'solo'
   private worker: Worker | null = null
-  private peer: Peer | null = null
-  private guestConn: DataConnection | null = null  // host → invitado
-  private hostConn: DataConnection | null = null   // invitado → anfitrión
   private lastInput: InputMsg | null = null
-  private pingTimer: ReturnType<typeof setInterval> | null = null
-  private welcomeTimeout: ReturnType<typeof setTimeout> | null = null
   private disposed = false
 
   constructor(game: Game) {
@@ -50,256 +40,37 @@ export class NetClient {
   }
 
   connect(name: string, opts: ConnectOpts): void {
-    this.mode = opts.mode
+    this.mode = 'solo'
     const s = useGame.getState()
     s.setPhase('connecting')
     s.setHud({ netStatus: 'connecting', netError: '', ping: 0 })
-    if (opts.mode === 'solo') {
-      this.connectSolo(name, opts.difficulty ?? 'normal', opts.gameMode ?? 'escaramuza')
-    } else if (opts.mode === 'host') {
-      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0, opts.gameMode ?? 'escaramuza')
-    } else {
-      this.connectGuest(name, opts.roomCode ?? '')
-    }
-  }
-
-  // ------------------------------------------------------------
-  // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
-  // ------------------------------------------------------------
-  private startSimWorker(difficulty: BotDifficulty, bots: number, gameMode: GameMode): void {
+    // simulación local con bots (en worker, sin estrangular la pestaña)
     const worker = new Worker(new URL('./sim-worker.ts', import.meta.url))
     this.worker = worker
     worker.onmessage = (ev: MessageEvent) => {
       if (this.disposed) return
       const msg = ev.data as { e: string; d: unknown; to?: string }
       if (!msg || typeof msg.e !== 'string') return
-      // entregar localmente (broadcast o dirigido al anfitrión)
       if (!msg.to || msg.to === HOST_ID) this.dispatchLocal(msg.e, msg.d)
-      // reenviar al invitado P2P (broadcast o dirigido a él)
-      if (!msg.to || msg.to === GUEST_ID) this.forwardToGuest({ e: msg.e, d: msg.d })
     }
-    this.sendToSim({ e: 'init', d: { difficulty, bots, mode: gameMode } })
+    // bots: el modo historia NO usa el reparto clásico de equipos
+    // (sus enemigos los genera el director de fases)
+    const gameMode = opts.gameMode ?? 'escaramuza'
+    const bots = gameMode === 'historia' ? 0 : Math.floor(GAME.BOT_COUNT / 2)
+    this.sendToSim({ e: 'init', d: { difficulty: opts.difficulty ?? 'normal', bots, mode: gameMode } })
+    this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
+    useGame.getState().setHud({ netStatus: 'connected' })
   }
 
   private sendToSim(msg: unknown): void {
     this.worker?.postMessage(msg)
   }
 
-  /** Reenvía un mensaje al invitado, encolando si el canal aún no abre */
-  private forwardToGuest(msg: PeerMsg): void {
-    const c = this.guestConn
-    if (!c) return
-    if (c.open) {
-      this.sendToPeer(c, msg)
-    } else {
-      this.guestOutbox.push(msg)
-      if (this.guestOutbox.length > 200) this.guestOutbox.splice(0, 100)
-    }
-  }
-
   // ------------------------------------------------------------
-  // MODO SOLO — simulación local con bots (en worker)
-  // ------------------------------------------------------------
-  private connectSolo(name: string, difficulty: BotDifficulty, gameMode: GameMode): void {
-    this.id = HOST_ID
-    this.startSimWorker(difficulty, Math.floor(GAME.BOT_COUNT / 2), gameMode)
-    this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
-    useGame.getState().setHud({ netStatus: 'connected' })
-  }
-
-  // ------------------------------------------------------------
-  // MODO ANFITRIÓN — sala 1v1 por PeerJS + worker
-  // ------------------------------------------------------------
-  private connectHost(name: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode): void {
-    this.id = HOST_ID
-    // sincronizar el código de sala con el store (puede haberse regenerado)
-    if (useGame.getState().roomCode !== code) useGame.getState().setHud({ roomCode: code })
-    this.startSimWorker(difficulty, fill, gameMode)
-    this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
-    useGame.getState().setHud({ netStatus: 'waiting' })
-
-    const peer = new Peer(peerIdForRoom(code), { debug: 0 })
-    this.peer = peer
-
-    peer.on('open', () => {
-      if (this.disposed) return
-      useGame.getState().addAnnouncement(`SALA ${code} CREADA — comparte el código`, 'info')
-    })
-
-    peer.on('connection', (conn: DataConnection) => {
-      if (this.disposed) { conn.close(); return }
-      if (this.guestConn) { conn.close(); return } // 1v1: un solo invitado
-
-      // asignar inmediatamente (el open puede llegar después de datos)
-      this.guestConn = conn
-
-      conn.on('open', () => {
-        // vaciar mensajes encolados mientras se abría el canal
-        for (const m of this.guestOutbox) this.sendToPeer(conn, m)
-        this.guestOutbox.length = 0
-      })
-
-      conn.on('data', (raw: unknown) => {
-        if (this.disposed) return
-        const msg = raw as PeerMsg
-        if (!msg || typeof msg.e !== 'string') return
-
-        if (msg.e === 'join') {
-          if (!this.guestJoined) {
-            this.guestJoined = true
-            const gname = String((msg.d as { name?: string })?.name ?? 'Rival').slice(0, 16) || 'Rival'
-            this.sendToSim({ e: 'join', d: { id: GUEST_ID, name: gname, team: 'B', announce: true } })
-            // el welcome para el invitado llega por la ruta del worker (to='p2')
-            useGame.getState().setHud({ netStatus: 'connected' })
-          }
-          return
-        }
-        if (msg.e === 'ping') {
-          this.sendToPeer(conn, { e: 'pong', d: msg.d })
-          return
-        }
-        // entradas de juego del invitado → worker
-        this.sendToSim({ e: msg.e, d: { id: GUEST_ID, data: msg.d } })
-      })
-
-      conn.on('close', () => {
-        if (this.guestConn === conn) {
-          this.guestConn = null
-          this.guestJoined = false
-          this.guestOutbox.length = 0
-          this.sendToSim({ e: 'leave', d: { id: GUEST_ID } })
-          useGame.getState().setHud({ netStatus: 'waiting' })
-          useGame.getState().addAnnouncement('El rival abandonó la sala', 'info')
-        }
-      })
-      conn.on('error', () => { /* silencioso */ })
-    })
-
-    peer.on('error', (err: unknown) => {
-      if (this.disposed) return
-      const type = (err as { type?: string })?.type
-      if (type === 'unavailable-id' && attempt < 3) {
-        // código ocupado → regenerar sala con otro código
-        peer.destroy()
-        this.peer = null
-        const newCode = generateRoomCode()
-        useGame.getState().setHud({ roomCode: newCode })
-        this.connectHost(name, newCode, fill, difficulty, attempt + 1, gameMode)
-      } else if (type === 'unavailable-id') {
-        useGame.getState().addAnnouncement('No se pudo crear la sala, inténtalo de nuevo', 'info')
-      } else {
-        useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS)', 'info')
-        useGame.getState().setHud({ netStatus: 'connected' }) // el juego local sigue funcionando
-      }
-    })
-  }
-
-  private guestJoined = false
-  private guestOutbox: PeerMsg[] = []
-
-  // ------------------------------------------------------------
-  // MODO INVITADO — se une a la sala del anfitrión
-  // ------------------------------------------------------------
-  private connectGuest(name: string, code: string): void {
-    this.id = GUEST_ID
-    this.mode = 'guest'
-    const clean = code.trim().toUpperCase()
-    if (clean.length < 4 || clean.length > 8) {
-      this.fail('Código de sala inválido')
-      return
-    }
-    useGame.getState().setHud({ roomCode: clean })
-
-    this.welcomeTimeout = setTimeout(() => {
-      if (useGame.getState().netStatus !== 'connected') {
-        this.fail('Tiempo de conexión agotado. Revisa el código o tu conexión.')
-      }
-    }, 30000)
-
-    const peer = new Peer({ debug: 0 }) // id aleatorio
-    this.peer = peer
-
-    peer.on('open', () => {
-      if (this.disposed) return
-      const conn = peer.connect(peerIdForRoom(clean), { reliable: true, serialization: 'json' })
-      this.hostConn = conn
-
-      conn.on('open', () => {
-        if (this.disposed) return
-        this.sendToPeer(conn, { e: 'join', d: { name } })
-      })
-
-      conn.on('data', (raw: unknown) => {
-        if (this.disposed) return
-        const msg = raw as PeerMsg
-        if (!msg || typeof msg.e !== 'string') return
-        if (msg.e === 'welcome') {
-          if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
-          useGame.getState().setHud({ netStatus: 'connected' })
-          useGame.getState().setConnected(true)
-          this.dispatchLocal('welcome', msg.d)
-          this.startPing()
-          return
-        }
-        if (msg.e === 'pong') {
-          const t = (msg.d as { t?: number })?.t
-          if (t) useGame.getState().setHud({ ping: Math.max(0, Math.round(performance.now() - t)) })
-          return
-        }
-        this.dispatchLocal(msg.e, msg.d)
-      })
-
-      conn.on('close', () => {
-        if (this.disposed) return
-        useGame.getState().setConnected(false)
-        useGame.getState().setHud({ netStatus: 'error', netError: 'Se perdió la conexión con el anfitrión' })
-      })
-      conn.on('error', () => { /* manejado por peer error */ })
-    })
-
-    peer.on('error', (err: unknown) => {
-      if (this.disposed) return
-      const type = (err as { type?: string })?.type
-      if (type === 'peer-unavailable') this.fail('Sala no encontrada. Revisa el código.')
-      else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
-        this.fail('No se puede alcanzar el servidor de salas (PeerJS)')
-      } else {
-        this.fail(`Error de conexión (${type ?? 'desconocido'})`)
-      }
-    })
-  }
-
-  private fail(msg: string): void {
-    if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
-    useGame.getState().setHud({ netStatus: 'error', netError: msg })
-  }
-
-  private startPing(): void {
-    this.stopPing()
-    this.pingTimer = setInterval(() => {
-      if (this.hostConn?.open) {
-        this.sendToPeer(this.hostConn, { e: 'ping', d: { t: Math.round(performance.now()) } })
-      }
-    }, 2000)
-  }
-
-  private stopPing(): void {
-    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
-  }
-
-  private sendToPeer(conn: DataConnection, msg: PeerMsg): void {
-    try { conn.send(msg) } catch { /* conexión cerrada */ }
-  }
-
-  // ------------------------------------------------------------
-  // Entradas hacia la simulación (worker local o anfitrión remoto)
+  // Entradas hacia la simulación (worker local)
   // ------------------------------------------------------------
   sendInput(): void {
     this.lastInput = this.game.inputState()
-    if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'input', d: this.lastInput })
-      return
-    }
     this.sendToSim({ e: 'input', d: { id: this.id, data: this.lastInput } })
   }
 
@@ -308,63 +79,39 @@ export class NetClient {
       weapon,
       hits: hits.map(h => ({ target: h.target, part: h.part, dist: Math.round(h.dist) })),
     }
-    if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'hits', d: payload })
-      return
-    }
     this.sendToSim({ e: 'hits', d: { id: this.id, data: payload } })
   }
 
   buy(itemId: string): void {
-    if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'buy', d: { itemId } })
-      return
-    }
     this.sendToSim({ e: 'buy', d: { id: this.id, itemId } })
   }
 
   throwGrenade(pos: [number, number, number], vel: [number, number, number], kind: GrenadeKind = 'frag'): void {
-    if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'grenadeThrow', d: { pos, vel, kind } })
-      return
-    }
     this.sendToSim({ e: 'grenadeThrow', d: { id: this.id, data: { pos, vel, kind } } })
   }
 
   /** Disparo del jugador local (para que los demás vean traza + animación de disparo) */
   sendShot(origin: [number, number, number], hit: [number, number, number]): void {
-    if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'playerShot', d: { origin, hit } })
-      return
-    }
     this.sendToSim({ e: 'playerShot', d: { id: this.id, data: { origin, hit } } })
   }
 
   /** El jugador local ha reventado un barril explosivo (daño de área autoritativo) */
   sendBarrel(pos: [number, number, number]): void {
-    if (this.mode === 'guest') {
-      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'barrelShot', d: { pos } })
-      return
-    }
     this.sendToSim({ e: 'barrelShot', d: { id: this.id, data: { pos } } })
+  }
+
+  /** Daño del jugador local a un objetivo de la historia (generador) */
+  sendStoryHit(targetId: string, dmg: number): void {
+    this.sendToSim({ e: 'storyHit', d: { id: this.id, data: { targetId, dmg } } })
   }
 
   disconnect(): void {
     this.disposed = true
-    if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
-    this.stopPing()
     if (this.worker) { this.worker.terminate(); this.worker = null }
-    try { this.guestConn?.close() } catch { /* ok */ }
-    try { this.hostConn?.close() } catch { /* ok */ }
-    this.guestConn = null
-    this.hostConn = null
-    try { this.peer?.destroy() } catch { /* ok */ }
-    this.peer = null
   }
 
   // ------------------------------------------------------------
-  // Distribución local de eventos del servidor/simulación
-  // (mismos nombres de evento que el protocolo original)
+  // Distribución local de eventos de la simulación
   // ------------------------------------------------------------
   private dispatchLocal(ev: string, data: unknown): void {
     const game = this.game
@@ -442,6 +189,16 @@ export class NetClient {
         const d = data as { playerId: string; pos: [number, number, number] }
         if (d.playerId === this.id) break   // el tirador ya reprodujo el efecto localmente
         game.onBarrelExplode(d.pos)
+        break
+      }
+      case 'storyEvent': {
+        const d = data as StoryState
+        game.onStoryEvent(d)
+        break
+      }
+      case 'storyTargetDestroyed': {
+        const d = data as { id: string; pos: [number, number, number] }
+        game.onStoryTargetDestroyed(d.id, d.pos)
         break
       }
       case 'damageFX': {
@@ -536,4 +293,3 @@ export class NetClient {
     }
   }
 }
-

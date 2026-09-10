@@ -6,6 +6,7 @@ import { create } from 'zustand'
 import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty, ActionId, GameMode, PadAction } from './shared'
 import { DEFAULT_KEYBINDS, DEFAULT_PAD_BINDS } from './shared'
 import type { NetMode } from './net'
+import type { StoryState } from './story-director'
 
 export interface KillFeedEntry {
   id: number
@@ -35,10 +36,8 @@ interface GameState {
   team: Team
   connected: boolean
 
-  // modo de juego / sala
+  // modo de juego
   mode: NetMode
-  roomCode: string
-  fillBots: number
   botDifficulty: BotDifficulty
   gameMode: GameMode
   netStatus: NetStatus
@@ -62,6 +61,9 @@ interface GameState {
   owned: WeaponId[]
 
   round: NetRoundState | null
+
+  /** estado del modo historia (campaña) */
+  story: StoryState | null
 
   killfeed: KillFeedEntry[]
   announcements: Announcement[]
@@ -111,8 +113,6 @@ export const useGame = create<GameState>((set) => ({
   connected: false,
 
   mode: 'solo',
-  roomCode: '',
-  fillBots: 0,
   botDifficulty: 'normal',
   gameMode: 'escaramuza',
   netStatus: 'idle',
@@ -132,6 +132,7 @@ export const useGame = create<GameState>((set) => ({
   owned: ['knife', 'p9'],
 
   round: null,
+  story: null,
 
   killfeed: [],
   announcements: [],

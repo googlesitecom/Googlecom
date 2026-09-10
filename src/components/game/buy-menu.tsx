@@ -3,7 +3,7 @@
 import { useGame } from '@/game/store'
 import { BUY_ITEMS, WEAPONS, type WeaponId } from '@/game/shared'
 import { getGame } from '@/game/game-instance'
-import { Coins, X, Shield, Zap, Crosshair } from 'lucide-react'
+import { Coins, X, Shield, Zap, Crosshair, Backpack } from 'lucide-react'
 
 const CAT_ICONS: Record<string, string> = {
   'Pistolas': '🔫',
@@ -21,6 +21,7 @@ export function BuyMenu() {
   const armor = useGame(s => s.armor)
   const frags = useGame(s => s.frags)
   const team = useGame(s => s.team)
+  const isHistoria = useGame(s => s.gameMode) === 'historia'
 
   if (!open) return null
 
@@ -68,7 +69,9 @@ export function BuyMenu() {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {BUY_ITEMS.filter(i => i.cat === cat).map(item => {
                   const isWeapon = !!item.weapon
+                  const kept = owned.filter(w => w !== 'knife' && w !== 'p9') as import('@/game/shared').WeaponId[]
                   const ownedAlready = isWeapon && owned.includes(item.weapon as WeaponId)
+                  const slotIdx = isWeapon && kept.includes(item.weapon as WeaponId) ? kept.indexOf(item.weapon as WeaponId) + 1 : null
                   const armorFull = item.equip === 'shield' && armor >= 100
                   const fragsFull = item.equip === 'frag' && frags >= 2
                   const afford = money >= item.price
@@ -111,7 +114,8 @@ export function BuyMenu() {
                           <div className={`font-black tabular-nums ${afford ? 'text-amber-300' : 'text-red-400'}`}>
                             ${item.price}
                           </div>
-                          {ownedAlready && <div className="text-[9px] text-green-400 font-bold mt-1">MUNICIÓN</div>}
+                          {slotIdx && <div className="text-[9px] text-cyan-300 font-black mt-1 flex items-center justify-end gap-0.5"><Backpack className="w-2.5 h-2.5" /> HUECO {slotIdx}</div>}
+                          {ownedAlready && !slotIdx && <div className="text-[9px] text-green-400 font-bold mt-1">MUNICIÓN</div>}
                           {armorFull && <div className="text-[9px] text-green-400 font-bold mt-1">COMPLETO</div>}
                           {fragsFull && <div className="text-[9px] text-green-400 font-bold mt-1">MÁXIMO</div>}
                         </div>
@@ -124,7 +128,10 @@ export function BuyMenu() {
           ))}
 
           <div className="text-center text-xs text-stone-600 pt-2 border-t border-stone-800">
-            Al comprar un arma que ya posees, se repone la munición de reserva
+            {isHistoria
+              ? <>Dos armas compradas se guardan en los <span className="text-cyan-300 font-bold">huecos 1 y 2</span> — <span className="text-amber-300 font-bold">no se pierden al morir</span>. Comprar otra sustituye la que llevas en la mano.</>
+              : <>Compra hasta <span className="text-cyan-300 font-bold">2 armas</span> (huecos 1 y 2) — <span className="text-amber-300 font-bold">no se pierden al morir</span>. Comprar otra sustituye la que llevas.</>
+            }
           </div>
         </div>
       </div>

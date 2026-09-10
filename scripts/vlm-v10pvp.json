@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) No, no hay ninguna fortaleza ni edificio visible; es una pantalla de carga.\n2) No, el HUD (barras de vida, munición, etc.) no es visible.\n3) No hay ni césped ni flores; el suelo es un fondo azul oscuro con una cuadrícula.\n4) No se observan fallos visuales evidentes.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788997911,
+  "id": "20260910075149c04a6f688eb04761",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260910075149c04a6f688eb04761",
+  "usage": {
+    "completion_tokens": 81,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 962,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1043
+  }
+}

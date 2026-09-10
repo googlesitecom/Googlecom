@@ -4,13 +4,14 @@
 // enrutan al jugador local y, si lo hay, al invitado P2P.
 // ============================================================
 import {
-  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, PICKUP_SPOTS, computeDamage, spawnPoint, segmentBlocked,
-  WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL, SPAWN_A, SPAWN_B,
-  MODES, FLAG_A, FLAG_B, DOM_ZONES,
-  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind, type GrenadeKind, type GameMode,
+  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, computeDamage, segmentBlocked,
+  BOT_NAMES, BOT_SKILL, MODES,
+  type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind, type PickupSpot, type GrenadeKind, type GameMode,
   type NetPlayerState, type NetGrenade, type NetPickup, type NetRoundState, type NetKillEvent, type NetSnapshot,
   type NetFlagState, type NetZoneState,
 } from './shared'
+import { activeMap } from './map-types'
+import { StoryDirector, type StoryState, type StoryBotOpts } from './story-director'
 
 export type RouteFn = (ev: string, data: unknown, to?: string) => void
 
@@ -58,6 +59,8 @@ interface SimPlayer {
   respawnAt: number
   weapon: WeaponId
   owned: WeaponId[]
+  /** armas COMPRADAS que se conservan al morir (máx. 2) */
+  kept: WeaponId[]
   frags: number
   smokes: number
   kills: number
@@ -108,6 +111,7 @@ interface SimFlag {
   team: Team                    // equipo DUEÑO de la bandera
   status: 'home' | 'carried' | 'drop'
   x: number; z: number
+  homeX: number; homeZ: number  // posición de su base (fija)
   carrier: string | null
   returnAt: number
 }
@@ -129,6 +133,30 @@ function dist3(ax: number, ay: number, az: number, bx: number, by: number, bz: n
 function clamp(v: number, a: number, b: number): number { return Math.max(a, Math.min(b, v)) }
 function rand(a: number, b: number): number { return a + Math.random() * (b - a) }
 function round2(v: number): number { return Math.round(Number(v) * 100) / 100 }
+
+// datos del mapa activo — se fijan con initSimMap() DESPUÉS de que el
+// worker reciba el mapa del modo (nunca en la carga del módulo)
+let MAP_AABBS: import('./shared').AABB[] = []
+let WAYPOINTS: [number, number][] = []
+let WAYPOINT_EDGES: number[][] = []
+let PICKUP_SPOTS: PickupSpot[] = []
+
+/** fija el mapa de la simulación (el worker lo llama tras setActiveMap) */
+export function initSimMap(): void {
+  const m = activeMap()
+  MAP_AABBS = m.aabbs
+  WAYPOINTS = m.waypoints
+  WAYPOINT_EDGES = m.waypointEdges
+  PICKUP_SPOTS = m.pickupSpots
+}
+
+function spawnPoint(team: Team, i: number): [number, number, number] {
+  const m = activeMap()
+  const base = team === 'A' ? m.spawnA : m.spawnB
+  const a = (i * 2.399) % (Math.PI * 2)
+  const r = 1.5 + (i % 3) * 1.2
+  return [base[0] + Math.cos(a) * r, 0, base[2] + Math.sin(a) * r]
+}
 
 function eye(p: SimPlayer): [number, number, number] { return [p.x, p.y + 1.55, p.z] }
 
@@ -164,14 +192,18 @@ export class GameSim {
   private tickCount = 0
   private route: RouteFn | null = null
   private mode: GameMode
+  /** director del modo historia (null en PvP) */
+  private story: StoryDirector | null = null
+  /** punto de control de reaparición del modo historia */
+  private storyCheckpoint: [number, number] | null = null
 
   // CTF
   private flags: Record<'a' | 'b', SimFlag> = {
-    a: { team: 'A', status: 'home', x: FLAG_A[0], z: FLAG_A[1], carrier: null, returnAt: 0 },
-    b: { team: 'B', status: 'home', x: FLAG_B[0], z: FLAG_B[1], carrier: null, returnAt: 0 },
+    a: { team: 'A', status: 'home', x: activeMap().flagA?.[0] ?? 0, z: activeMap().flagA?.[1] ?? 0, homeX: activeMap().flagA?.[0] ?? 0, homeZ: activeMap().flagA?.[1] ?? 0, carrier: null, returnAt: 0 },
+    b: { team: 'B', status: 'home', x: activeMap().flagB?.[0] ?? 0, z: activeMap().flagB?.[1] ?? 0, homeX: activeMap().flagB?.[0] ?? 0, homeZ: activeMap().flagB?.[1] ?? 0, carrier: null, returnAt: 0 },
   }
   // dominación
-  private zones: SimZone[] = DOM_ZONES.map(z => ({ id: z.id, name: z.name, x: z.x, z: z.z, owner: null, prog: 0, by: null }))
+  private zones: SimZone[] = (activeMap().domZones ?? []).map(z => ({ id: z.id, name: z.name, x: z.x, z: z.z, owner: null, prog: 0, by: null }))
   private domTickAt = 0
 
   private round = {
@@ -185,9 +217,14 @@ export class GameSim {
     roundWinsB: 0,
   }
 
-  constructor(private difficulty: BotDifficulty = 'normal', mode: GameMode = 'escaramuza') {
+  constructor(public difficulty: BotDifficulty = 'normal', mode: GameMode = 'escaramuza') {
     this.mode = mode
-    this.round.endsAt = now() + MODES[mode].time * 1000
+    this.round.endsAt = now() + (MODES[mode] ?? MODES.escaramuza).time * 1000
+    // MODO HISTORIA: el director gestiona fases, enemigos y objetivos
+    if (mode === 'historia') {
+      this.story = new StoryDirector(this)
+      this.story.onState = (s) => this.emit('storyEvent', s)
+    }
     // pociones repartidas por el mapa (respawn escalonado)
     let pk = 0
     for (const s of PICKUP_SPOTS) {
@@ -240,6 +277,74 @@ export class GameSim {
     }
   }
 
+  // ------------------------------------------------------------
+  // HISTORIA — bots gestionados por el director
+  // ------------------------------------------------------------
+  addStoryBot(name: string, x: number, z: number, opts: StoryBotOpts): string {
+    const id = `bot-${this.botSeq++}`
+    const p = this.createPlayer(id, String(name).slice(0, 18) || 'Enemigo', 'B', true)
+    p.x = x; p.z = z
+    p.hp = opts.hp ?? 100
+    p.shield = opts.shield ?? 0
+    p.weapon = opts.weapon ?? 'mp9'
+    p.kept = [p.weapon]
+    p.owned = ['knife', 'p9', p.weapon]
+    p.yaw = Math.atan2(-x, -z)
+    if (p.ai) {
+      p.ai.wp = nearestWaypoint(x, z)
+      p.ai.role = 'defend'
+      p.ai.objX = opts.guardX ?? x
+      p.ai.objZ = opts.guardZ ?? z
+      p.ai.speedMult = 0.92 + Math.random() * 0.16
+    }
+    this.players.set(id, p)
+    this.emitSnapshotOnce()
+    return id
+  }
+
+  despawnBot(id: string): void {
+    const p = this.players.get(id)
+    if (!p) return
+    this.players.delete(id)
+    this.emit('playerLeft', { id, name: p.name })
+  }
+
+  setStoryCheckpoint(p: [number, number]): void {
+    this.storyCheckpoint = p
+  }
+
+  addMoney(id: string, amount: number): void {
+    const p = this.players.get(id)
+    if (!p) return
+    p.money = Math.min(GAME.MAX_MONEY, p.money + amount)
+    this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
+  }
+
+  /** explosión de área (generadores) — daña a los ENEMIGOS del atacante */
+  damageArea(x: number, z: number, radius: number, dmg: number, attackerId: string): void {
+    const attacker = this.players.get(attackerId)
+    if (!attacker) return
+    for (const victim of [...this.players.values()]) {
+      if (victim.dead || !this.isEnemy(attacker, victim)) continue
+      const d = Math.hypot(victim.x - x, victim.z - z)
+      if (d > radius) continue
+      const blocked = segmentBlocked(x, 1.2, z, victim.x, victim.y + 1, victim.z, MAP_AABBS)
+      const real = Math.round(dmg * (1 - d / radius) * (blocked ? 0.3 : 1))
+      if (real < 6) continue
+      this.applyDamage(attacker, victim, real, 'body', 'knife', [x - victim.x, z - victim.z])
+    }
+  }
+
+  /** daño del jugador a un objetivo de la historia (generador) */
+  handleStoryTargetHit(p: SimPlayer, targetId: string, dmg: number): void {
+    if (p.dead || this.mode !== 'historia' || !this.story) return
+    const destroyed = this.story.onStoryTargetHit(targetId, dmg)
+    if (destroyed) {
+      const tg = activeMap().storyTargets?.find(q => q.id === targetId)
+      if (tg) this.emit('storyTargetDestroyed', { id: targetId, pos: [tg.x, 1.0, tg.z] })
+    }
+  }
+
   private spawnBot(team: Team): SimPlayer {
     const id = `bot-${this.botSeq++}`
     let name = ''
@@ -282,6 +387,7 @@ export class GameSim {
       hp: 100, shield: 0, dead: false, respawnAt: 0,
       weapon: 'p9',
       owned: ['knife', 'p9'],
+      kept: [],
       frags: 0, smokes: 0,
       kills: 0, deaths: 0, money: GAME.START_MONEY,
       streak: 0, lastKillAt: 0, multi: 0,
@@ -307,16 +413,31 @@ export class GameSim {
 
   private respawnPlayer(p: SimPlayer, initial = false): void {
     const idx = Array.from(this.players.values()).filter(q => q.team === p.team).indexOf(p)
-    const [x, , z] = spawnPoint(p.team, Math.max(0, idx))
+    let x: number, z: number
+    if (this.mode === 'historia' && this.storyCheckpoint) {
+      // historia: reaparición en el punto de control de la fase
+      const [cx, cz] = this.storyCheckpoint
+      x = cx + rand(-1.5, 1.5)
+      z = cz + rand(-1.5, 1.5)
+    } else {
+      [x, , z] = spawnPoint(p.team, Math.max(0, idx))
+    }
     p.x = x; p.y = 0.02; p.z = z
     p.hp = 100
     p.shield = 0
     p.dead = false
     p.crouch = false
     p.lastDamageAt = 0
-    p.protectUntil = now() + GAME.SPAWN_PROTECT * 1000
-    p.owned = ['knife', 'p9']
-    p.weapon = 'p9'
+    p.protectUntil = now() + (this.mode === 'historia' ? 1.5 : GAME.SPAWN_PROTECT) * 1000
+    // INVENTARIO: las 2 armas compradas se conservan al morir (petición
+    // del usuario); cuchillo y pistola de inicio siempre disponibles
+    if (!p.bot) {
+      p.owned = ['knife', 'p9', ...p.kept]
+      p.weapon = p.kept.includes(p.weapon) ? p.weapon : (p.kept[0] ?? 'p9')
+    } else {
+      p.owned = ['knife', 'p9', ...p.kept]
+      p.weapon = p.kept[0] ?? 'p9'
+    }
     // granadas de cortesía al reaparecer (mín. 1 de cada una, máx. 2)
     p.frags = clamp(p.frags, 1, 2)
     p.smokes = clamp(p.smokes, 1, 2)
@@ -329,7 +450,8 @@ export class GameSim {
       p.ai.target = null
       p.ai.lastKnown = null
     }
-    if (p.bot) this.botBuy(p)
+    if (p.bot && this.mode !== 'historia') this.botBuy(p)
+    void initial
     this.emit('spawnEvent', {
       pos: [p.x, p.y, p.z],
       yaw: p.yaw,
@@ -339,30 +461,35 @@ export class GameSim {
       frags: p.frags,
       smokes: p.smokes,
       money: p.money,
-      protect: GAME.SPAWN_PROTECT,
+      protect: this.mode === 'historia' ? 1.5 : GAME.SPAWN_PROTECT,
     }, p.id)
   }
 
   // ------------------------------------------------------------
   // Economía / compra
   // ------------------------------------------------------------
-  private spawnX(team: Team): number { return team === 'A' ? SPAWN_A[0] : SPAWN_B[0] }
-  private spawnZ(team: Team): number { return team === 'A' ? SPAWN_A[2] : SPAWN_B[2] }
+  private spawnX(team: Team): number { return team === 'A' ? activeMap().spawnA[0] : activeMap().spawnB[0] }
+  private spawnZ(team: Team): number { return team === 'A' ? activeMap().spawnA[2] : activeMap().spawnB[2] }
 
   private inBuyZone(p: SimPlayer): boolean {
+    if (this.mode === 'historia') {
+      const bz = this.story?.getBuyZone()
+      if (!bz) return false
+      return Math.hypot(p.x - bz[0], p.z - bz[1]) < GAME.BUY_RADIUS
+    }
     return Math.hypot(p.x - this.spawnX(p.team), p.z - this.spawnZ(p.team)) < GAME.BUY_RADIUS + 2.5
   }
 
   private botBuy(p: SimPlayer): void {
     if (p.money >= 4750 && Math.random() < 0.22) {
-      p.owned = ['knife', 'p9', 'awp338']; p.weapon = 'awp338'; p.money -= 4750
+      p.kept = ['awp338']; p.owned = ['knife', 'p9', 'awp338']; p.weapon = 'awp338'; p.money -= 4750
     } else if (p.money >= 2900) {
       const w: WeaponId = Math.random() < 0.5 ? 'cr4' : 'ar47'
-      p.owned = ['knife', 'p9', w]; p.weapon = w; p.money -= WEAPONS[w].price
+      p.kept = [w]; p.owned = ['knife', 'p9', w]; p.weapon = w; p.money -= WEAPONS[w].price
     } else if (p.money >= 1250 && Math.random() < 0.75) {
-      p.owned = ['knife', 'p9', 'mp9']; p.weapon = 'mp9'; p.money -= 1250
+      p.kept = ['mp9']; p.owned = ['knife', 'p9', 'mp9']; p.weapon = 'mp9'; p.money -= 1250
     } else if (p.money >= 700 && Math.random() < 0.5) {
-      p.owned = ['knife', 'p9', 'aguila']; p.weapon = 'aguila'; p.money -= 700
+      p.kept = ['aguila']; p.owned = ['knife', 'p9', 'aguila']; p.weapon = 'aguila'; p.money -= 700
     }
     // los bots compran un escudo a medias (menos tanque que el jugador)
     if (p.money >= 1000 && p.shield < 25) { p.shield = 50; p.money -= 1000 }
@@ -373,17 +500,32 @@ export class GameSim {
     const item = BUY_ITEMS.find(i => i.id === itemId)
     if (!item) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Artículo desconocido' }, p.id)
     if (p.dead) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Estás eliminado' }, p.id)
-    if (!this.inBuyZone(p)) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Compra solo en tu base' }, p.id)
+    if (!this.inBuyZone(p)) {
+      const msg = this.mode === 'historia' ? 'Compra solo junto a la caja de suministros' : 'Compra solo en tu base'
+      return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: msg }, p.id)
+    }
     if (p.money < item.price) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Fondos insuficientes' }, p.id)
 
     if (item.weapon) {
       const w = WEAPONS[item.weapon]
-      p.money -= item.price
       if (p.owned.includes(w.id)) {
+        // ya la tienes: reponer munición
+        p.money -= item.price
         this.emit('refillAmmo', { weapon: w.id }, p.id)
       } else {
-        p.owned.push(w.id)
+        // INVENTARIO DE 2 ARMAS PERMANENTES: al comprar una tercera,
+        // sustituye al arma comprada que llevas en la mano (o la más
+        // antigua si llevas cuchillo/pistola). Las armas NO se pierden
+        // al morir: `kept` se conserva en la reaparición.
+        if (p.kept.length >= 2) {
+          const held = p.kept.includes(p.weapon) ? p.weapon : p.kept[0]
+          p.kept = p.kept.filter(q => q !== held)
+          if (p.weapon === held) p.weapon = w.id
+        }
+        p.kept.push(w.id)
+        p.owned = ['knife', 'p9', ...p.kept]
         p.weapon = w.id
+        p.money -= item.price
         this.emit('giveWeapon', { weapon: w.id }, p.id)
       }
     } else if (item.equip === 'shield') {
@@ -409,7 +551,7 @@ export class GameSim {
   // ------------------------------------------------------------
   // Daño y muerte
   // ------------------------------------------------------------
-  private announce(text: string, kind: 'kill' | 'round' | 'info' = 'info', team?: Team): void {
+  announce(text: string, kind: 'kill' | 'round' | 'info' = 'info', team?: Team): void {
     this.emit('announce', { text, kind, team })
   }
 
@@ -468,9 +610,15 @@ export class GameSim {
     victim.hp = 0
     victim.deaths++
     victim.streak = 0
-    victim.respawnAt = now() + GAME.RESPAWN_TIME * 1000
+    victim.respawnAt = now() + (this.mode === 'historia' ? 4 : GAME.RESPAWN_TIME) * 1000
     victim.frags = 0
     victim.smokes = 0
+
+    // historia: el director controla oleadas y puntos de control
+    if (this.mode === 'historia') {
+      if (victim.bot) this.story?.onBotKilled(victim.id)
+      else this.story?.onPlayerDeath()
+    }
 
     if (killer.id !== victim.id) {
       killer.kills++
@@ -479,7 +627,7 @@ export class GameSim {
       killer.multi = (t - killer.lastKillAt < 4000) ? killer.multi + 1 : 1
       killer.lastKillAt = t
       killer.money = Math.min(GAME.MAX_MONEY, killer.money + GAME.KILL_REWARD + (headshot ? GAME.HS_REWARD : 0))
-      if (this.mode !== 'ffa') {
+      if (this.mode !== 'ffa' && this.mode !== 'historia') {
         if (killer.team === 'A') this.round.scoresA++; else this.round.scoresB++
       }
     }
@@ -511,6 +659,7 @@ export class GameSim {
 
   private checkRoundEnd(): void {
     if (this.round.phase !== 'live') return
+    if (this.mode === 'historia') return  // la campaña no usa rondas
     const target = MODES[this.mode].target
     if (this.mode === 'escaramuza') {
       if (this.round.scoresA >= target || this.round.scoresB >= target) {
@@ -559,8 +708,8 @@ export class GameSim {
 
   /** banderas y zonas vuelven a su estado inicial */
   private resetObjectives(): void {
-    this.flags.a = { team: 'A', status: 'home', x: FLAG_A[0], z: FLAG_A[1], carrier: null, returnAt: 0 }
-    this.flags.b = { team: 'B', status: 'home', x: FLAG_B[0], z: FLAG_B[1], carrier: null, returnAt: 0 }
+    this.flags.a = { team: 'A', status: 'home', x: this.flags.a.homeX, z: this.flags.a.homeZ, homeX: this.flags.a.homeX, homeZ: this.flags.a.homeZ, carrier: null, returnAt: 0 }
+    this.flags.b = { team: 'B', status: 'home', x: this.flags.b.homeX, z: this.flags.b.homeZ, homeX: this.flags.b.homeX, homeZ: this.flags.b.homeZ, carrier: null, returnAt: 0 }
     for (const z of this.zones) { z.owner = null; z.prog = 0; z.by = null }
     this.emit('flagEvent', { flag: 'a', type: 'home' })
     this.emit('flagEvent', { flag: 'b', type: 'home' })
@@ -628,11 +777,11 @@ export class GameSim {
           f.x = c.x
           f.z = c.z
           // ¿captura? llega a SU base con la bandera propia en casa
-          const home = f.team === 'A' ? FLAG_A : FLAG_B
+          const home = f.team === 'A' ? this.flags.a : this.flags.b
           const own = f.team === 'A' ? this.flags.b : this.flags.a   // la bandera del equipo del portador
-          const ownHome = c.team === 'A' ? FLAG_A : FLAG_B
+          const ownHome = c.team === 'A' ? this.flags.a : this.flags.b
           void home
-          if (Math.hypot(c.x - ownHome[0], c.z - ownHome[1]) < 3.2 && own.status === 'home') {
+          if (Math.hypot(c.x - ownHome.homeX, c.z - ownHome.homeZ) < 3.2 && own.status === 'home') {
             // ¡captura!
             if (c.team === 'A') this.round.scoresA++
             else this.round.scoresB++
@@ -641,8 +790,8 @@ export class GameSim {
             this.emit('econ', { money: c.money, frags: c.frags, smokes: c.smokes }, c.id)
             f.status = 'home'
             f.carrier = null
-            f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
-            f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
+            f.x = f.homeX
+            f.z = f.homeZ
             this.emit('flagEvent', { flag: key, type: 'home' })
             this.announce(`¡${c.name} CAPTURA LA BANDERA! (${this.round.scoresA}–${this.round.scoresB})`, 'round', c.team)
             this.emit('captureFX', { x: c.x, z: c.z, team: c.team })
@@ -664,8 +813,8 @@ export class GameSim {
           } else {
             // el dueño la devuelve a casa
             f.status = 'home'
-            f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
-            f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
+            f.x = f.homeX
+            f.z = f.homeZ
             this.emit('flagEvent', { flag: key, type: 'home' })
             this.announce('BANDERA DEVUELTA A SU BASE', 'info')
           }
@@ -673,8 +822,8 @@ export class GameSim {
         }
         if (f.status === 'drop' && t > f.returnAt) {
           f.status = 'home'
-          f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
-          f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
+          f.x = f.homeX
+          f.z = f.homeZ
           this.emit('flagEvent', { flag: key, type: 'home' })
         }
       }
@@ -767,19 +916,25 @@ export class GameSim {
 
   /** objetivo táctico del bot según el modo (null = patrulla clásica) */
   private botObjective(p: SimPlayer): [number, number] | null {
+    if (this.mode === 'historia') {
+      // historia: cada enemigo patrulla su puesto de guardia
+      const ai = p.ai!
+      if (ai.objX || ai.objZ) return [ai.objX + rand(-4, 4), ai.objZ + rand(-4, 4)]
+      return null
+    }
     if (this.mode === 'bandera') {
       if (p.flag) {
         // lleva la bandera: correr a su base
-        const home = p.team === 'A' ? FLAG_A : FLAG_B
-        return [home[0], home[1]]
+        const home = p.team === 'A' ? this.flags.a : this.flags.b
+        return [home.homeX, home.homeZ]
       }
       const enemy = this.enemyFlag(p.team)
       const own = p.team === 'A' ? this.flags.a : this.flags.b
       if (p.ai!.role === 'attack') {
         if (enemy.status === 'carried') {
           // un compañero la lleva: escoltar (ir a la base propia para despejar camino)
-          const home = p.team === 'A' ? FLAG_A : FLAG_B
-          return [home[0] + rand(-6, 6), home[1] + rand(-6, 6)]
+          const home = p.team === 'A' ? this.flags.a : this.flags.b
+          return [home.homeX + rand(-6, 6), home.homeZ + rand(-6, 6)]
         }
         return [enemy.x, enemy.z]
       }
@@ -1048,7 +1203,8 @@ export class GameSim {
 
   private posBlocked(x: number, z: number): boolean {
     for (const b of MAP_AABBS) {
-      if (x > b.minX - 0.35 && x < b.maxX + 0.35 && z > b.minZ - 0.35 && z < b.maxZ + 0.35 && b.minY < 1.6) return true
+      // los objetos planos (< 0,45 m de alto: marcas del suelo, pads) se pisan
+      if (x > b.minX - 0.35 && x < b.maxX + 0.35 && z > b.minZ - 0.35 && z < b.maxZ + 0.35 && b.minY < 1.6 && b.maxY > 0.45) return true
     }
     return false
   }
@@ -1300,8 +1456,15 @@ export class GameSim {
     dt = Math.min(dt, 0.1)
     this.tickCount++
 
+    const historia = this.mode === 'historia'
+
     for (const p of this.players.values()) {
-      if (p.dead && t >= p.respawnAt && this.round.phase === 'live') this.respawnPlayer(p)
+      // HISTORIA: los bots no reaparecen (los gestiona el director);
+      // el jugador reaparece en su punto de control
+      if (p.dead && t >= p.respawnAt && this.round.phase === 'live') {
+        if (historia && p.bot) continue
+        this.respawnPlayer(p)
+      }
     }
 
     // regeneración de vida estilo Fortnite (tras 8 s sin daño)
@@ -1321,27 +1484,33 @@ export class GameSim {
     }
 
     // objetivos de los modos de juego
-    this.updateFlags()
-    this.updateZones(dt)
-
+    if (!historia) {
+      this.updateFlags()
+      this.updateZones(dt)
+    }
     this.updateGrenades(dt)
+
+    // MODO HISTORIA: director de fases
+    if (historia && this.story) this.story.update(dt)
 
     // limpiar humos expirados
     if (this.smokes.length && t > this.smokes[0].until) {
       this.smokes = this.smokes.filter(s => t < s.until)
     }
 
-    if (this.round.phase === 'live' && t > this.round.endsAt) {
-      const winner = this.round.scoresA === this.round.scoresB
-        ? (this.teamCounts().A <= this.teamCounts().B ? 'A' : 'B')
-        : (this.round.scoresA > this.round.scoresB ? 'A' : 'B')
-      this.endRound(winner)
-    } else if (this.round.phase === 'ended' && t > this.round.intermissionEndsAt) {
-      if (this.round.roundWinsA >= GAME.ROUNDS_TO_WIN || this.round.roundWinsB >= GAME.ROUNDS_TO_WIN) {
-        this.endMatch(this.round.roundWinsA > this.round.roundWinsB ? 'A' : 'B')
-      } else this.startRound()
-    } else if (this.round.phase === 'matchend' && t > this.round.intermissionEndsAt) {
-      this.resetMatch()
+    if (!historia) {
+      if (this.round.phase === 'live' && t > this.round.endsAt) {
+        const winner = this.round.scoresA === this.round.scoresB
+          ? (this.teamCounts().A <= this.teamCounts().B ? 'A' : 'B')
+          : (this.round.scoresA > this.round.scoresB ? 'A' : 'B')
+        this.endRound(winner)
+      } else if (this.round.phase === 'ended' && t > this.round.intermissionEndsAt) {
+        if (this.round.roundWinsA >= GAME.ROUNDS_TO_WIN || this.round.roundWinsB >= GAME.ROUNDS_TO_WIN) {
+          this.endMatch(this.round.roundWinsA > this.round.roundWinsB ? 'A' : 'B')
+        } else this.startRound()
+      } else if (this.round.phase === 'matchend' && t > this.round.intermissionEndsAt) {
+        this.resetMatch()
+      }
     }
 
     if (this.tickCount % GAME.SNAPSHOT_EVERY === 0) this.broadcastSnapshot()

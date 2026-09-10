@@ -265,3 +265,31 @@ Stage Summary:
 - https://googlesitecom.github.io/Googlecom/ JUGABLE end-to-end (verificado en navegador real contra la URL pública)
 - README con enlace de juego; gh-pages desplegable con un comando (token por entorno)
 - Recordatorio: el PAT del usuario quedó expuesto en el chat → recomendar rotarlo
+
+---
+Task ID: 9
+Agent: Super Z (agente principal)
+Task: Quitar la vegetación del suelo (lag), rediseñar todo el mapa PvP con las texturas propias y del usuario, añadir deslizamiento al agacharse corriendo, inventario de 2 armas permanentes, retirar el multijugador P2P que no funcionaba, crear el MODO HISTORIA (mapa distinto, 15-20 min) y cargar solo el modo jugado (carga perezosa)
+
+Work Log:
+- VEGETACIÓN FUERA: buildGrass/buildBushes/buildFlowers y grassBlocked eliminados del motor (pasto de 14000 instancias, arbustos y flores) → menos draw calls y memoria; los árboles GLB del usuario se conservan
+- SISTEMA DE MAPAS POR MODO (nuevo): map-types.ts (MapData + mapa activo), map-pvp.ts (CIUDADELA MERIDIANO v5) y map-story.ts (ISLA GALLO). El motor y la simulación leen el mapa ACTIVO; sim.ts ya no toca constantes de mapa en la carga del módulo (initSimMap() tras fijar el mapa — bug crítico arreglado: el worker petaba al importar)
+- MAPA PvP v5 «CIUDADELA MERIDIANO»: NÚCLEO central (fortaleza de 2 plantas con torre-faro, 4 puertas, paseo interior y 2 escaleras exteriores a la azotea), plaza de hormigón, canchas deportivas nuevas (CQB con gradas), mercado trasladado al SE, 6 tirolinas (4 desde el Núcleo), 7 plataformas de salto en la plaza, cobertura regular en avenidas — 1241 cajas · 199 waypoints (197 alcanzables)
+- MAPA HISTORIA «ISLA GALLO» (120×120, ocaso azul frío): playa de desembarco → muelle con grúa y contenedores → depósito de combustible (3 generadores destructibles) → patio de comunicaciones con radar → búnker de mando → helipuerto de extracción. 340 cajas · 78 waypoints (74 alcanzables)
+- MODO HISTORIA (story-director.ts dentro del worker): 5 fases (DESEMBARCO 6 enemigos · SABOTAJE 3 generadores+guardias · DEFENSA 90 s con 3 oleadas · COMANDANTE con jefe CNDTE. GALLO 420HP+escudo y élites · EXTRACCIÓN 45 s), radio narrativa, puntos de control al morir (reaparición ilimitada), recompensas por fase, cajas de suministros como zonas de compra, HUD de misión con barra del jefe y pantalla de MISIÓN CUMPLIDA con estadísticas
+- HISTORIA en el motor: generadores con núcleo naranja destructible (userData.storyTargetId + sendStoryHit), marcador de objetivo (columna de luz pulsante por fase), caja de suministros animada, ambiente frío (niebla/luz/cielo tintado)
+- 2 ARMAS PERMANENTES: SimPlayer.kept (máx. 2 compradas); al morir NO se pierden (respawn con kept); comprar una tercera sustituye la que llevas; huecos 1/2 en el HUD y la tienda; teclas 1/2/3, Q y rueda para cambiar
+- DESLIZAMIENTO: ya existía del ciclo anterior — verificado en navegador (sprint 6,2 m/s → slideT 0,85 con impulso e inclinación de cámara)
+- P2P RETIRADO: PeerJS fuera de net.ts (solo worker local), menú sin CREAR SALA/UNIRSE, RoomChip fuera del HUD; más ligero y sin la función rota en Pages
+- CARGA PEREZOSA: GameMount importa el mapa del modo elegido con import() dinámico (la historia no carga el PvP ni al revés); el worker construye solo el mapa del modo
+- VALIDACIÓN: map-check reescrito para ambos mapas → SIN ERRORES (iteré waypoints bloqueados: farolas/árboles/pilares/contenedores sobre puntos de ruta, valla del depósito con hueco, sacos del helipuerto abiertos al camino); posBlocked de los bots ahora ignora objetos planos <0,45 m (pads y marcas se pisan)
+- VERIFICACIÓN EN NAVEGADOR (agent-browser + VLM): menú nuevo (BOTS+HISTORIA), partida PvP con Ciudadela y HUD de huecos, compra de aguila → muerte por bot → reaparición en base CON el arma, slide activo, historia con FASE 1 (0/6→1/6 al matar), radio, marcador visible, muerte→punto de control, generador destruido vía pipeline del worker (núcleo OFF + anuncio)
+- tsc y eslint limpios; deploy-gh-pages.sh actualizado para funcionar desde el directorio del repo
+
+Stage Summary:
+- Menú: PARTIDA VS BOTS (4 modos PvP) · HISTORIA (Operación Isla Gallo)
+- Dos mapas independientes con carga perezosa por modo
+- Historia completa de 5 fases (~15-20 min) con jefe, oleadas y extracción
+- Inventario de 2 armas que sobrevive a la muerte
+- Vegetación del suelo eliminada (menos lag) sin tocar modelos/texturas
+- P2P eliminado (no funcionaba en el despliegue estático)

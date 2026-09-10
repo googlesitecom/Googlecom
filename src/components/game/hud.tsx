@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { WEAPONS, TEAM_INFO, keyLabel, MODES, type Team } from '@/game/shared'
-import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords } from 'lucide-react'
+import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Swords, Radio, Flag, Target, CheckCircle2 } from 'lucide-react'
+import type { StoryState } from '@/game/story-director'
 
 export function Hud() {
   const hp = useGame(s => s.hp)
@@ -13,6 +14,7 @@ export function Hud() {
   const weapon = useGame(s => s.weapon)
   const mag = useGame(s => s.mag)
   const reserve = useGame(s => s.reserve)
+  const owned = useGame(s => s.owned)
   const round = useGame(s => s.round)
   const team = useGame(s => s.team)
   const killfeed = useGame(s => s.killfeed)
@@ -23,11 +25,11 @@ export function Hud() {
   const cineActive = useGame(s => s.cineActive)
   const smokes = useGame(s => s.smokes)
   const fps = useGame(s => s.fps)
-  const mode = useGame(s => s.mode)
   const ping = useGame(s => s.ping)
   const gamepadConnected = useGame(s => s.gamepadConnected)
   const carryingFlag = useGame(s => s.carryingFlag)
   const scoreboard = useGame(s => s.scoreboard)
+  const story = useGame(s => s.story)
   const w = WEAPONS[weapon]
 
   if (phase !== 'playing' && phase !== 'dead') return null
@@ -39,7 +41,10 @@ export function Hud() {
   return (
     <div className="fixed inset-0 z-30 pointer-events-none font-mono">
       {/* ===== Barra superior: modo, objetivo y marcador ===== */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-4">
+      {gameMode === 'historia' ? (
+        <StoryPanel story={story} />
+      ) : (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-4">
         {gameMode === 'escaramuza' && (
           <>
             <TeamScore team="A" kills={round?.scoresA ?? 0} wins={round?.roundWinsA ?? 0} active={team === 'A'} />
@@ -78,10 +83,8 @@ export function Hud() {
             <ZoneChip id="C" zone={round?.zones?.find(z => z.id === 'C')} />
           </div>
         )}
-      </div>
-
-      {/* ===== Chip de sala (multijugador P2P) ===== */}
-      <RoomChip />
+        </div>
+      )}
 
       {/* ===== Indicador: llevo la bandera ===== */}
       {carryingFlag && phase === 'playing' && (
@@ -164,8 +167,9 @@ export function Hud() {
         </div>
       </div>
 
-      {/* ===== Munición y arma (abajo-derecha) ===== */}
-      <div className="absolute bottom-6 right-6 text-right">
+      {/* ===== Munición y arma (abajo-derecha) con HUECOS 1/2 ===== */}
+      <div className="absolute bottom-6 right-6 text-right space-y-2">
+        <WeaponSlots owned={owned} weapon={weapon} />
         <div className="bg-stone-950/70 rounded-lg px-5 py-3 border border-stone-700/60 shadow-xl">
           <div className="text-stone-400 text-xs tracking-widest font-bold uppercase">{w.name}</div>
           <div className="flex items-baseline justify-end gap-2 mt-0.5">
@@ -183,15 +187,14 @@ export function Hud() {
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-950/80 border border-amber-600/50 rounded-lg px-5 py-2 shadow-2xl">
           <MapPin className="w-4 h-4 text-amber-400" />
           <span className="text-amber-200 text-sm font-bold tracking-wide">
-            ZONA DE COMPRA — presiona <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-amber-300">{buyKey}</kbd>
+            {gameMode === 'historia' ? 'CAJA DE SUMINISTROS' : 'ZONA DE COMPRA'} — presiona <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-amber-300">{buyKey}</kbd>
           </span>
         </div>
       )}
 
-      {/* ===== FPS / ping / mando ===== */}
+      {/* ===== FPS / mando ===== */}
       <div className="absolute bottom-1 right-2 text-stone-600 text-[10px] font-mono flex items-center gap-3">
         {gamepadConnected && <Gamepad2 className="w-3.5 h-3.5 text-green-500" />}
-        {mode !== 'solo' && ping > 0 && <span className="text-stone-500">{ping} MS</span>}
         <span>{fps} FPS</span>
       </div>
 
@@ -284,52 +287,95 @@ function formatTime(s: number): string {
 }
 
 // ============================================================
-// Chip de sala P2P — código + estado del rival
+// HISTORIA — panel de misión, barra del jefe y misión cumplida
 // ============================================================
-function RoomChip() {
-  const mode = useGame(s => s.mode)
-  const roomCode = useGame(s => s.roomCode)
-  const netStatus = useGame(s => s.netStatus)
-  const [copied, setCopied] = useState(false)
-
-  if (mode !== 'host' && mode !== 'guest') return null
-
-  const connected = netStatus === 'connected'
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(roomCode)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1600)
-    } catch { /* sin permiso de portapapeles */ }
-  }
-
+function StoryPanel({ story }: { story: StoryState | null }) {
+  if (!story) return null
+  if (story.done) return <StoryComplete story={story} />
   return (
-    <div className="absolute top-[76px] left-1/2 -translate-x-1/2 pointer-events-auto">
-      <div className={`flex items-center gap-3 rounded-lg px-4 py-1.5 border shadow-2xl ${
-        connected
-          ? 'bg-green-950/70 border-green-700/50'
-          : 'bg-stone-950/75 border-amber-700/50 animate-pulse'
-      }`}>
-        <Users className="w-4 h-4 text-stone-300 shrink-0" />
-        <span className="text-stone-400 text-[10px] font-bold tracking-widest">SALA</span>
-        <span className="text-amber-300 text-lg font-black tracking-[0.2em] tabular-nums">{roomCode}</span>
-        {mode === 'host' && !connected && (
-          <>
-            <span className="text-amber-200/80 text-[10px] font-bold tracking-widest hidden sm:inline">ESPERANDO RIVAL…</span>
-            <button
-              onClick={copy}
-              className="bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded px-2 py-1 flex items-center gap-1 text-[10px] font-bold text-stone-200 tracking-widest transition-colors"
-            >
-              <Copy className="w-3 h-3" /> {copied ? '¡COPIADO!' : 'COPIAR'}
-            </button>
-          </>
-        )}
-        {connected && (
-          <span className="text-green-300 text-[10px] font-bold tracking-widest flex items-center gap-1">
-            <Wifi className="w-3 h-3" /> {mode === 'host' ? 'RIVAL CONECTADO' : 'P2P ACTIVO'}
-          </span>
-        )}
+    <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+      <div className="bg-stone-950/85 border border-cyan-600/50 rounded-xl px-6 py-2 text-center shadow-2xl min-w-[320px]">
+        <div className="text-cyan-300 text-xs font-black tracking-[0.25em]">{story.title}</div>
+        <div className="text-stone-100 text-sm font-bold mt-0.5">{story.objective}</div>
+        <div className="flex items-center justify-center gap-3 mt-1">
+          <span className="text-amber-300 text-lg font-black tabular-nums">{story.progress}</span>
+          {story.timeLeft !== null && story.timeLeft !== undefined && (
+            <span className="flex items-center gap-1 text-red-300 text-lg font-black tabular-nums">
+              <Timer className="w-4 h-4" /> {formatTime(story.timeLeft)}
+            </span>
+          )}
+        </div>
       </div>
+      {story.boss && (
+        <div className="bg-stone-950/85 border border-red-700/60 rounded-xl px-5 py-1.5 w-[320px] shadow-2xl">
+          <div className="flex items-center justify-between text-[10px] font-black tracking-widest">
+            <span className="text-red-300 flex items-center gap-1"><Skull className="w-3 h-3" /> {story.boss.name}</span>
+            <span className="text-red-400 tabular-nums">{story.boss.hp} / {story.boss.maxHp}</span>
+          </div>
+          <div className="h-2 bg-stone-800 rounded-full overflow-hidden mt-1">
+            <div className="h-full bg-gradient-to-r from-red-600 to-orange-500 transition-all" style={{ width: `${Math.max(0, (story.boss.hp / story.boss.maxHp) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StoryComplete({ story }: { story: StoryState }) {
+  const st = story.stats
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="text-center space-y-6 border-2 border-amber-500/60 bg-stone-950/90 rounded-3xl px-12 py-10 shadow-2xl max-w-lg mx-4">
+        <CheckCircle2 className="w-16 h-16 text-amber-400 mx-auto" />
+        <p className="text-4xl font-black italic tracking-widest text-amber-300">MISIÓN CUMPLIDA</p>
+        <p className="text-cyan-300 font-bold tracking-widest text-sm">OPERACIÓN ISLA GALLO · COMPLETADA</p>
+        <div className="grid grid-cols-3 gap-3 pt-2">
+          <div className="bg-stone-900 rounded-xl p-3 border border-stone-700">
+            <div className="text-[10px] text-stone-400 tracking-widest font-bold">TIEMPO</div>
+            <div className="text-2xl font-black text-amber-300 tabular-nums">{formatTime(st.time)}</div>
+          </div>
+          <div className="bg-stone-900 rounded-xl p-3 border border-stone-700">
+            <div className="text-[10px] text-stone-400 tracking-widest font-bold">BAJAS</div>
+            <div className="text-2xl font-black text-red-300 tabular-nums">{st.kills}</div>
+          </div>
+          <div className="bg-stone-900 rounded-xl p-3 border border-stone-700">
+            <div className="text-[10px] text-stone-400 tracking-widest font-bold">MUERTES</div>
+            <div className="text-2xl font-black text-stone-300 tabular-nums">{st.deaths}</div>
+          </div>
+        </div>
+        <p className="text-stone-500 text-xs">Vuelve al menú (ESC) para jugar otra partida</p>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// HUECOS DE ARMAS (1 · 2 · cuchillo) — inventario visible
+// ============================================================
+function WeaponSlots({ owned, weapon }: { owned: string[]; weapon: string }) {
+  const kept = owned.filter(w => w !== 'knife' && w !== 'p9')
+  const slots: { n: string; id: string | null }[] = [
+    { n: '1', id: kept[0] ?? null },
+    { n: '2', id: kept[1] ?? 'p9' },
+    { n: '3', id: 'knife' },
+  ]
+  return (
+    <div className="flex gap-1.5 justify-end">
+      {slots.map(s => {
+        const active = s.id !== null && s.id === weapon
+        const name = s.id ? shortWeapon(s.id) : '—'
+        return (
+          <div
+            key={s.n}
+            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 border shadow-lg ${
+              active ? 'bg-amber-500/20 border-amber-400/70' : 'bg-stone-950/70 border-stone-700/60'
+            } ${s.id === null ? 'opacity-40' : ''}`}
+          >
+            <span className={`text-[10px] font-black ${active ? 'text-amber-300' : 'text-stone-500'}`}>{s.n}</span>
+            <span className={`text-[10px] font-bold tracking-wider ${active ? 'text-amber-200' : 'text-stone-300'}`}>{name}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }

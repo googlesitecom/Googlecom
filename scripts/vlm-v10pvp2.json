@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Basándome en la imagen proporcionada, aquí tienes las respuestas:\n\n1.  **No**, no se ve un HUD con estadísticas de vida o munición en este momento (solo el título y un mensaje para omitir).\n2.  **Sí**, hay edificios de estilo industrial/hormigón (uno verde corrugado y otro beige) y una farola que funciona como torre de iluminación.\n3.  **Está limpio**, el suelo es de arena/desierto sin pasto ni flores.\n4.  Se distinguen: una **calle** asfaltada central, **edificios** bajos a los lados, **cajas/contenedores** de madera, **farolas**, **neumáticos** y **objetos rojos** (posibles minas o power-ups).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1788998031,
+  "id": "202609100753445c7321b187b545ca",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609100753445c7321b187b545ca",
+  "usage": {
+    "completion_tokens": 181,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 983,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1164
+  }
+}

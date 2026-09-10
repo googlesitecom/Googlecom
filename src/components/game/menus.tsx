@@ -8,8 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import {
   Crosshair, Play, Settings, Volume2, Mouse, Swords, Trophy, Zap,
-  Shield, Bomb, Eye, Gauge, LogOut, Loader2, Coins, Gamepad2, Users, Link2, Bot,
-  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target,
+  Shield, Bomb, Eye, Gauge, LogOut, Loader2, Coins, Gamepad2, Bot,
+  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, BookOpen,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
@@ -343,17 +343,17 @@ function SliderRow({ icon, label, value, min, max, step, format, onChange }: {
 // Panel de INFORMACIÓN — mecánicas y ayuda
 // ============================================================
 const MECHANICS = [
-  { icon: Swords, title: '4 modos de juego', desc: 'FFA · equipos · capturar la bandera · dominación' },
+  { icon: BookOpen, title: 'Modo HISTORIA', desc: 'Operación Isla Gallo: 5 fases, jefe y extracción (15-20 min)' },
+  { icon: Swords, title: '4 modos PvP', desc: 'FFA · equipos · capturar la bandera · dominación' },
   { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, caída por distancia, cajas y piernas' },
-  { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, compra en tu base' },
+  { icon: Coins, title: '2 armas permanentes', desc: 'Compra dos y consérvalas aunque caigas (huecos 1 y 2)' },
   { icon: Bot, title: 'Armas GLB reales', desc: 'Pistola, SMG, rifle y francotirador del repositorio' },
   { icon: Shield, title: 'Vida estilo Fortnite', desc: '100 HP + 100 escudo; el escudo absorbe primero' },
   { icon: Bomb, title: 'MOLO y humo', desc: 'Granadas incendiarias y cortinas de humo de 12 s' },
   { icon: Wind, title: 'Tirolinas y saltadores', desc: 'Vuela por cables y catapúltate a los edificios' },
-  { icon: TreePine, title: 'Mapa vivo', desc: 'Pasto con viento, árboles GLB, arbustos y barriles' },
-  { icon: Zap, title: 'Rachas y multimuertes', desc: 'Doble, triple, dominación… anuncios de combate' },
-  { icon: Users, title: 'Salas P2P 1 vs 1', desc: 'Multijugador real por WebRTC (PeerJS) sin servidor propio' },
-  { icon: Home, title: 'Ciudad con interiores', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes, casas' },
+  { icon: TreePine, title: 'Mapas separados por modo', desc: 'Ciudadela PvP e Isla Gallo: solo se carga el que juegas' },
+  { icon: Zap, title: 'Deslizamiento', desc: 'Agáchate mientras corres para deslizarte con impulso' },
+  { icon: Home, title: 'Ciudad con interiores', desc: 'Núcleo central, hotel, torre, mercado, canchas, almacenes' },
   { icon: Video, title: 'Cinemática de entrada', desc: 'Sobrevuelo del mapa al desplegarte por primera vez' },
 ]
 
@@ -389,7 +389,7 @@ export function InfoPanel() {
 // Menú principal — pestañas estilo Fortnite
 // ============================================================
 type MenuTab = 'jugar' | 'controles' | 'ajustes' | 'info'
-type PlayMode = 'solo' | 'host' | 'guest'
+type PlayMode = 'solo' | 'historia'
 
 export function MainMenu() {
   const phase = useGame(s => s.phase)
@@ -398,27 +398,24 @@ export function MainMenu() {
   const [tab, setTab] = useState<MenuTab>('jugar')
   const [name, setName] = useState('')
   const [mode, setMode] = useState<PlayMode>('solo')
-  const [code, setCode] = useState('')
   const [difficulty, setDifficulty] = useState<BotDifficulty>('normal')
-  const [fillBots, setFillBots] = useState(0)
   const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
   const [error, setError] = useState('')
 
   if (phase !== 'menu') return null
 
-  const launch = (m: PlayMode, roomCode = '') => {
+  const launch = (m: PlayMode) => {
     const n = name.trim() || 'Operador'
     if (n.length < 2) { setError('El nombre debe tener al menos 2 caracteres'); return }
     setPlayerName(n)
     setError('')
     setHud({
-      mode: m,
-      roomCode,
+      mode: 'solo',
       botDifficulty: difficulty,
-      fillBots,
-      gameMode,
+      gameMode: m === 'historia' ? 'historia' : gameMode,
       netStatus: 'connecting',
       netError: '',
+      story: null,
     })
     useGame.getState().setPhase('connecting')
   }
@@ -435,7 +432,7 @@ export function MainMenu() {
             <span className="bg-gradient-to-b from-yellow-200 to-amber-500 bg-clip-text text-transparent">CERO</span>
           </h1>
           <p className="text-cyan-300/70 tracking-[0.42em] text-[10px] md:text-xs font-black italic mt-1.5">
-            FPS TÁCTICO MULTIJUGADOR · TEMPORADA 3
+            FPS TÁCTICO · CAMPAÑA + 4 MODOS PVP · TEMPORADA 4
           </p>
         </div>
 
@@ -469,12 +466,11 @@ export function MainMenu() {
                   {error && <p className="text-red-400 text-xs mt-2 font-bold">{error}</p>}
                 </div>
 
-                {/* selector de modo */}
-                <div className="grid grid-cols-3 gap-2.5">
+                {/* selector de modo: BOTS (PvP) o HISTORIA (campaña) */}
+                <div className="grid grid-cols-2 gap-2.5">
                   {([
-                    { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Escaramuza 4v4 contra IA' },
-                    { icon: Users, id: 'host', title: 'CREAR SALA', desc: '1v1 con código P2P' },
-                    { icon: Link2, id: 'guest', title: 'UNIRSE', desc: 'Entra con un código' },
+                    { id: 'solo', icon: Bot, title: 'PARTIDA VS BOTS', desc: '4 modos PvP contra IA' },
+                    { id: 'historia', icon: BookOpen, title: 'HISTORIA', desc: 'Operación Isla Gallo · 15-20 min' },
                   ] as const).map(m => (
                     <button
                       key={m.id}
@@ -494,8 +490,8 @@ export function MainMenu() {
                   ))}
                 </div>
 
-                {/* selector de modo de juego (solo/anfitrión; el invitado juega el del anfitrión) */}
-                {mode !== 'guest' && (
+                {/* selector de modo de juego (solo en partida vs bots) */}
+                {mode === 'solo' && (
                   <div>
                     <p className="text-slate-400 text-[11px] font-black tracking-widest mb-2 flex items-center gap-2">
                       <Swords className="w-3.5 h-3.5" /> MODO DE JUEGO
@@ -531,49 +527,20 @@ export function MainMenu() {
                 {mode === 'solo' && (
                   <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LA IA" />
                 )}
-                {mode === 'host' && (
-                  <div className="space-y-4">
-                    <div>
-                      <p className="text-slate-400 text-[11px] font-black tracking-widest mb-2">BOTS DE RELLENO (POR BANDO)</p>
-                      <div className="grid grid-cols-4 gap-2">
-                        {[0, 1, 2, 3].map(n => (
-                          <Chip key={n} active={fillBots === n} onClick={() => setFillBots(n)}>
-                            {n === 0 ? 'PURO 1v1' : `${n} vs ${n}`}
-                          </Chip>
-                        ))}
-                      </div>
-                    </div>
-                    <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LOS BOTS" />
-                  </div>
-                )}
-                {mode === 'guest' && (
-                  <div>
-                    <label className="text-slate-400 text-[11px] font-black tracking-widest mb-2 block">CÓDIGO DE SALA</label>
-                    <Input
-                      value={code}
-                      onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
-                      onKeyDown={e => { if (e.key === 'Enter' && code.length >= 4) launch('guest', code) }}
-                      placeholder="EJ. K7M2P"
-                      className="bg-slate-950/80 border-slate-600 text-white text-2xl h-14 font-black tracking-[0.3em] text-center"
-                    />
-                    <p className="text-slate-600 text-[10px] mt-2 leading-relaxed">
-                      Conexión P2P (WebRTC) a través del servidor público de señalización PeerJS.
-                    </p>
-                  </div>
+                {mode === 'historia' && (
+                  <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LA CAMPAÑA" />
                 )}
 
                 {/* botón grande */}
                 <button
-                  onClick={() => launch(mode, mode === 'guest' ? code : '')}
-                  disabled={mode === 'guest' && code.length < 4}
+                  onClick={() => launch(mode)}
                   className="w-full h-16 -skew-x-6 rounded-xl font-black italic text-2xl tracking-widest transition-all
                     bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 shadow-[0_8px_30px_rgba(255,190,40,0.35)]
-                    hover:brightness-110 hover:shadow-[0_8px_38px_rgba(255,190,40,0.55)] active:scale-[0.99]
-                    disabled:opacity-40 disabled:shadow-none"
+                    hover:brightness-110 hover:shadow-[0_8px_38px_rgba(255,190,40,0.55)] active:scale-[0.99]"
                 >
                   <span className="skew-x-6 flex items-center justify-center gap-2.5">
                     <Play className="w-6 h-6" />
-                    {mode === 'solo' ? '¡A COMBATIR!' : mode === 'host' ? '¡CREAR SALA!' : '¡UNIRSE!'}
+                    {mode === 'solo' ? '¡A COMBATIR!' : '¡EMPEZAR CAMPAÑA!'}
                   </span>
                 </button>
               </div>
@@ -581,7 +548,7 @@ export function MainMenu() {
               {/* columna derecha: novedades */}
               <div className="border-t lg:border-t-0 lg:border-l border-slate-800/70 pt-5 lg:pt-0 lg:pl-6">
                 <h3 className="text-white font-black italic tracking-widest text-sm mb-3.5 flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-yellow-300" /> NOVEDADES DE LA TEMPORADA 3
+                  <Zap className="w-4 h-4 text-yellow-300" /> NOVEDADES DE LA TEMPORADA 4
                 </h3>
                 <div className="space-y-2.5">
                   {NEWS.map(n => (
@@ -627,7 +594,7 @@ export function MainMenu() {
         </div>
 
         <p className="text-slate-600 text-[10px] mt-6 tracking-widest font-bold">
-          FRONTERA CERO v4.0 · THREE.JS + WEBRTC (PEERJS) · 4 MODOS · MAPA 140×140 M
+          FRONTERA CERO v5.0 · THREE.JS · CAMPAÑA + 4 MODOS PVP · MAPA POR MODO (CARGA PEREZOSA)
         </p>
       </div>
     </div>
@@ -675,12 +642,12 @@ function DifficultyPicker({ difficulty, setDifficulty, label }: {
 }
 
 const NEWS = [
-  { icon: Swords, title: '4 MODOS DE JUEGO', desc: 'Todos contra todos · Combate de equipos · Capturar la bandera · Dominación' },
-  { icon: Home, title: 'Ciudad nueva y ordenada', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes y calles con asfalto' },
+  { icon: BookOpen, title: 'MODO HISTORIA NUEVO', desc: 'Operación Isla Gallo: 5 fases, jefe final y extracción · 15-20 min' },
+  { icon: Home, title: 'Ciudadela Meridiano', desc: 'Núcleo central de 2 plantas, canchas, mercado y red de tirolinas' },
+  { icon: Coins, title: '2 ARMAS PERMANENTES', desc: 'Compra dos armas y no las pierdas al morir · huecos 1 y 2' },
+  { icon: Zap, title: 'DESLIZAMIENTO', desc: 'Agáchate corriendo para deslizarte (salto con impulso incluido)' },
+  { icon: Gauge, title: 'MENOS LAG', desc: 'Vegetación del suelo retirada, mapas por carga perezosa y P2P fuera' },
   { icon: Bot, title: 'Armas y árbol reales (GLB)', desc: 'Modelos del repositorio integrados: pistola, SMG, rifle, francotirador y árboles' },
-  { icon: Crosshair, title: 'Apuntado afinado', desc: 'Retícula compacta, retroceso reducido y ADS configurable' },
-  { icon: Gamepad2, title: 'Controles 100% asignables', desc: 'Disparar/apuntar con tecla o ratón · mando con correr en L3' },
-  { icon: TreePine, title: 'Texturas del repositorio', desc: 'Cielo, paredes y suelo con las fotos subidas por la comunidad' },
 ]
 
 // ============================================================
@@ -688,13 +655,12 @@ const NEWS = [
 // ============================================================
 export function ConnectingScreen() {
   const phase = useGame(s => s.phase)
-  const mode = useGame(s => s.mode)
-  const roomCode = useGame(s => s.roomCode)
+  const gameMode = useGame(s => s.gameMode)
   const netStatus = useGame(s => s.netStatus)
   const netError = useGame(s => s.netError)
   if (phase !== 'connecting') return null
 
-  const showError = mode === 'guest' && netStatus === 'error'
+  const showError = netStatus === 'error'
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 px-4">
@@ -714,24 +680,15 @@ export function ConnectingScreen() {
       ) : (
         <div className="relative text-center space-y-5">
           <Loader2 className="w-12 h-12 text-yellow-300 animate-spin mx-auto" />
-          {mode === 'guest' ? (
-            <div>
-              <p className="text-white text-xl font-black italic tracking-widest">UNIÉNDOSE A LA SALA</p>
-              <p className="text-yellow-300 text-3xl font-black italic tracking-[0.3em] mt-3">{roomCode}</p>
-              <p className="text-slate-500 text-sm mt-3">Estableciendo enlace P2P con el anfitrión…</p>
-            </div>
-          ) : mode === 'host' ? (
-            <div>
-              <p className="text-white text-xl font-black italic tracking-widest">CREANDO SALA TÁCTICA</p>
-              <p className="text-slate-500 text-sm mt-2">Registrando sala en el servidor público…</p>
-            </div>
-          ) : (
-            <div>
-              <p className="text-white text-xl font-black italic tracking-widest">ESTABLECIENDO ENLACE TÁCTICO</p>
-              <p className="text-slate-500 text-sm mt-2">Desplegando operadores IA en el mapa…</p>
-            </div>
-          )}
-          <div className="text-slate-600 text-xs font-bold tracking-widest">FRONTERA CERO · v4.1</div>
+          <div>
+            <p className="text-white text-xl font-black italic tracking-widest">
+              {gameMode === 'historia' ? 'CARGANDO ISLA GALLO' : 'ESTABLECIENDO ENLACE TÁCTICO'}
+            </p>
+            <p className="text-slate-500 text-sm mt-2">
+              {gameMode === 'historia' ? 'Preparando la operación de 5 fases…' : 'Desplegando operadores IA en el mapa…'}
+            </p>
+          </div>
+          <div className="text-slate-600 text-xs font-bold tracking-widest">FRONTERA CERO · v5.0</div>
         </div>
       )}
     </div>
