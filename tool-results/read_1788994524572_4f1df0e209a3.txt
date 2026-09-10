@@ -1,0 +1,795 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useState } from 'react'
+     4→import { useGame } from '@/game/store'
+     5→import { getGame } from '@/game/game-instance'
+     6→import { Button } from '@/components/ui/button'
+     7→import { Input } from '@/components/ui/input'
+     8→import { Slider } from '@/components/ui/slider'
+     9→import {
+    10→  Crosshair, Play, Settings, Volume2, Mouse, Swords, Trophy, Zap,
+    11→  Shield, Bomb, Eye, Gauge, LogOut, Loader2, Coins, Gamepad2, Users, Link2, Bot,
+    12→  Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target,
+    13→} from 'lucide-react'
+    14→import {
+    15→  DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
+    16→  type BotDifficulty, type ActionId, type GameMode, type PadAction,
+    17→} from '@/game/shared'
+    18→
+    19→// ============================================================
+    20→// Estilo compartido: Fortnite — fondo azul profundo + rayos
+    21→// ============================================================
+    22→function MenuBackdrop() {
+    23→  return (
+    24→    <>
+    25→      <div
+    26→        className="absolute inset-0"
+    27→        style={{
+    28→          background: 'linear-gradient(165deg, #070a1d 0%, #10173a 48%, #1a1030 100%)',
+    29→        }}
+    30→      />
+    31→      {/* rayos de luz diagonales */}
+    32→      <div
+    33→        className="absolute inset-0 opacity-30"
+    34→        style={{
+    35→          background:
+    36→            'repeating-linear-gradient(115deg, transparent 0 90px, rgba(99,140,255,0.10) 90px 200px)',
+    37→        }}
+    38→      />
+    39→      {/* orbes de resplandor */}
+    40→      <div className="absolute -top-40 -left-40 w-[34rem] h-[34rem] rounded-full blur-3xl"
+    41→        style={{ background: 'radial-gradient(circle, rgba(64,120,255,0.22), transparent 65%)' }} />
+    42→      <div className="absolute -bottom-52 -right-40 w-[38rem] h-[38rem] rounded-full blur-3xl"
+    43→        style={{ background: 'radial-gradient(circle, rgba(255,184,46,0.14), transparent 65%)' }} />
+    44→      <div className="absolute top-1/3 right-1/4 w-72 h-72 rounded-full blur-3xl"
+    45→        style={{ background: 'radial-gradient(circle, rgba(34,211,238,0.10), transparent 60%)' }} />
+    46→      {/* retícula sutil */}
+    47→      <div
+    48→        className="absolute inset-0 opacity-[0.06]"
+    49→        style={{
+    50→          backgroundImage:
+    51→            'linear-gradient(rgba(148,180,255,0.7) 1px, transparent 1px), linear-gradient(90deg, rgba(148,180,255,0.7) 1px, transparent 1px)',
+    52→          backgroundSize: '56px 56px',
+    53→        }}
+    54→      />
+    55→    </>
+    56→  )
+    57→}
+    58→
+    59→/** Pestaña estilo Fortnite (comprimida en diagonal) */
+    60→function TabButton({ icon: Icon, label, active, onClick }: {
+    61→  icon: typeof Play
+    62→  label: string
+    63→  active: boolean
+    64→  onClick: () => void
+    65→}) {
+    66→  return (
+    67→    <button
+    68→      onClick={onClick}
+    69→      className={`relative -skew-x-12 px-5 sm:px-7 py-2.5 font-black italic tracking-wider text-sm sm:text-base uppercase
+    70→        transition-all duration-150 border-t-2 ${active
+    71→          ? 'bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 border-yellow-200 shadow-[0_0_24px_rgba(255,200,40,0.45)]'
+    72→          : 'bg-slate-800/80 text-slate-300 border-slate-600/60 hover:bg-slate-700/80 hover:text-white'}`}
+    73→    >
+    74→      <span className="skew-x-12 flex items-center gap-2">
+    75→        <Icon className="w-4 h-4" />
+    76→        {label}
+    77→      </span>
+    78→    </button>
+    79→  )
+    80→}
+    81→
+    82→// ============================================================
+    83→// Panel de CONTROLES (rebindable) — compartido menú/pausa
+    84→// ============================================================
+    85→const MOVIMIENTO: ActionId[] = ['fwd', 'back', 'left', 'right', 'sprint', 'crouch', 'jump', 'zipline']
+    86→const COMBATE: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
+    87→
+    88→function useKeyCapture() {
+    89→  const [capture, setCapture] = useState<ActionId | null>(null)
+    90→  useEffect(() => {
+    91→    if (!capture) return
+    92→    const onKey = (e: KeyboardEvent) => {
+    93→      e.preventDefault()
+    94→      e.stopPropagation()
+    95→      // Escape cancela · el resto reasigna
+    96→      if (e.code !== 'Escape') useGame.getState().setKeybind(capture, e.code)
+    97→      setCapture(null)
+    98→    }
+    99→    // los botones del RATÓN también se pueden asignar (disparar/apuntar)
+   100→    const onMouse = (e: MouseEvent) => {
+   101→      e.preventDefault()
+   102→      e.stopPropagation()
+   103→      useGame.getState().setKeybind(capture, `Mouse${e.button}`)
+   104→      setCapture(null)
+   105→    }
+   106→    const onCtx = (e: Event): void => { e.preventDefault() }
+   107→    window.addEventListener('keydown', onKey, true)
+   108→    window.addEventListener('mousedown', onMouse, true)
+   109→    window.addEventListener('contextmenu', onCtx, true)
+   110→    return () => {
+   111→      window.removeEventListener('keydown', onKey, true)
+   112→      window.removeEventListener('mousedown', onMouse, true)
+   113→      window.removeEventListener('contextmenu', onCtx, true)
+   114→    }
+   115→  }, [capture])
+   116→  return { capture, setCapture }
+   117→}
+   118→
+   119→/** captura de botones del MANDO (sondeo de gamepads) */
+   120→function usePadCapture() {
+   121→  const [padCapture, setPadCapture] = useState<PadAction | null>(null)
+   122→  useEffect(() => {
+   123→    if (!padCapture) return
+   124→    let raf = 0
+   125→    const poll = (): void => {
+   126→      const pads = navigator.getGamepads?.() ?? []
+   127→      for (const p of pads) {
+   128→        if (!p) continue
+   129→        for (let i = 0; i < p.buttons.length; i++) {
+   130→          if (p.buttons[i]?.pressed) {
+   131→            useGame.getState().setPadBind(padCapture, i)
+   132→            setPadCapture(null)
+   133→            return
+   134→          }
+   135→        }
+   136→      }
+   137→      raf = requestAnimationFrame(poll)
+   138→    }
+   139→    raf = requestAnimationFrame(poll)
+   140→    return () => cancelAnimationFrame(raf)
+   141→  }, [padCapture])
+   142→  return { padCapture, setPadCapture }
+   143→}
+   144→
+   145→function KeybindRow({ action, capture, onCapture }: {
+   146→  action: ActionId
+   147→  capture: ActionId | null
+   148→  onCapture: (a: ActionId) => void
+   149→}) {
+   150→  const code = useGame(s => s.settings.keybinds[action])
+   151→  const capturing = capture === action
+   152→  return (
+   153→    <div className="flex items-center justify-between gap-3 bg-slate-900/70 rounded-lg px-3.5 py-2 border border-slate-700/70">
+   154→      <span className="text-slate-300 text-xs font-bold tracking-wide">{ACTION_LABELS[action]}</span>
+   155→      <button
+   156→        onClick={() => onCapture(action)}
+   157→        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-black text-xs tracking-wider border transition-all ${
+   158→          capturing
+   159→            ? 'bg-amber-500/25 border-amber-400 text-amber-200 animate-pulse'
+   160→            : code
+   161→              ? 'bg-slate-800 border-slate-600 text-cyan-200 hover:border-cyan-400/70 hover:text-white'
+   162→              : 'bg-red-950/60 border-red-700/60 text-red-300'
+   163→        }`}
+   164→      >
+   165→        {capturing ? 'TECLA O CLIC' : keyLabel(code)}
+   166→      </button>
+   167→    </div>
+   168→  )
+   169→}
+   170→
+   171→function PadRow({ action, capture, onCapture }: {
+   172→  action: PadAction
+   173→  capture: PadAction | null
+   174→  onCapture: (a: PadAction) => void
+   175→}) {
+   176→  const btn = useGame(s => s.settings.padBinds[action])
+   177→  const capturing = capture === action
+   178→  return (
+   179→    <div className="flex items-center justify-between gap-3 bg-slate-900/70 rounded-lg px-3.5 py-2 border border-slate-700/70">
+   180→      <span className="text-slate-300 text-xs font-bold tracking-wide">{PAD_ACTION_LABELS[action]}</span>
+   181→      <button
+   182→        onClick={() => onCapture(action)}
+   183→        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-black text-xs tracking-wider border transition-all ${
+   184→          capturing
+   185→            ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 animate-pulse'
+   186→            : btn >= 0
+   187→              ? 'bg-slate-800 border-slate-600 text-cyan-200 hover:border-cyan-400/70 hover:text-white'
+   188→              : 'bg-red-950/60 border-red-700/60 text-red-300'
+   189→        }`}
+   190→      >
+   191→        {capturing ? 'PULSA UN BOTÓN' : btn >= 0 ? padButtonLabel(btn) : '—'}
+   192→      </button>
+   193→    </div>
+   194→  )
+   195→}
+   196→
+   197→export function KeybindsPanel() {
+   198→  const { capture, setCapture } = useKeyCapture()
+   199→  const { padCapture, setPadCapture } = usePadCapture()
+   200→  const reset = useGame(s => s.resetKeybinds)
+   201→  return (
+   202→    <div className="space-y-5">
+   203→      <div className="flex flex-wrap items-center justify-between gap-3">
+   204→        <p className="text-slate-400 text-xs leading-relaxed max-w-md">
+   205→          Haz clic en una tecla y pulsa la nueva asignación — <b className="text-slate-300">teclado o botón del
+   206→          ratón</b> (disparar y apuntar ya se pueden cambiar). Si ya está en uso, la otra acción se libera
+   207→          automáticamente. <b className="text-slate-300">ESC</b> cancela.
+   208→        </p>
+   209→        <Button
+   210→          onClick={reset}
+   211→          variant="secondary"
+   212→          className="h-9 font-bold text-xs tracking-widest bg-slate-800 border border-slate-600 hover:bg-slate-700"
+   213→        >
+   214→          <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> RESTAURAR POR DEFECTO
+   215→        </Button>
+   216→      </div>
+   217→
+   218→      <div className="grid md:grid-cols-2 gap-5">
+   219→        <div className="space-y-2">
+   220→          <h4 className="text-cyan-300 font-black italic tracking-widest text-xs flex items-center gap-2">
+   221→            <Mouse className="w-4 h-4" /> MOVIMIENTO
+   222→          </h4>
+   223→          {MOVIMIENTO.map(a => (
+   224→            <KeybindRow key={a} action={a} capture={capture} onCapture={setCapture} />
+   225→          ))}
+   226→        </div>
+   227→        <div className="space-y-2">
+   228→          <h4 className="text-amber-300 font-black italic tracking-widest text-xs flex items-center gap-2">
+   229→            <Crosshair className="w-4 h-4" /> COMBATE (RATÓN Y TECLADO)
+   230→          </h4>
+   231→          {COMBATE.map(a => (
+   232→            <KeybindRow key={a} action={a} capture={capture} onCapture={setCapture} />
+   233→          ))}
+   234→        </div>
+   235→      </div>
+   236→
+   237→      {/* mando (rebindable) */}
+   238→      <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+   239→        <h4 className="text-slate-300 font-black italic tracking-widest text-xs mb-3 flex items-center gap-2">
+   240→          <Gamepad2 className="w-4 h-4 text-cyan-300" /> MANDO — BOTONES REASIGNABLES (XBOX · PS · GENÉRICO)
+   241→        </h4>
+   242→        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+   243→          {(Object.keys(PAD_ACTION_LABELS) as PadAction[]).map(a => (
+   244→            <PadRow key={a} action={a} capture={padCapture} onCapture={setPadCapture} />
+   245→          ))}
+   246→        </div>
+   247→        <p className="text-slate-600 text-[10px] mt-2.5 leading-relaxed">
+   248→          Haz clic en una acción y pulsa el botón del mando que quieras. Correr va en <b>L3</b> (pulsar el
+   249→          stick izquierdo) por defecto; también corre empujando el stick a fondo. La sensibilidad se ajusta
+   250→          en AJUSTES.
+   251→        </p>
+   252→      </div>
+   253→    </div>
+   254→  )
+   255→}
+   256→
+   257→// ============================================================
+   258→// Panel de AJUSTES — compartido menú/pausa
+   259→// ============================================================
+   260→export function SettingsPanel() {
+   261→  const settings = useGame(s => s.settings)
+   262→  const setSettings = useGame(s => s.setSettings)
+   263→  return (
+   264→    <div className="space-y-6 max-w-xl">
+   265→      <SliderRow
+   266→        icon={<Mouse className="w-4 h-4" />}
+   267→        label="SENSIBILIDAD DEL RATÓN"
+   268→        value={settings.sens} min={0.2} max={3} step={0.05}
+   269→        format={v => v.toFixed(2)}
+   270→        onChange={v => setSettings({ sens: v })}
+   271→      />
+   272→      <SliderRow
+   273→        icon={<Crosshair className="w-4 h-4" />}
+   274→        label="SENSIBILIDAD AL APUNTAR (ADS)"
+   275→        value={settings.adsSens} min={0.3} max={1.5} step={0.05}
+   276→        format={v => `${Math.round(v * 100)}%`}
+   277→        onChange={v => setSettings({ adsSens: v })}
+   278→      />
+   279→      <SliderRow
+   280→        icon={<Gamepad2 className="w-4 h-4" />}
+   281→        label="SENSIBILIDAD DEL MANDO"
+   282→        value={settings.padSens} min={0.2} max={3} step={0.05}
+   283→        format={v => v.toFixed(2)}
+   284→        onChange={v => setSettings({ padSens: v })}
+   285→      />
+   286→      <SliderRow
+   287→        icon={<Volume2 className="w-4 h-4" />}
+   288→        label="VOLUMEN GENERAL"
+   289→        value={settings.volume} min={0} max={1} step={0.05}
+   290→        format={v => `${Math.round(v * 100)}%`}
+   291→        onChange={v => {
+   292→          setSettings({ volume: v })
+   293→          getGame()?.audio.setVolume(v)
+   294→        }}
+   295→      />
+   296→      <div>
+   297→        <p className="text-slate-400 text-xs font-black tracking-widest mb-2.5 flex items-center gap-2">
+   298→          <Gauge className="w-4 h-4" /> CALIDAD GRÁFICA
+   299→        </p>
+   300→        <div className="grid grid-cols-3 gap-2">
+   301→          {(['baja', 'media', 'alta'] as const).map(q => (
+   302→            <button
+   303→              key={q}
+   304→              onClick={() => setSettings({ quality: q })}
+   305→              className={`rounded-lg py-2.5 font-black italic tracking-widest text-xs border transition-all -skew-x-6 ${
+   306→                settings.quality === q
+   307→                  ? 'bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 border-yellow-300'
+   308→                  : 'bg-slate-900/70 border-slate-700 text-slate-400 hover:text-white'
+   309→              }`}
+   310→            >
+   311→              <span className="skew-x-6">{q.toUpperCase()}</span>
+   312→            </button>
+   313→          ))}
+   314→        </div>
+   315→        <p className="text-slate-600 text-[10px] mt-2">
+   316→          La calidad de sombras y vegetación se aplica al iniciar una partida. Los ajustes se guardan automáticamente.
+   317→        </p>
+   318→      </div>
+   319→    </div>
+   320→  )
+   321→}
+   322→
+   323→function SliderRow({ icon, label, value, min, max, step, format, onChange }: {
+   324→  icon: React.ReactNode
+   325→  label: string
+   326→  value: number
+   327→  min: number; max: number; step: number
+   328→  format: (v: number) => string
+   329→  onChange: (v: number) => void
+   330→}) {
+   331→  return (
+   332→    <div>
+   333→      <div className="flex items-center justify-between mb-2">
+   334→        <span className="text-slate-400 text-xs font-black tracking-widest flex items-center gap-2">{icon} {label}</span>
+   335→        <span className="text-yellow-300 font-black italic tabular-nums text-sm">{format(value)}</span>
+   336→      </div>
+   337→      <Slider min={min} max={max} step={step} value={[value]} onValueChange={v => onChange(v[0])} />
+   338→    </div>
+   339→  )
+   340→}
+   341→
+   342→// ============================================================
+   343→// Panel de INFORMACIÓN — mecánicas y ayuda
+   344→// ============================================================
+   345→const MECHANICS = [
+   346→  { icon: Swords, title: '4 modos de juego', desc: 'FFA · equipos · capturar la bandera · dominación' },
+   347→  { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, caída por distancia, cajas y piernas' },
+   348→  { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, compra en tu base' },
+   349→  { icon: Bot, title: 'Armas GLB reales', desc: 'Pistola, SMG, rifle y francotirador del repositorio' },
+   350→  { icon: Shield, title: 'Vida estilo Fortnite', desc: '100 HP + 100 escudo; el escudo absorbe primero' },
+   351→  { icon: Bomb, title: 'MOLO y humo', desc: 'Granadas incendiarias y cortinas de humo de 12 s' },
+   352→  { icon: Wind, title: 'Tirolinas y saltadores', desc: 'Vuela por cables y catapúltate a los edificios' },
+   353→  { icon: TreePine, title: 'Mapa vivo', desc: 'Pasto con viento, árboles GLB, arbustos y barriles' },
+   354→  { icon: Zap, title: 'Rachas y multimuertes', desc: 'Doble, triple, dominación… anuncios de combate' },
+   355→  { icon: Users, title: 'Salas P2P 1 vs 1', desc: 'Multijugador real por WebRTC (PeerJS) sin servidor propio' },
+   356→  { icon: Home, title: 'Ciudad con interiores', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes, casas' },
+   357→  { icon: Video, title: 'Cinemática de entrada', desc: 'Sobrevuelo del mapa al desplegarte por primera vez' },
+   358→]
+   359→
+   360→export function InfoPanel() {
+   361→  return (
+   362→    <div className="space-y-5">
+   363→      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+   364→        {MECHANICS.map(m => (
+   365→          <div key={m.title} className="flex gap-2.5 bg-slate-950/60 border border-slate-800 rounded-xl p-3.5">
+   366→            <m.icon className="w-4 h-4 text-yellow-300 shrink-0 mt-0.5" />
+   367→            <div>
+   368→              <div className="text-slate-200 text-xs font-bold">{m.title}</div>
+   369→              <div className="text-slate-500 text-[10px] leading-snug mt-0.5">{m.desc}</div>
+   370→            </div>
+   371→          </div>
+   372→        ))}
+   373→      </div>
+   374→      <div className="bg-cyan-950/30 border border-cyan-800/40 rounded-xl p-4 max-w-2xl">
+   375→        <h4 className="text-cyan-200 font-black italic tracking-widest text-xs mb-2 flex items-center gap-2">
+   376→          <Trophy className="w-4 h-4" /> MODO ESCARAMUZA
+   377→        </h4>
+   378→        <p className="text-cyan-100/70 text-xs leading-relaxed">
+   379→          Combate por equipos con economía por rondas: gana eliminaciones para tu escuadrón,
+   380→          cobra recompensas, compra mejor equipo en tu base y sube al tejado de las casas.
+   381→          ¡El primer escuadrón en ganar 5 rondas se lleva la partida!
+   382→        </p>
+   383→      </div>
+   384→    </div>
+   385→  )
+   386→}
+   387→
+   388→// ============================================================
+   389→// Menú principal — pestañas estilo Fortnite
+   390→// ============================================================
+   391→type MenuTab = 'jugar' | 'controles' | 'ajustes' | 'info'
+   392→type PlayMode = 'solo' | 'host' | 'guest'
+   393→
+   394→export function MainMenu() {
+   395→  const phase = useGame(s => s.phase)
+   396→  const setPlayerName = useGame(s => s.setPlayerName)
+   397→  const setHud = useGame(s => s.setHud)
+   398→  const [tab, setTab] = useState<MenuTab>('jugar')
+   399→  const [name, setName] = useState('')
+   400→  const [mode, setMode] = useState<PlayMode>('solo')
+   401→  const [code, setCode] = useState('')
+   402→  const [difficulty, setDifficulty] = useState<BotDifficulty>('normal')
+   403→  const [fillBots, setFillBots] = useState(0)
+   404→  const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
+   405→  const [error, setError] = useState('')
+   406→
+   407→  if (phase !== 'menu') return null
+   408→
+   409→  const launch = (m: PlayMode, roomCode = '') => {
+   410→    const n = name.trim() || 'Operador'
+   411→    if (n.length < 2) { setError('El nombre debe tener al menos 2 caracteres'); return }
+   412→    setPlayerName(n)
+   413→    setError('')
+   414→    setHud({
+   415→      mode: m,
+   416→      roomCode,
+   417→      botDifficulty: difficulty,
+   418→      fillBots,
+   419→      gameMode,
+   420→      netStatus: 'connecting',
+   421→      netError: '',
+   422→    })
+   423→    useGame.getState().setPhase('connecting')
+   424→  }
+   425→
+   426→  return (
+   427→    <div className="fixed inset-0 z-50 overflow-y-auto">
+   428→      <MenuBackdrop />
+   429→
+   430→      <div className="relative min-h-screen flex flex-col items-center px-4 py-6 sm:py-10">
+   431→        {/* logo */}
+   432→        <div className="text-center mb-4 select-none">
+   433→          <h1 className="font-black italic text-5xl md:text-6xl tracking-tighter -skew-x-6 drop-shadow-[0_4px_24px_rgba(64,120,255,0.35)]">
+   434→            <span className="text-white">FRONTERA</span>{' '}
+   435→            <span className="bg-gradient-to-b from-yellow-200 to-amber-500 bg-clip-text text-transparent">CERO</span>
+   436→          </h1>
+   437→          <p className="text-cyan-300/70 tracking-[0.42em] text-[10px] md:text-xs font-black italic mt-1.5">
+   438→            FPS TÁCTICO MULTIJUGADOR · TEMPORADA 3
+   439→          </p>
+   440→        </div>
+   441→
+   442→        {/* pestañas */}
+   443→        <div className="flex items-stretch gap-1.5 sm:gap-2 mb-5">
+   444→          <TabButton icon={Play} label="Jugar" active={tab === 'jugar'} onClick={() => setTab('jugar')} />
+   445→          <TabButton icon={Keyboard} label="Controles" active={tab === 'controles'} onClick={() => setTab('controles')} />
+   446→          <TabButton icon={Settings} label="Ajustes" active={tab === 'ajustes'} onClick={() => setTab('ajustes')} />
+   447→          <TabButton icon={Info} label="Información" active={tab === 'info'} onClick={() => setTab('info')} />
+   448→        </div>
+   449→
+   450→        {/* contenido */}
+   451→        <div className="w-full max-w-6xl rounded-2xl border border-indigo-400/20 bg-[#0b1030]/90 backdrop-blur-md shadow-2xl overflow-hidden">
+   452→          <div className="h-1 bg-gradient-to-r from-cyan-400/60 via-indigo-400/60 to-yellow-400/60" />
+   453→
+   454→          {tab === 'jugar' && (
+   455→            <div className="p-5 sm:p-7 grid lg:grid-cols-[1.15fr_0.85fr] gap-6">
+   456→              {/* columna izquierda: despliegue */}
+   457→              <div className="space-y-5">
+   458→                <div>
+   459→                  <label className="text-slate-400 text-[11px] font-black tracking-widest mb-2 block">
+   460→                    NOMBRE DEL OPERADOR
+   461→                  </label>
+   462→                  <Input
+   463→                    value={name}
+   464→                    onChange={e => { setName(e.target.value); setError('') }}
+   465→                    placeholder="Introduce tu nombre de combate"
+   466→                    maxLength={16}
+   467→                    className="bg-slate-950/80 border-slate-600 text-white text-lg h-12 font-bold focus:border-yellow-400 focus-visible:ring-yellow-400/30"
+   468→                  />
+   469→                  {error && <p className="text-red-400 text-xs mt-2 font-bold">{error}</p>}
+   470→                </div>
+   471→
+   472→                {/* selector de modo */}
+   473→                <div className="grid grid-cols-3 gap-2.5">
+   474→                  {([
+   475→                    { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Escaramuza 4v4 contra IA' },
+   476→                    { icon: Users, id: 'host', title: 'CREAR SALA', desc: '1v1 con código P2P' },
+   477→                    { icon: Link2, id: 'guest', title: 'UNIRSE', desc: 'Entra con un código' },
+   478→                  ] as const).map(m => (
+   479→                    <button
+   480→                      key={m.id}
+   481→                      onClick={() => setMode(m.id)}
+   482→                      className={`rounded-xl border p-3 text-left transition-all ${
+   483→                        mode === m.id
+   484→                          ? 'border-yellow-400/80 bg-amber-500/10 shadow-[0_0_18px_rgba(255,200,40,0.15)]'
+   485→                          : 'border-slate-700/70 bg-slate-950/50 hover:border-slate-500'
+   486→                      }`}
+   487→                    >
+   488→                      <m.icon className={`w-5 h-5 mb-1.5 ${mode === m.id ? 'text-yellow-300' : 'text-slate-400'}`} />
+   489→                      <div className={`text-xs font-black italic tracking-wider ${mode === m.id ? 'text-white' : 'text-slate-300'}`}>
+   490→                        {m.title}
+   491→                      </div>
+   492→                      <div className="text-[10px] text-slate-500 leading-snug mt-0.5">{m.desc}</div>
+   493→                    </button>
+   494→                  ))}
+   495→                </div>
+   496→
+   497→                {/* selector de modo de juego (solo/anfitrión; el invitado juega el del anfitrión) */}
+   498→                {mode !== 'guest' && (
+   499→                  <div>
+   500→                    <p className="text-slate-400 text-[11px] font-black tracking-widest mb-2 flex items-center gap-2">
+   501→                      <Swords className="w-3.5 h-3.5" /> MODO DE JUEGO
+   502→                    </p>
+   503→                    <div className="grid grid-cols-2 gap-2">
+   504→                      {MODE_LIST.map(id => {
+   505→                        const m = MODES[id]
+   506→                        const active = gameMode === id
+   507→                        const Icon = id === 'bandera' ? Flag : id === 'dominacion' ? Target : id === 'ffa' ? Zap : Swords
+   508→                        return (
+   509→                          <button
+   510→                            key={id}
+   511→                            onClick={() => setGameMode(id)}
+   512→                            className={`rounded-xl border p-2.5 text-left transition-all ${
+   513→                              active
+   514→                                ? 'border-yellow-400/80 bg-amber-500/10 shadow-[0_0_18px_rgba(255,200,40,0.15)]'
+   515→                                : 'border-slate-700/70 bg-slate-950/50 hover:border-slate-500'
+   516→                            }`}
+   517→                          >
+   518→                            <Icon className={`w-4 h-4 mb-1 ${active ? 'text-yellow-300' : 'text-slate-400'}`} />
+   519→                            <div className={`text-[11px] font-black italic tracking-wider ${active ? 'text-white' : 'text-slate-300'}`}>
+   520→                              {m.name}
+   521→                            </div>
+   522→                            <div className="text-[9px] text-slate-500 leading-snug mt-0.5">{m.desc}</div>
+   523→                          </button>
+   524→                        )
+   525→                      })}
+   526→                    </div>
+   527→                  </div>
+   528→                )}
+   529→
+   530→                {/* configuración según modo */}
+   531→                {mode === 'solo' && (
+   532→                  <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LA IA" />
+   533→                )}
+   534→                {mode === 'host' && (
+   535→                  <div className="space-y-4">
+   536→                    <div>
+   537→                      <p className="text-slate-400 text-[11px] font-black tracking-widest mb-2">BOTS DE RELLENO (POR BANDO)</p>
+   538→                      <div className="grid grid-cols-4 gap-2">
+   539→                        {[0, 1, 2, 3].map(n => (
+   540→                          <Chip key={n} active={fillBots === n} onClick={() => setFillBots(n)}>
+   541→                            {n === 0 ? 'PURO 1v1' : `${n} vs ${n}`}
+   542→                          </Chip>
+   543→                        ))}
+   544→                      </div>
+   545→                    </div>
+   546→                    <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LOS BOTS" />
+   547→                  </div>
+   548→                )}
+   549→                {mode === 'guest' && (
+   550→                  <div>
+   551→                    <label className="text-slate-400 text-[11px] font-black tracking-widest mb-2 block">CÓDIGO DE SALA</label>
+   552→                    <Input
+   553→                      value={code}
+   554→                      onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+   555→                      onKeyDown={e => { if (e.key === 'Enter' && code.length >= 4) launch('guest', code) }}
+   556→                      placeholder="EJ. K7M2P"
+   557→                      className="bg-slate-950/80 border-slate-600 text-white text-2xl h-14 font-black tracking-[0.3em] text-center"
+   558→                    />
+   559→                    <p className="text-slate-600 text-[10px] mt-2 leading-relaxed">
+   560→                      Conexión P2P (WebRTC) a través del servidor público de señalización PeerJS.
+   561→                    </p>
+   562→                  </div>
+   563→                )}
+   564→
+   565→                {/* botón grande */}
+   566→                <button
+   567→                  onClick={() => launch(mode, mode === 'guest' ? code : '')}
+   568→                  disabled={mode === 'guest' && code.length < 4}
+   569→                  className="w-full h-16 -skew-x-6 rounded-xl font-black italic text-2xl tracking-widest transition-all
+   570→                    bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 shadow-[0_8px_30px_rgba(255,190,40,0.35)]
+   571→                    hover:brightness-110 hover:shadow-[0_8px_38px_rgba(255,190,40,0.55)] active:scale-[0.99]
+   572→                    disabled:opacity-40 disabled:shadow-none"
+   573→                >
+   574→                  <span className="skew-x-6 flex items-center justify-center gap-2.5">
+   575→                    <Play className="w-6 h-6" />
+   576→                    {mode === 'solo' ? '¡A COMBATIR!' : mode === 'host' ? '¡CREAR SALA!' : '¡UNIRSE!'}
+   577→                  </span>
+   578→                </button>
+   579→              </div>
+   580→
+   581→              {/* columna derecha: novedades */}
+   582→              <div className="border-t lg:border-t-0 lg:border-l border-slate-800/70 pt-5 lg:pt-0 lg:pl-6">
+   583→                <h3 className="text-white font-black italic tracking-widest text-sm mb-3.5 flex items-center gap-2">
+   584→                  <Zap className="w-4 h-4 text-yellow-300" /> NOVEDADES DE LA TEMPORADA 3
+   585→                </h3>
+   586→                <div className="space-y-2.5">
+   587→                  {NEWS.map(n => (
+   588→                    <div key={n.title} className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 hover:border-slate-600 transition-colors">
+   589→                      <div className="flex items-center gap-2">
+   590→                        <n.icon className="w-4 h-4 text-cyan-300 shrink-0" />
+   591→                        <div className="text-slate-200 text-xs font-bold">{n.title}</div>
+   592→                      </div>
+   593→                      <p className="text-slate-500 text-[10px] leading-snug mt-1 pl-6">{n.desc}</p>
+   594→                    </div>
+   595→                  ))}
+   596→                </div>
+   597→              </div>
+   598→            </div>
+   599→          )}
+   600→
+   601→          {tab === 'controles' && (
+   602→            <div className="p-5 sm:p-7">
+   603→              <h3 className="text-white font-black italic tracking-widest text-sm mb-4 flex items-center gap-2">
+   604→                <Keyboard className="w-4 h-4 text-yellow-300" /> ASIGNACIÓN DE TECLAS
+   605→              </h3>
+   606→              <KeybindsPanel />
+   607→            </div>
+   608→          )}
+   609→
+   610→          {tab === 'ajustes' && (
+   611→            <div className="p-5 sm:p-7">
+   612→              <h3 className="text-white font-black italic tracking-widest text-sm mb-5 flex items-center gap-2">
+   613→                <Settings className="w-4 h-4 text-yellow-300" /> AJUSTES DEL JUEGO
+   614→              </h3>
+   615→              <SettingsPanel />
+   616→            </div>
+   617→          )}
+   618→
+   619→          {tab === 'info' && (
+   620→            <div className="p-5 sm:p-7">
+   621→              <h3 className="text-white font-black italic tracking-widest text-sm mb-4 flex items-center gap-2">
+   622→                <Info className="w-4 h-4 text-yellow-300" /> MECÁNICAS DEL JUEGO
+   623→              </h3>
+   624→              <InfoPanel />
+   625→            </div>
+   626→          )}
+   627→        </div>
+   628→
+   629→        <p className="text-slate-600 text-[10px] mt-6 tracking-widest font-bold">
+   630→          FRONTERA CERO v4.0 · THREE.JS + WEBRTC (PEERJS) · 4 MODOS · MAPA 140×140 M
+   631→        </p>
+   632→      </div>
+   633→    </div>
+   634→  )
+   635→}
+   636→
+   637→function Chip({ active, onClick, children }: {
+   638→  active: boolean
+   639→  onClick: () => void
+   640→  children: React.ReactNode
+   641→}) {
+   642→  return (
+   643→    <button
+   644→      onClick={onClick}
+   645→      className={`rounded-lg py-2.5 font-black italic text-[11px] tracking-widest border transition-all -skew-x-6 ${
+   646→        active
+   647→          ? 'bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 border-yellow-300'
+   648→          : 'bg-slate-900/70 border-slate-700 text-slate-400 hover:text-white'
+   649→      }`}
+   650→    >
+   651→      <span className="skew-x-6">{children}</span>
+   652→    </button>
+   653→  )
+   654→}
+   655→
+   656→function DifficultyPicker({ difficulty, setDifficulty, label }: {
+   657→  difficulty: BotDifficulty
+   658→  setDifficulty: (d: BotDifficulty) => void
+   659→  label: string
+   660→}) {
+   661→  return (
+   662→    <div>
+   663→      <p className="text-slate-400 text-[11px] font-black tracking-widest mb-2 flex items-center gap-2">
+   664→        <Bot className="w-3.5 h-3.5" /> {label}
+   665→      </p>
+   666→      <div className="grid grid-cols-4 gap-2">
+   667→        {(Object.keys(DIFFICULTY_LABELS) as BotDifficulty[]).map(d => (
+   668→          <Chip key={d} active={difficulty === d} onClick={() => setDifficulty(d)}>
+   669→            {DIFFICULTY_LABELS[d]}
+   670→          </Chip>
+   671→        ))}
+   672→      </div>
+   673→    </div>
+   674→  )
+   675→}
+   676→
+   677→const NEWS = [
+   678→  { icon: Swords, title: '4 MODOS DE JUEGO', desc: 'Todos contra todos · Combate de equipos · Capturar la bandera · Dominación' },
+   679→  { icon: Home, title: 'Ciudad nueva y ordenada', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes y calles con asfalto' },
+   680→  { icon: Bot, title: 'Armas y árbol reales (GLB)', desc: 'Modelos del repositorio integrados: pistola, SMG, rifle, francotirador y árboles' },
+   681→  { icon: Crosshair, title: 'Apuntado afinado', desc: 'Retícula compacta, retroceso reducido y ADS configurable' },
+   682→  { icon: Gamepad2, title: 'Controles 100% asignables', desc: 'Disparar/apuntar con tecla o ratón · mando con correr en L3' },
+   683→  { icon: TreePine, title: 'Texturas del repositorio', desc: 'Cielo, paredes y suelo con las fotos subidas por la comunidad' },
+   684→]
+   685→
+   686→// ============================================================
+   687→// Pantalla de conexión (contextual por modo)
+   688→// ============================================================
+   689→export function ConnectingScreen() {
+   690→  const phase = useGame(s => s.phase)
+   691→  const mode = useGame(s => s.mode)
+   692→  const roomCode = useGame(s => s.roomCode)
+   693→  const netStatus = useGame(s => s.netStatus)
+   694→  const netError = useGame(s => s.netError)
+   695→  if (phase !== 'connecting') return null
+   696→
+   697→  const showError = mode === 'guest' && netStatus === 'error'
+   698→
+   699→  return (
+   700→    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 px-4">
+   701→      <MenuBackdrop />
+   702→      {showError ? (
+   703→        <div className="relative text-center space-y-5">
+   704→          <div className="w-14 h-14 mx-auto rounded-full border-2 border-red-500/60 flex items-center justify-center text-red-400 text-2xl font-black italic">×</div>
+   705→          <p className="text-red-300 text-xl font-black italic tracking-widest">CONEXIÓN FALLIDA</p>
+   706→          <p className="text-slate-500 text-sm">{netError || 'Error desconocido'}</p>
+   707→          <Button
+   708→            onClick={() => useGame.getState().setPhase('menu')}
+   709→            className="h-12 px-8 bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 font-black italic tracking-widest hover:brightness-110"
+   710→          >
+   711→            VOLVER AL MENÚ
+   712→          </Button>
+   713→        </div>
+   714→      ) : (
+   715→        <div className="relative text-center space-y-5">
+   716→          <Loader2 className="w-12 h-12 text-yellow-300 animate-spin mx-auto" />
+   717→          {mode === 'guest' ? (
+   718→            <div>
+   719→              <p className="text-white text-xl font-black italic tracking-widest">UNIÉNDOSE A LA SALA</p>
+   720→              <p className="text-yellow-300 text-3xl font-black italic tracking-[0.3em] mt-3">{roomCode}</p>
+   721→              <p className="text-slate-500 text-sm mt-3">Estableciendo enlace P2P con el anfitrión…</p>
+   722→            </div>
+   723→          ) : mode === 'host' ? (
+   724→            <div>
+   725→              <p className="text-white text-xl font-black italic tracking-widest">CREANDO SALA TÁCTICA</p>
+   726→              <p className="text-slate-500 text-sm mt-2">Registrando sala en el servidor público…</p>
+   727→            </div>
+   728→          ) : (
+   729→            <div>
+   730→              <p className="text-white text-xl font-black italic tracking-widest">ESTABLECIENDO ENLACE TÁCTICO</p>
+   731→              <p className="text-slate-500 text-sm mt-2">Desplegando operadores IA en el mapa…</p>
+   732→            </div>
+   733→          )}
+   734→          <div className="text-slate-600 text-xs font-bold tracking-widest">FRONTERA CERO · v4.1</div>
+   735→        </div>
+   736→      )}
+   737→    </div>
+   738→  )
+   739→}
+   740→
+   741→// ============================================================
+   742→// Menú de pausa — mismas pestañas compactas
+   743→// ============================================================
+   744→type PauseTab = 'controles' | 'ajustes' | 'info'
+   745→
+   746→export function PauseMenu() {
+   747→  const phase = useGame(s => s.phase)
+   748→  const [tab, setTab] = useState<PauseTab>('controles')
+   749→  if (phase !== 'paused') return null
+   750→
+   751→  return (
+   752→    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 backdrop-blur-sm">
+   753→      <div className="w-[min(880px,94vw)] max-h-[92vh] overflow-y-auto bg-[#0b1030]/95 border border-indigo-400/25 rounded-2xl shadow-2xl">
+   754→        <div className="h-1 bg-gradient-to-r from-cyan-400/60 via-indigo-400/60 to-yellow-400/60" />
+   755→        <div className="px-5 sm:px-7 pt-5 flex flex-wrap items-center justify-between gap-3">
+   756→          <h2 className="font-black italic text-2xl tracking-tight text-white">
+   757→            EN <span className="text-yellow-300">PAUSA</span>
+   758→          </h2>
+   759→          <Button
+   760→            onClick={() => getGame()?.requestLock()}
+   761→            className="h-11 px-6 bg-gradient-to-b from-yellow-300 to-amber-500 text-slate-950 font-black italic tracking-widest hover:brightness-110"
+   762→          >
+   763→            <Play className="w-4 h-4 mr-2" /> REANUDAR
+   764→          </Button>
+   765→        </div>
+   766→
+   767→        <div className="px-5 sm:px-7 pt-4 flex gap-1.5 sm:gap-2">
+   768→          <TabButton icon={Keyboard} label="Controles" active={tab === 'controles'} onClick={() => setTab('controles')} />
+   769→          <TabButton icon={Settings} label="Ajustes" active={tab === 'ajustes'} onClick={() => setTab('ajustes')} />
+   770→          <TabButton icon={Info} label="Información" active={tab === 'info'} onClick={() => setTab('info')} />
+   771→        </div>
+   772→
+   773→        <div className="p-5 sm:p-7">
+   774→          {tab === 'controles' && <KeybindsPanel />}
+   775→          {tab === 'ajustes' && <SettingsPanel />}
+   776→          {tab === 'info' && <InfoPanel />}
+   777→        </div>
+   778→
+   779→        <div className="px-5 sm:px-7 pb-6 border-t border-slate-800/70 pt-4">
+   780→          <Button
+   781→            variant="destructive"
+   782→            className="w-full h-11 font-black italic tracking-widest"
+   783→            onClick={() => {
+   784→              getGame()?.dispose()
+   785→              useGame.getState().setPhase('menu')
+   786→            }}
+   787→          >
+   788→            <LogOut className="w-4 h-4 mr-2" /> ABANDONAR PARTIDA
+   789→          </Button>
+   790→        </div>
+   791→      </div>
+   792→    </div>
+   793→  )
+   794→}
+   795→
