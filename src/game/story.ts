@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Director del MODO HISTORIA (v6)
+// EMERGENCY STRIKE — Director del MODO HISTORIA (v6)
 // "OPERACIÓN CENIZA" en el VALLE SERENO: 6 capítulos, ~25-30
 // minutos. Cada capítulo abre con una CINEMÁTICA de cámara
 // (sobrevuelo con barras de cine, título y subtítulo, omisible),

@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Texturas procedurales (canvas 2D)
+// EMERGENCY STRIKE — Texturas procedurales (canvas 2D)
 // Estilo desierto/urbano Warzone
 // ============================================================
 import * as THREE from 'three'

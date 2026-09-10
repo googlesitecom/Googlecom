@@ -22,7 +22,7 @@ touch .nojekyll   # imprescindible: sin esto Jekyll ignora _next/
 
 git add -A
 git -c user.name="Super Z" -c user.email="dev@fronteracero.local" \
-  commit -m "deploy: v5.0 (audio MP3 + modo historia + menú táctico + pantalla de carga + sol nuevo + multijugador reforzado + sin vegetación de suelo)" >/dev/null
+  commit -m "deploy: v6.1 (EMERGENCY STRIKE — armería con huecos + economía sincronizada + gráficos del modo normal)" >/dev/null
 git push "${GITHUB_PUSH_URL:?exporta GITHUB_PUSH_URL=https://x-access-token:TOKEN@github.com/googlesitecom/Googlecom.git}" gh-pages:gh-pages --force 2>&1 | tail -2
 
 cd /home/z/my-project

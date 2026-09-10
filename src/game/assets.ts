@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Assets del usuario (GLB + texturas)
+// EMERGENCY STRIKE — Assets del usuario (GLB + texturas)
 // Armas reales (Pistola/Smg/Rifle/sniper.glb), árbol (Arbol.glb)
 // y texturas (Pared/Piso/Cielo.jpg) subidos al repositorio.
 //
@@ -181,7 +181,7 @@ export function preloadAssets(opts?: { trees?: boolean }): Promise<void> {
               const entry = buildWeaponCacheEntry(gltf.scene, specs[0].cal)
               if (entry) weaponCache.set(file, entry)
             } catch (e) {
-              console.warn('FRONTERA CERO: no se pudo preparar', file, e)
+              console.warn('EMERGENCY STRIKE: no se pudo preparar', file, e)
             }
             resolve()
           },
@@ -202,7 +202,7 @@ export function preloadAssets(opts?: { trees?: boolean }): Promise<void> {
             try {
               treeTemplate = buildTreeTemplate(gltf.scene)
             } catch (e) {
-              console.warn('FRONTERA CERO: no se pudo preparar Arbol.glb', e)
+              console.warn('EMERGENCY STRIKE: no se pudo preparar Arbol.glb', e)
             }
             resolve()
           },

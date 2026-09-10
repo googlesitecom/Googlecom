@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Store de estado (zustand)
+// EMERGENCY STRIKE — Store de estado (zustand)
 // Puente entre el motor 3D y la interfaz React
 // ============================================================
 import { create } from 'zustand'
@@ -73,6 +73,10 @@ interface GameState {
   mag: number
   reserve: number
   owned: WeaponId[]
+  /** v6.1: arsenal completo (para la tienda) */
+  armory: WeaponId[]
+  /** v6.1: huecos de equipamiento [hueco 1, hueco 2] */
+  slots: [WeaponId | null, WeaponId | null]
 
   round: NetRoundState | null
 
@@ -149,6 +153,8 @@ export const useGame = create<GameState>((set) => ({
   mag: 15,
   reserve: 90,
   owned: ['knife', 'p9'],
+  armory: ['knife', 'p9'],
+  slots: [null, 'p9'],
 
   round: null,
 

@@ -1,7 +1,7 @@
 'use client'
 
 // ============================================================
-// FRONTERA CERO — Menú principal (v5: rediseño táctico)
+// EMERGENCY STRIKE → EMERGENCY STRIKE — Menú principal (v6.1)
 // Estética sobria militar: panel oscuro, tipografía condensada,
 // ámbar de acento y detalle por sección (sin look arcade).
 // ============================================================
@@ -394,7 +394,7 @@ const MECHANICS = [
   { icon: Radio, title: 'Modo historia ampliado', desc: '6 capítulos, ~25-30 min, VALLE SERENO con cinemáticas y jefe final' },
   { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, caída por distancia, cajas y piernas' },
   { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, compra en tu base' },
-  { icon: Package, title: 'Dos armas en el inventario', desc: 'Cómpralas y consérvalas aunque caigas: no se pierden' },
+  { icon: Package, title: 'Armería con 2 huecos', desc: 'Compra armas, equípalas en el hueco 1 o 2 y consérvalas aunque caigas' },
   { icon: Footprints, title: 'Deslizamiento', desc: 'Agáchate mientras corres para derraparte por el suelo' },
   { icon: Shield, title: 'Vida estilo Fortnite', desc: '100 HP + 100 escudo; el escudo absorbe primero' },
   { icon: Volume2, title: 'Audio real', desc: 'Disparos y música en MP3 del repositorio, con mezclador' },
@@ -494,14 +494,14 @@ export function MainMenu() {
           <div className="flex items-end justify-between">
             <div className="select-none">
               <h1 className="font-extrabold text-4xl sm:text-5xl tracking-[0.18em] text-stone-100 leading-none">
-                FRONTERA<span className="text-amber-400 ml-3">CERO</span>
+                EMERGENCY<span className="text-amber-400 ml-3">STRIKE</span>
               </h1>
               <p className="text-stone-500 tracking-[0.42em] text-[10px] font-bold uppercase mt-2">
                 FPS táctico multijugador · Operación Ceniza
               </p>
             </div>
             <div className="hidden sm:flex flex-col items-end gap-1">
-              <span className="text-[10px] font-bold tracking-[0.3em] text-amber-300/70 uppercase">v5.0</span>
+              <span className="text-[10px] font-bold tracking-[0.3em] text-amber-300/70 uppercase">v6.1</span>
               <span className="text-[10px] font-semibold tracking-[0.2em] text-stone-600 uppercase">
                 Three.js · WebRTC · 5 modos
               </span>
@@ -672,16 +672,16 @@ export function MainMenu() {
                 </div>
                 <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
                   <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[10px] mb-2 uppercase flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5" /> Novedades v5.0
+                    <Clock className="w-3.5 h-3.5" /> Novedades v6.1
                   </h4>
                   <ul className="space-y-1.5">
                     {[
+                      'Armería con huecos: compra, EQUIPA y elige el hueco de cada arma',
+                      'Dinero sincronizado al instante: cada baja se ve en la tienda',
+                      'Gráficos mejorados también en el modo normal: aves, charcos animados y calles con brillo',
                       'Audio real: disparos y música en MP3, con volumen ajustable',
-                      'OPERACIÓN CENIZA: 6 capítulos (25-30 min) en el nuevo VALLE SERENO con cinemáticas',
+                      'OPERACIÓN CENIZA: 6 capítulos (25-30 min) en el VALLE SERENO con cinemáticas',
                       'Multijugador P2P reforzado (reintentos y reconexión)',
-                      'Sol de atardecer rehecho y gráficos mejorados sin coste de FPS',
-                      'Sin vegetación de suelo: menos lag, mismos modelos',
-                      'Dos armas en el inventario y se conservan al morir',
                     ].map(t => (
                       <li key={t} className="text-stone-400 text-[11px] leading-snug flex gap-2">
                         <span className="text-amber-400/70 mt-0.5">·</span> {t}
@@ -810,7 +810,7 @@ export function MainMenu() {
         </div>
 
         <p className="text-stone-700 text-[10px] mt-6 tracking-[0.25em] font-bold uppercase">
-          Frontera Cero v5.0 · Three.js + WebRTC (PeerJS) · 5 modos · Ciudad 140×140 + Instalación 112×112
+          Emergency Strike v6.1 · Three.js + WebRTC (PeerJS) · 5 modos · Ciudad 140×140 + Valle Sereno 140×140
         </p>
       </div>
     </div>
@@ -936,7 +936,7 @@ export function ConnectingScreen() {
               </p>
             </div>
           )}
-          <div className="text-stone-700 text-[10px] font-bold tracking-[0.3em] uppercase">Frontera Cero · v5.0</div>
+          <div className="text-stone-700 text-[10px] font-bold tracking-[0.3em] uppercase">Emergency Strike · v6.1</div>
         </div>
       )}
     </div>

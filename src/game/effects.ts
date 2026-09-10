@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Efectos visuales (con pools de reciclaje)
+// EMERGENCY STRIKE — Efectos visuales (con pools de reciclaje)
 // Trazadoras, fogonazos, impactos, sangre, decals, explosiones
 //
 // ⚠ RENDIMIENTO (bug del congelamiento al disparar):

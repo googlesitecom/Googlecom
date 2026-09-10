@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Web Worker de simulación
+// EMERGENCY STRIKE — Web Worker de simulación
 // Ejecuta la simulación autoritativa fuera del hilo principal
 // para evitar la limitación de temporizadores en pestañas
 // ocultas o sin foco (los workers no se estrangulan).
@@ -70,6 +70,15 @@ self.onmessage = (ev: MessageEvent) => {
       const itemId = c.itemId ?? c.data?.itemId ?? ''
       const p = sim?.getPlayer(c.id)
       if (p && sim) sim.handleBuy(p, itemId)
+      break
+    }
+    case 'equip': {
+      // v6.1: equipar un arma del arsenal en el hueco 1 o 2
+      const c = d as { id: string; weapon?: string; slot?: number; data?: { weapon?: string; slot?: number } }
+      const weapon = (c.weapon ?? c.data?.weapon ?? '') as WeaponId
+      const slot = Number(c.slot ?? c.data?.slot ?? 0)
+      const p = sim?.getPlayer(c.id)
+      if (p && sim && weapon) sim.handleEquip(p, weapon, slot)
       break
     }
     case 'grenadeThrow': {

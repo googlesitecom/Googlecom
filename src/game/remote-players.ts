@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Jugadores remotos
+// EMERGENCY STRIKE — Jugadores remotos
 // Modelo de soldado realista (soldier.glb) + interpolación de red
 // + hitboxes. Fallback: humanoide low-poly si el GLB no carga.
 // ============================================================
@@ -296,13 +296,13 @@ export class RemotePlayers {
           }
           step()
         } catch (e) {
-          console.error('FRONTERA CERO: error preparando soldier.glb', e)
+          console.error('EMERGENCY STRIKE: error preparando soldier.glb', e)
         }
       },
       undefined,
       err => {
         // sin GLB → seguimos con los humanoides low-poly
-        console.warn('FRONTERA CERO: soldier.glb no disponible, usando modelo simple', err)
+        console.warn('EMERGENCY STRIKE: soldier.glb no disponible, usando modelo simple', err)
       },
     )
   }

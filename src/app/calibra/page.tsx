@@ -1,7 +1,7 @@
 'use client'
 
 // ============================================================
-// FRONTERA CERO — Página de calibración visual de armas GLB
+// EMERGENCY STRIKE — Página de calibración visual de armas GLB
 // Muestra cada arma en 2 vistas (frontal y lateral) para
 // verificar: boca hacia −Z, miras arriba, texturas visibles.
 // Uso: /calibra  (solo desarrollo/diagnóstico)

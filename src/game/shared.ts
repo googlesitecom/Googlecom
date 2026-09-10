@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Configuración compartida cliente/servidor
+// EMERGENCY STRIKE — Configuración compartida cliente/servidor
 // Mapa 140×140 (v4: ciudad ordenada), modos de juego,
 // pociones de escudo (estilo Fortnite), armas y controles
 // ============================================================
@@ -1448,7 +1448,7 @@ export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Pum
 // ------------------------------------------------------------
 // SALAS P2P (PeerJS)
 // ------------------------------------------------------------
-export const PEER_APP_PREFIX = 'fzcero3'
+export const PEER_APP_PREFIX = 'emstrike1'
 export function peerIdForRoom(code: string): string {
   return `${PEER_APP_PREFIX}-${code.toLowerCase()}`
 }

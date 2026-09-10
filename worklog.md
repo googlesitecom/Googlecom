@@ -1,4 +1,4 @@
-# Worklog — FRONTERA CERO (FPS multijugador)
+# Worklog — EMERGENCY STRIKE (FPS multijugador)
 
 ---
 Task ID: 1
@@ -361,3 +361,36 @@ Stage Summary:
 - Modo historia: VALLE SERENO (río, lago, pueblo, ruinas, complejo), 6 capítulos ~25-30 min, cinemática por capítulo + final, jefe y extracción cronometrada
 - IA de misión robusta (zona segura, oleadas, refuerzos, protección en cines) y transiciones por frames
 - Flujo E2E verificado de principio a fin en producción local
+
+---
+Task ID: 12
+Agent: Super Z (agente principal)
+Task: v6.1 — Renombrar el juego a EMERGENCY STRIKE, mejorar los gráficos del modo normal (ciudad), arreglar la compra de dos armas (bug de dinero) y permitir equipar armas en la tienda eligiendo el hueco (mensaje #16)
+
+Work Log:
+- RENOMBRADO Frontera Zero/Cero → EMERGENCY STRIKE: layout.tsx (título/OG), boot-screen (logo EMERGENCY/STRIKE + v6.1 + EMS//WEBGL), menú principal (cabecera, chips de versión, pie), título de la cinemática de entrada, README, cabeceras de los 16 archivos del motor y prefijo de salas P2P fzcero3→emstrike1 (la clave localStorage fzc-settings se conserva para no perder los ajustes del usuario)
+- CAUSA RAÍZ del "no deja comprar dos armas": killPlayer sumaba el dinero al asesino en la simulación pero NUNCA emitía 'econ' a su cliente — la tienda seguía mostrando el saldo viejo y los botones quedaban deshabilitados. Fix: evento econ dirigido al asesino en cada baja (+ $300/$400), y el dinero de la HUD/tienda ahora sube en vivo
+- SISTEMA DE ARSENAL Y HUECOS (v6.1):
+  - SimPlayer: nuevo armory (colección permanente: compras + cuchillo + P9) y slots [hueco 1, hueco 2] (el cuchillo es el hueco 3 fijo); owned pasa a ser DERIVADO = huecos + cuchillo
+  - handleBuy: compra → armory + autoEquip (hueco libre, o el de su categoría; primarias→hueco 1, pistolas→hueco 2); recomprar arma del arsenal = reponer munición sin tocar huecos
+  - NUEVO handleEquip(weapon, slot): valida arsenal, mueve el arma al hueco elegido (quitándola del otro si la llevaba), arma en mano = la equipada; mensaje 'equip' por worker (huésped incluido)
+  - Evento 'loadout' (owned/armory/slots/weapon) emitido en spawn, compra, equipar y entrega de la misión → net→engine.onLoadout sincroniza todo el cliente (sustituye a giveWeapon)
+  - respawnPlayer conserva armory+slots (muerte); resetMatch los reinicia (partida nueva); botBuy reescrito con huecos; storyCmd give/boss/ammo adaptados
+  - Cliente: teclas 1/2 pasan de PRIMARY_PREF/SECONDARY_PREF fijos a this.slots (elegidos por el jugador); store con armory+slots; ciclo de rueda = huecos+cuchillo
+- TIENDA REDISEÑADA (buy-menu.tsx): panel TU LOADOUT con los 3 huecos (arma, tecla, activo), por arma: COMPRAR / ✓ EN HUECO 1 · EQUIPAR ▸ HUECO 2 / REPONER MUNICIÓN; badges EN TU ARSENAL
+- HUD: tira de huecos junto a la munición (1 · 2 · 3 Cuchillo con el arma activa resaltada)
+- GRÁFICOS DEL MODO NORMAL (ciudad):
+  - Charcos: material de AGUA ANIMADA del atardecer (extraído a ensureWaterMaterial() compartido) sustituye los discos metálicos estáticos — ondulación, fresnel y destello solar (verificado por VLM)
+  - Aves: 7 siluetas en círculo ahora en TODOS los mapas (antes solo historia)
+  - Asfalto roughness 0.94→0.7 + envMapIntensity 0.85 y aceras 0.9→0.78 — brillo húmedo del atardecer por el PMREM (coste 0)
+- VERIFICACIÓN (33/33 + 15/15 tests deterministas con GameSim en bun):
+  - test-armory-v61.ts: estado inicial, compra x2 con dinero, equipar/mover entre huecos, recompra=munición, econ instantáneo tras baja (+$300 exacto), muerte conserva arsenal/huecos, compra solo en base
+  - test-story-give-v61.ts: entrega de armas de la misión (loadout+mano), re-entrega=munición, jefe Vega con CR-4 válida, ammo, muerte conserva arsenal
+  - E2E en navegador (agent-browser + VLM, 12 capturas): boot EMERGENCY STRIKE v6.1 → menú → partida bots ciudad → tienda (TU LOADOUT con HUECO 1/2/3) → COMPRAR Águila → ✓ EN HUECO 1 → EQUIPAR ▸ HUECO 2 (la p9 sale, el Águila entra) → HUD con chips de huecos y ÁGUILA .50 en mano → charco de agua animado en la ciudad confirmado visualmente → 7 aves volando (inspección de escena) → consola sin errores
+- tsc limpio, eslint limpio en los archivos tocados, build de Pages OK
+
+Stage Summary:
+- EMERGENCY STRIKE v6.1: nombre nuevo en pantalla de carga, menú, pestaña y metadatos
+- La compra de dos armas funciona y el dinero se ve subir al instante (bug de econ arreglado)
+- Tienda con EQUIPAR y elección de hueco (1/2) + HUD con los 3 huecos; todo persiste al morir
+- Ciudad (modo normal) con charcos de agua animados, aves y calles con brillo — sin coste de FPS

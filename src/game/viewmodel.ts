@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Modelos de armas (viewmodel procedural)
+// EMERGENCY STRIKE — Modelos de armas (viewmodel procedural)
 // Armas low-poly construidas con primitivas + animaciones
 // ============================================================
 import * as THREE from 'three'

@@ -15,6 +15,7 @@ export function Hud() {
   const weapon = useGame(s => s.weapon)
   const mag = useGame(s => s.mag)
   const reserve = useGame(s => s.reserve)
+  const slots = useGame(s => s.slots)
   const round = useGame(s => s.round)
   const team = useGame(s => s.team)
   const killfeed = useGame(s => s.killfeed)
@@ -170,6 +171,30 @@ export function Hud() {
 
       {/* ===== Munición y arma (abajo-derecha) ===== */}
       <div className="absolute bottom-6 right-6 text-right">
+        {/* tira de huecos (v6.1): qué arma va en cada tecla */}
+        <div className="flex justify-end gap-1.5 mb-2">
+          {[0, 1].map(idx => {
+            const w = slots[idx]
+            const active = w != null && w === weapon
+            return (
+              <div
+                key={idx}
+                className={`px-2 py-1 rounded border text-[10px] font-bold tracking-wider transition-colors ${
+                  active
+                    ? 'bg-amber-500/25 border-amber-500/70 text-amber-200'
+                    : w
+                      ? 'bg-stone-950/70 border-stone-700/70 text-stone-400'
+                      : 'bg-stone-950/40 border-stone-800/60 border-dashed text-stone-600'
+                }`}
+              >
+                <span className="opacity-70 mr-1">{idx + 1}</span>{w ? shortWeapon(w) : '—'}
+              </div>
+            )
+          })}
+          <div className={`px-2 py-1 rounded border text-[10px] font-bold tracking-wider ${weapon === 'knife' ? 'bg-amber-500/25 border-amber-500/70 text-amber-200' : 'bg-stone-950/70 border-stone-700/70 text-stone-400'}`}>
+            <span className="opacity-70 mr-1">3</span>Cuchillo
+          </div>
+        </div>
         <div className="bg-stone-950/70 rounded-lg px-5 py-3 border border-stone-700/60 shadow-xl">
           <div className="text-stone-400 text-xs tracking-widest font-bold uppercase">{w.name}</div>
           <div className="flex items-baseline justify-end gap-2 mt-0.5">

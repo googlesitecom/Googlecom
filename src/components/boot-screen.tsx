@@ -1,7 +1,7 @@
 'use client'
 
 // ============================================================
-// FRONTERA CERO — Pantalla de carga (v5)
+// EMERGENCY STRIKE — Pantalla de carga (v6.1)
 // Al abrir la página: 3 segundos exactos, diseño sobrio y
 // fino (militar/táctico): logo con trazo, barra fina de
 // progreso, consejos rotativos y porcentaje.
@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 const TIPS = [
   'Consejo: agáchate mientras corres para deslizarte por las rampas',
   'Consejo: el escudo absorbe el daño antes que la vida',
-  'Consejo: puedes llevar dos armas y no las pierdes al caer',
+  'Consejo: compra dos armas y equípalas en el hueco que quieras — no se pierden al caer',
   'Consejo: mantén la calma al apuntar: la retícula se cierra al frenar',
   'Consejo: la música se ajusta en AJUSTES · AUDIO',
   'Consejo: los barriles rojos explotan: úsalos a tu favor',
@@ -84,15 +84,15 @@ export function BootScreen({ onDone }: { onDone: () => void }) {
           className="text-4xl sm:text-5xl font-extrabold tracking-[0.34em] text-stone-100"
           style={{ textShadow: '0 2px 30px rgba(217,160,91,0.25)' }}
         >
-          FRONTERA
+          EMERGENCY
         </h1>
         <div className="mt-1 flex items-center justify-center gap-3">
           <span className="h-px w-10 bg-stone-600" />
-          <span className="text-xs font-bold tracking-[0.55em] text-amber-200/80">CERO</span>
+          <span className="text-xs font-bold tracking-[0.55em] text-amber-200/80">STRIKE</span>
           <span className="h-px w-10 bg-stone-600" />
         </div>
         <p className="mt-4 text-[10px] font-semibold tracking-[0.4em] text-stone-500 uppercase">
-          Operación Ceniza · v5.0
+          Operación Ceniza · v6.1
         </p>
       </div>
 
@@ -127,7 +127,7 @@ export function BootScreen({ onDone }: { onDone: () => void }) {
 
       {/* marca de esquina */}
       <div className="absolute bottom-4 right-5 text-[9px] font-semibold tracking-[0.3em] text-stone-700">
-        FZC // WEBGL
+        EMS // WEBGL
       </div>
     </div>
   )

@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Motor del juego (Three.js)
+// EMERGENCY STRIKE — Motor del juego (Three.js)
 // Movimiento, colisiones, cámara, armas, efectos, minimapa
 // ============================================================
 import * as THREE from 'three'
@@ -56,8 +56,8 @@ interface JumpPadView {
   phase: number
 }
 
-const PRIMARY_PREF: WeaponId[] = ['awp338', 'cr4', 'ar47', 'breacher', 'mp9']
-const SECONDARY_PREF: WeaponId[] = ['aguila', 'p9']
+// (v6.1: PRIMARY_PREF/SECONDARY_PREF eliminados — los huecos 1/2 los
+// asigna el jugador en la tienda y se guardan en this.slots)
 const HALF_W = 0.36
 const UP_AXIS = new THREE.Vector3(0, 1, 0)
 const EYE_STAND = 1.62
@@ -127,6 +127,10 @@ export class Game {
   money = 1000
   team: Team = 'A'
   private owned: WeaponId[] = ['knife', 'p9']
+  /** v6.1: arsenal completo (compras conservadas) — espejo del simulador */
+  private armory: WeaponId[] = ['knife', 'p9']
+  /** v6.1: huecos [1, 2] — teclas 1/2; el cuchillo es el hueco 3 fijo */
+  private slots: [WeaponId | null, WeaponId | null] = [null, 'p9']
   private ammo: Partial<Record<WeaponId, WeaponRuntime>> = {}
   weapon: WeaponId = 'p9'
   private lastWeapon: WeaponId = 'knife'
@@ -548,8 +552,73 @@ export class Game {
 
   // ----------------------------------------------------------
   // AMBIENTE V6 (sin coste de FPS apreciable): nubes a la deriva,
-  // agua animada con shader, motas de polvo y aves en el valle
+  // agua animada con shader, motas de polvo y aves en el cielo
   // ----------------------------------------------------------
+  /** crea (una sola vez) el material de agua animada del atardecer —
+   *  lo comparten río/lago/fuente y, desde v6.1, los CHARCOS de la ciudad */
+  private ensureWaterMaterial(): THREE.ShaderMaterial {
+    if (this.waterMat) return this.waterMat
+    const noiseTex = makeWaterNoiseTexture()
+    noiseTex.repeat.set(3, 3)
+    const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
+    this.waterMat = new THREE.ShaderMaterial({
+      transparent: true,
+      uniforms: {
+        uTime: { value: 0 },
+        uNoise: { value: noiseTex },
+        uSunDir: { value: sunDir },
+      },
+      vertexShader: /* glsl */`
+        varying vec2 vUv;
+        varying vec3 vWorldPos;
+        uniform float uTime;
+        void main() {
+          vUv = uv;
+          vec3 p = position;
+          // oleaje suave (2 ondas cruzadas)
+          float w = sin(p.x * 1.7 + uTime * 1.1) * 0.045 + sin(p.y * 2.3 + uTime * 0.8) * 0.04;
+          p.z += w;
+          vec4 wp = modelMatrix * vec4(p, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */`
+        varying vec2 vUv;
+        varying vec3 vWorldPos;
+        uniform float uTime;
+        uniform sampler2D uNoise;
+        uniform vec3 uSunDir;
+        const vec3 DEEP = vec3(0.045, 0.110, 0.135);
+        const vec3 SHALLOW = vec3(0.130, 0.310, 0.330);
+        const vec3 SKYH = vec3(0.880, 0.560, 0.320);
+        const vec3 SUNCOL = vec3(1.0, 0.72, 0.45);
+        void main() {
+          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+          // normal perturbada por dos capas de ruido desplazándose
+          vec2 uv1 = vUv * 2.2 + vec2(uTime * 0.014, uTime * 0.009);
+          vec2 uv2 = vUv * 3.6 - vec2(uTime * 0.011, uTime * 0.017);
+          float n1 = texture2D(uNoise, uv1).r;
+          float n2 = texture2D(uNoise, uv2).r;
+          vec3 n = normalize(vec3((n1 - 0.5) * 0.55, 1.0, (n2 - 0.5) * 0.55));
+          // base del agua: teal con variación clara de ruido
+          vec3 base = mix(DEEP, SHALLOW, 0.25 + 0.65 * n1);
+          // fresnel (potencia 5): el cielo solo se refleja MUY rasante
+          float fres = pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
+          vec3 col = mix(base, SKYH, clamp(fres * 1.15, 0.0, 0.8));
+          // destello solar especular (brillante y compacto)
+          vec3 refl = reflect(-viewDir, n);
+          float spec = pow(max(dot(refl, uSunDir), 0.0), 160.0);
+          col += SUNCOL * spec * 2.2;
+          // chispeo del ruido (destellos sueltos, sin franjas)
+          col += SUNCOL * 0.12 * smoothstep(0.60, 0.82, n1 * (0.75 + 0.25 * n2));
+          gl_FragColor = vec4(col, 0.93);
+        }
+      `,
+    })
+    return this.waterMat
+  }
+
   private buildAmbience(quality: 'baja' | 'media' | 'alta'): void {
     // --- nubes: billboards altos a la deriva (12 sprites) ---
     const cloudTex = makeCloudTexture()
@@ -570,69 +639,12 @@ export class Game {
 
     // --- agua animada (río/lago/fuente del valle) ---
     if (this.md.water.length) {
-      const noiseTex = makeWaterNoiseTexture()
-      noiseTex.repeat.set(3, 3)
-      const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
-      this.waterMat = new THREE.ShaderMaterial({
-        transparent: true,
-        uniforms: {
-          uTime: { value: 0 },
-          uNoise: { value: noiseTex },
-          uSunDir: { value: sunDir },
-        },
-        vertexShader: /* glsl */`
-          varying vec2 vUv;
-          varying vec3 vWorldPos;
-          uniform float uTime;
-          void main() {
-            vUv = uv;
-            vec3 p = position;
-            // oleaje suave (2 ondas cruzadas)
-            float w = sin(p.x * 1.7 + uTime * 1.1) * 0.045 + sin(p.y * 2.3 + uTime * 0.8) * 0.04;
-            p.z += w;
-            vec4 wp = modelMatrix * vec4(p, 1.0);
-            vWorldPos = wp.xyz;
-            gl_Position = projectionMatrix * viewMatrix * wp;
-          }
-        `,
-        fragmentShader: /* glsl */`
-          varying vec2 vUv;
-          varying vec3 vWorldPos;
-          uniform float uTime;
-          uniform sampler2D uNoise;
-          uniform vec3 uSunDir;
-          const vec3 DEEP = vec3(0.045, 0.110, 0.135);
-          const vec3 SHALLOW = vec3(0.130, 0.310, 0.330);
-          const vec3 SKYH = vec3(0.880, 0.560, 0.320);
-          const vec3 SUNCOL = vec3(1.0, 0.72, 0.45);
-          void main() {
-            vec3 viewDir = normalize(cameraPosition - vWorldPos);
-            // normal perturbada por dos capas de ruido desplazándose
-            vec2 uv1 = vUv * 2.2 + vec2(uTime * 0.014, uTime * 0.009);
-            vec2 uv2 = vUv * 3.6 - vec2(uTime * 0.011, uTime * 0.017);
-            float n1 = texture2D(uNoise, uv1).r;
-            float n2 = texture2D(uNoise, uv2).r;
-            vec3 n = normalize(vec3((n1 - 0.5) * 0.55, 1.0, (n2 - 0.5) * 0.55));
-            // base del agua: teal con variación clara de ruido
-            vec3 base = mix(DEEP, SHALLOW, 0.25 + 0.65 * n1);
-            // fresnel (potencia 5): el cielo solo se refleja MUY rasante
-            float fres = pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
-            vec3 col = mix(base, SKYH, clamp(fres * 1.15, 0.0, 0.8));
-            // destello solar especular (brillante y compacto)
-            vec3 refl = reflect(-viewDir, n);
-            float spec = pow(max(dot(refl, uSunDir), 0.0), 160.0);
-            col += SUNCOL * spec * 2.2;
-            // chispeo del ruido (destellos sueltos, sin franjas)
-            col += SUNCOL * 0.12 * smoothstep(0.60, 0.82, n1 * (0.75 + 0.25 * n2));
-            gl_FragColor = vec4(col, 0.93);
-          }
-        `,
-      })
+      this.ensureWaterMaterial()
       for (const w of this.md.water) {
         const segs = Math.max(2, Math.round(w.w / 6))
         const segsZ = Math.max(2, Math.round(w.d / 6))
         const geo = new THREE.PlaneGeometry(w.w, w.d, segs, segsZ)
-        const mesh = new THREE.Mesh(geo, this.waterMat)
+        const mesh = new THREE.Mesh(geo, this.waterMat!)
         mesh.rotation.x = -Math.PI / 2
         mesh.position.set(w.x, 0.052, w.z)
         this.scene.add(mesh)
@@ -665,8 +677,9 @@ export class Game {
       this.scene.add(this.dust)
     }
 
-    // --- aves del valle (solo mapa de historia): 7 siluetas en círculo ---
-    if (this.mapId === 'instalacion') {
+    // --- aves del cielo (v6.1: en TODOS los mapas — la ciudad también
+    // recibe el cielo vivo): 7 siluetas en círculo ---
+    {
       const birdTex = makeBirdTexture()
       for (let i = 0; i < 7; i++) {
         const s = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -938,14 +951,14 @@ export class Game {
       this.scene.add(frame)
     }
 
-    // --- charcos reflectantes (reflejan el cielo del atardecer) ---
-    const puddleMat = new THREE.MeshStandardMaterial({
-      color: 0x2a3038, roughness: 0.12, metalness: 0.85, envMapIntensity: 1.8,
-    })
+    // --- charcos (v6.1: AGUA ANIMADA con el shader del atardecer —
+    // ondulación, fresnel y destello solar en la ciudad también;
+    // antes eran discos metálicos estáticos) ---
+    const puddleMat = this.ensureWaterMaterial()
     for (const p of this.md.puddles) {
-      const puddle = new THREE.Mesh(new THREE.CircleGeometry(p.r, 20), puddleMat)
+      const puddle = new THREE.Mesh(new THREE.CircleGeometry(p.r, 24), puddleMat)
       puddle.rotation.x = -Math.PI / 2
-      puddle.position.set(p.x, 0.024, p.z)
+      puddle.position.set(p.x, 0.052, p.z)
       puddle.scale.set(1, 0.75, 1)
       this.scene.add(puddle)
     }
@@ -1055,8 +1068,10 @@ export class Game {
   // CALLES URBANAS (asfalto + líneas + aceras) — look Warzone
   // ----------------------------------------------------------
   private buildStreets(): void {
-    const asphalt = new THREE.MeshStandardMaterial({ color: 0x2b2e32, roughness: 0.94, metalness: 0.04 })
-    const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: 0.9 })
+    // v6.1: asfalto y aceras menos mates (brillo húmedo del atardecer por
+    // el mapa de entorno PBR — coste 0, solo parámetros del material)
+    const asphalt = new THREE.MeshStandardMaterial({ color: 0x2b2e32, roughness: 0.7, metalness: 0.08, envMapIntensity: 0.85 })
+    const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: 0.78, envMapIntensity: 0.55 })
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8d8c8 })
     // alturas escalonadas para evitar z-fighting con el terreno (mm → cm)
     const Y_ASPHALT = 0.03
@@ -1496,10 +1511,11 @@ export class Game {
     else if (code === this.kb('lastWeapon')) this.switchTo(this.lastWeapon)
     else if (code === this.kb('zipline')) this.tryAttachZipline()
     else if (code === this.kb('slot1')) {
-      const p = PRIMARY_PREF.find(w => this.owned.includes(w))
+      // v6.1: hueco 1 asignado en la tienda (antes era por preferencia fija)
+      const p = this.slots[0]
       if (p) this.switchTo(p)
     } else if (code === this.kb('slot2')) {
-      const p = SECONDARY_PREF.find(w => this.owned.includes(w))
+      const p = this.slots[1]
       if (p) this.switchTo(p)
     } else if (code === this.kb('slot3')) this.switchTo('knife')
   }
@@ -2258,16 +2274,27 @@ export class Game {
     this.setWeapon(id)
   }
 
-  giveWeapon(id: WeaponId): void {
-    if (!this.owned.includes(id)) this.owned.push(id)
-    this.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve }
-    this.setWeapon(id)
-    this.updateHudWeapon()
+  /** v6.1: equipar desde la tienda — pide al simulador colocar el arma en el hueco */
+  equip(weapon: WeaponId, slot: 0 | 1): void {
+    this.net.equip(weapon, slot)
   }
 
   refillAmmo(id: WeaponId): void {
     this.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve }
     this.updateHudWeapon()
+  }
+
+  /** v6.1: sincronía total de inventario con el simulador (compra/equipar/entrega/spawn) */
+  onLoadout(owned: WeaponId[], armory: WeaponId[], slots: [WeaponId | null, WeaponId | null], weapon: WeaponId): void {
+    this.owned = owned.slice()
+    this.armory = armory.slice()
+    this.slots = [slots[0] ?? null, slots[1] ?? null]
+    // ¿arma nueva en mano? (compra, equipado en la tienda o entrega de la misión)
+    if (weapon && weapon !== this.weapon && this.owned.includes(weapon)) {
+      this.setWeapon(weapon)
+    } else {
+      this.updateHudWeapon()
+    }
   }
 
   private updateHudWeapon(): void {
@@ -2277,6 +2304,8 @@ export class Game {
       mag: a?.mag ?? 0,
       reserve: a?.reserve ?? 0,
       owned: [...this.owned],
+      armory: [...this.armory],
+      slots: [this.slots[0], this.slots[1]],
     })
   }
 
@@ -2727,7 +2756,7 @@ export class Game {
     if (this.cine.played || this.cine.active) return
     this.cine.played = true
     this.cine.kind = 'entry'
-    this.cine.title = 'FRONTERA CERO'
+    this.cine.title = 'EMERGENCY STRIKE'
     this.cine.subtitle = 'ESTACIÓN MERIDIANO 59 · ZONA DE EXCLUSIÓN TOTAL'
     this.cine.onDone = null
     this.cine.active = true

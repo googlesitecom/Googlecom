@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Cliente de red
+// EMERGENCY STRIKE — Cliente de red
 // - solo:  simulación local con bots (sin servidor)
 // - host:  simulación local + sala 1v1 por PeerJS (P2P)
 // - guest: se conecta a la sala del anfitrión por PeerJS
@@ -402,6 +402,15 @@ export class NetClient {
     this.sendToSim({ e: 'buy', d: { id: this.id, itemId } })
   }
 
+  /** v6.1: equipar un arma del arsenal en el hueco 1 o 2 */
+  equip(weapon: WeaponId, slot: 0 | 1): void {
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'equip', d: { weapon, slot } })
+      return
+    }
+    this.sendToSim({ e: 'equip', d: { id: this.id, weapon, slot } })
+  }
+
   throwGrenade(pos: [number, number, number], vel: [number, number, number], kind: GrenadeKind = 'frag'): void {
     if (this.mode === 'guest') {
       if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'grenadeThrow', d: { pos, vel, kind } })
@@ -581,9 +590,10 @@ export class NetClient {
         game.onPickup(d.kind as 'medkit' | 'bandage' | 'shieldSmall' | 'shieldBig', d.hpGain, d.shieldGain)
         break
       }
-      case 'giveWeapon': {
-        const d = data as { weapon: WeaponId }
-        game.giveWeapon(d.weapon)
+      case 'loadout': {
+        // v6.1: arsenal + huecos + arma en mano (compra / equipar / entrega)
+        const d = data as { owned: WeaponId[]; armory: WeaponId[]; slots: [WeaponId | null, WeaponId | null]; weapon: WeaponId }
+        game.onLoadout(d.owned, d.armory, d.slots, d.weapon)
         break
       }
       case 'refillAmmo': {

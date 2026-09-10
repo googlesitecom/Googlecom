@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FRONTERA CERO — FPS multijugador",
+  title: "EMERGENCY STRIKE — FPS multijugador",
   description:
     "FPS táctico multijugador estilo CS2 con estética Warzone. 4 modos de juego, mapa urbano con interiores, multijugador 1v1 por salas y soporte de mando. Juega directo en el navegador.",
   keywords: ["FPS", "shooter", "multijugador", "three.js", "CS2", "Warzone", "juego navegador"],
@@ -22,9 +22,9 @@ export const metadata: Metadata = {
     icon: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/logo.svg`,
   },
   openGraph: {
-    title: "FRONTERA CERO — FPS multijugador",
+    title: "EMERGENCY STRIKE — FPS multijugador",
     description: "FPS táctico en el navegador: 4 modos de juego, mapa urbano, multijugador P2P y mando compatible.",
-    siteName: "FRONTERA CERO",
+    siteName: "EMERGENCY STRIKE",
     type: "website",
   },
 };

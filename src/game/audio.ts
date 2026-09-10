@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Motor de audio (Web Audio API)
+// EMERGENCY STRIKE — Motor de audio (Web Audio API)
 // v5: sonidos de disparo y música en MP3 del repositorio
 // (audio/Pistola, Smg, Rifle, Sniper, Musica) con mezclador de
 // volúmenes (general / música / efectos) y recarga procedural

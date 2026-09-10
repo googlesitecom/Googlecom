@@ -1,5 +1,5 @@
 // ============================================================
-// FRONTERA CERO — Simulación autoritativa (navegador)
+// EMERGENCY STRIKE — Simulación autoritativa (navegador)
 // Se ejecuta en local (solo/anfitrión). Los eventos se
 // enrutan al jugador local y, si lo hay, al invitado P2P.
 // ============================================================
@@ -59,6 +59,10 @@ interface SimPlayer {
   respawnAt: number
   weapon: WeaponId
   owned: WeaponId[]
+  /** arsenal completo (compras + cuchillo + P9): se conserva SIEMPRE */
+  armory: WeaponId[]
+  /** huecos de equipamiento [hueco 1, hueco 2] — el cuchillo es el hueco 3 fijo */
+  slots: [WeaponId | null, WeaponId | null]
   frags: number
   smokes: number
   kills: number
@@ -293,6 +297,8 @@ export class GameSim {
       hp: 100, shield: 0, dead: false, respawnAt: 0,
       weapon: 'p9',
       owned: ['knife', 'p9'],
+      armory: ['knife', 'p9'],
+      slots: [null, 'p9'],
       frags: 0, smokes: 0,
       kills: 0, deaths: 0, money: GAME.START_MONEY,
       streak: 0, lastKillAt: 0, multi: 0,
@@ -331,13 +337,17 @@ export class GameSim {
     p.lastDamageAt = 0
     p.protectUntil = now() + (this.mode === 'historia' ? 9000 : GAME.SPAWN_PROTECT * 1000)
     if (initial) {
-      p.owned = ['knife', 'p9']
+      p.armory = ['knife', 'p9']
+      p.slots = [null, 'p9']
+      this.recomputeOwned(p)
       p.weapon = 'p9'
     } else {
-      // v5: el inventario se CONSERVA al reaparecer (dos armas + secundaria)
-      if (!p.owned.includes('knife')) p.owned.unshift('knife')
-      if (!p.owned.includes('p9')) p.owned.push('p9')
-      if (!p.owned.includes(p.weapon)) p.weapon = p.owned[p.owned.length - 1] ?? 'p9'
+      // v6.1: el ARSENAL y los HUECOS se conservan al reaparecer
+      if (!p.armory.includes('knife')) p.armory.unshift('knife')
+      if (!p.armory.includes('p9')) p.armory.push('p9')
+      if (!p.slots[0] && !p.slots[1]) p.slots = [null, 'p9']
+      this.recomputeOwned(p)
+      if (!p.owned.includes(p.weapon)) p.weapon = p.slots[1] ?? p.slots[0] ?? 'p9'
       for (const wid of p.owned) {
         if (WEAPONS[wid].mag > 0) this.emit('refillAmmo', { weapon: wid }, p.id)
       }
@@ -366,6 +376,42 @@ export class GameSim {
       money: p.money,
       protect: GAME.SPAWN_PROTECT,
     }, p.id)
+    // v6.1: sincroniza arsenal + huecos con el cliente (tienda/HUD)
+    this.syncLoadout(p)
+  }
+
+  // ------------------------------------------------------------
+  // Arsenal y huecos de equipamiento (v6.1)
+  // ------------------------------------------------------------
+  /** armas LLEVADAS = huecos equipados + cuchillo (orden de ciclo) */
+  private recomputeOwned(p: SimPlayer): void {
+    const carried: WeaponId[] = []
+    for (const w of [p.slots[0], p.slots[1], 'knife' as WeaponId]) {
+      if (w && WEAPONS[w] && !carried.includes(w)) carried.push(w)
+    }
+    p.owned = carried
+  }
+
+  /** coloca un arma del arsenal en un hueco libre (o el de su categoría) */
+  private autoEquip(p: SimPlayer, wid: WeaponId): void {
+    if (p.slots[0] === wid) p.slots[0] = null
+    if (p.slots[1] === wid) p.slots[1] = null
+    const cat = WEAPONS[wid].slot === 'primary' ? 0 : 1
+    if (!p.slots[cat]) p.slots[cat] = wid
+    else if (!p.slots[1 - cat]) p.slots[1 - cat] = wid
+    else p.slots[cat] = wid
+    this.recomputeOwned(p)
+  }
+
+  /** sincroniza el inventario del jugador con su cliente (tienda/HUD) */
+  private syncLoadout(p: SimPlayer, handTo?: WeaponId): void {
+    if (handTo && p.owned.includes(handTo)) p.weapon = handTo
+    this.emit('loadout', {
+      owned: p.owned.slice(),
+      armory: p.armory.slice(),
+      slots: [p.slots[0], p.slots[1]],
+      weapon: p.weapon,
+    }, p.id)
   }
 
   // ------------------------------------------------------------
@@ -381,23 +427,35 @@ export class GameSim {
   private botBuy(p: SimPlayer): void {
     // modo historia: armamento fijo decente, sin economía
     if (this.mode === 'historia') {
-      if (!p.owned.some(w => w === 'ar47' || w === 'cr4')) {
+      if (!p.armory.some(w => w === 'ar47' || w === 'cr4')) {
         const w: WeaponId = Math.random() < 0.5 ? 'ar47' : 'cr4'
-        p.owned.push(w)
+        p.armory.push(w)
+        this.autoEquip(p, w)
         p.weapon = w
       }
       if (p.shield < 25) p.shield = 50
       return
     }
+    const buyPrimary = (w: WeaponId, price: number): void => {
+      p.armory = ['knife', 'p9', w]
+      p.slots = [w, null]
+      this.recomputeOwned(p)
+      p.weapon = w
+      p.money -= price
+    }
     if (p.money >= 4750 && Math.random() < 0.22) {
-      p.owned = ['knife', 'p9', 'awp338']; p.weapon = 'awp338'; p.money -= 4750
+      buyPrimary('awp338', 4750)
     } else if (p.money >= 2900) {
       const w: WeaponId = Math.random() < 0.5 ? 'cr4' : 'ar47'
-      p.owned = ['knife', 'p9', w]; p.weapon = w; p.money -= WEAPONS[w].price
+      buyPrimary(w, WEAPONS[w].price)
     } else if (p.money >= 1250 && Math.random() < 0.75) {
-      p.owned = ['knife', 'p9', 'mp9']; p.weapon = 'mp9'; p.money -= 1250
+      buyPrimary('mp9', 1250)
     } else if (p.money >= 700 && Math.random() < 0.5) {
-      p.owned = ['knife', 'p9', 'aguila']; p.weapon = 'aguila'; p.money -= 700
+      p.armory = ['knife', 'p9', 'aguila']
+      p.slots = [null, 'aguila']
+      this.recomputeOwned(p)
+      p.weapon = 'aguila'
+      p.money -= 700
     }
     // los bots compran un escudo a medias (menos tanque que el jugador)
     if (p.money >= 1000 && p.shield < 25) { p.shield = 50; p.money -= 1000 }
@@ -414,12 +472,15 @@ export class GameSim {
     if (item.weapon) {
       const w = WEAPONS[item.weapon]
       p.money -= item.price
-      if (p.owned.includes(w.id)) {
+      if (p.armory.includes(w.id)) {
+        // ya está en tu arsenal: repone la munición de reserva
         this.emit('refillAmmo', { weapon: w.id }, p.id)
+        this.syncLoadout(p)
       } else {
-        p.owned.push(w.id)
-        p.weapon = w.id
-        this.emit('giveWeapon', { weapon: w.id }, p.id)
+        // v6.1: compra → arsenal + hueco automático (libre o de su categoría)
+        p.armory.push(w.id)
+        this.autoEquip(p, w.id)
+        this.syncLoadout(p, w.id)
       }
     } else if (item.equip === 'shield') {
       p.money -= item.price
@@ -441,6 +502,27 @@ export class GameSim {
     this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
   }
 
+  /** v6.1: equipar un arma del arsenal en el hueco elegido (desde la tienda) */
+  handleEquip(p: SimPlayer, weapon: WeaponId, slot: number): void {
+    const s = slot === 1 ? 1 : 0
+    if (!WEAPONS[weapon] || weapon === 'knife') {
+      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Artículo desconocido' }, p.id)
+    }
+    if (!p.armory.includes(weapon)) {
+      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Aún no tienes esa arma' }, p.id)
+    }
+    if (p.dead) {
+      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Estás eliminado' }, p.id)
+    }
+    // quitarla del otro hueco si la llevabas puesta y colocarla en el elegido
+    if (p.slots[0] === weapon) p.slots[0] = null
+    if (p.slots[1] === weapon) p.slots[1] = null
+    p.slots[s] = weapon
+    this.recomputeOwned(p)
+    this.syncLoadout(p, weapon)
+    this.emit('buyResult', { ok: true, itemId: `equip:${String(weapon)}:${s}`, money: p.money }, p.id)
+  }
+
   // ------------------------------------------------------------
   // Comandos del director del modo historia
   // ------------------------------------------------------------
@@ -452,14 +534,22 @@ export class GameSim {
       if (!p) {
         // sin id explícito: el primer bot del bando B
         for (const q of this.players.values()) {
-          if (q.bot && q.team === 'B') { q.name = 'Cnel. Vega'; q.hp = 400; q.shield = 150; q.weapon = 'cr4'; if (!q.owned.includes('cr4')) q.owned.push('cr4'); break }
+          if (q.bot && q.team === 'B') {
+            q.name = 'Cnel. Vega'; q.hp = 400; q.shield = 150; q.weapon = 'cr4'
+            if (!q.armory.includes('cr4')) q.armory.push('cr4')
+            q.slots[0] = 'cr4'
+            this.recomputeOwned(q)
+            break
+          }
         }
       } else {
         p.name = 'Cnel. Vega'
         p.hp = 400
         p.shield = 150
         p.weapon = 'cr4'
-        if (!p.owned.includes('cr4')) p.owned.push('cr4')
+        if (!p.armory.includes('cr4')) p.armory.push('cr4')
+        p.slots[0] = 'cr4'
+        this.recomputeOwned(p)
       }
       this.broadcastSnapshot()
     } else if (cmd === 'give' && data.weapon) {
@@ -467,11 +557,14 @@ export class GameSim {
       const p = this.players.get(playerId)
       const w = data.weapon
       if (p && WEAPONS[w]) {
-        if (!p.owned.includes(w)) {
-          p.owned.push(w)
-          this.emit('giveWeapon', { weapon: w }, p.id)
+        if (!p.armory.includes(w)) {
+          p.armory.push(w)
+          this.autoEquip(p, w)
+          this.syncLoadout(p, w)
+          this.emit('refillAmmo', { weapon: w }, p.id)
         } else {
           this.emit('refillAmmo', { weapon: w }, p.id)
+          this.syncLoadout(p, w)
         }
       }
     } else if (cmd === 'ammo') {
@@ -576,6 +669,10 @@ export class GameSim {
       killer.multi = (t - killer.lastKillAt < 4000) ? killer.multi + 1 : 1
       killer.lastKillAt = t
       killer.money = Math.min(GAME.MAX_MONEY, killer.money + GAME.KILL_REWARD + (headshot ? GAME.HS_REWARD : 0))
+      // v6.1: el dinero del asesino se sincroniza AL INSTANTE con su cliente
+      // (antes la tienda mostraba el saldo viejo y parecía que no podías
+      // comprar la segunda arma)
+      this.emit('econ', { money: killer.money, frags: killer.frags, smokes: killer.smokes }, killer.id)
       if (this.mode !== 'ffa') {
         if (killer.team === 'A') this.round.scoresA++; else this.round.scoresB++
       }
@@ -682,6 +779,14 @@ export class GameSim {
     for (const p of this.players.values()) {
       p.kills = 0; p.deaths = 0; p.streak = 0; p.money = GAME.START_MONEY
       p.respawnAt = now() + rand(200, 900)
+      // nueva partida: arsenal inicial (las compras pertenecían a la anterior)
+      if (!p.bot) {
+        p.armory = ['knife', 'p9']
+        p.slots = [null, 'p9']
+        this.recomputeOwned(p)
+        p.weapon = 'p9'
+        this.syncLoadout(p)
+      }
       this.emit('econ', { money: p.money }, p.id)
     }
     this.announce('NUEVA PARTIDA — RONDA 1', 'round')
