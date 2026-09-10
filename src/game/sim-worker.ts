@@ -5,7 +5,7 @@
 // ocultas o sin foco (los workers no se estrangulan).
 // ============================================================
 import { GameSim } from './sim'
-import type { BotDifficulty, Team, WeaponId, GameMode } from './shared'
+import type { BotDifficulty, Team, WeaponId, GameMode, MapId } from './shared'
 
 interface JoinCmd { id: string; name: string; team: Team; announce?: boolean }
 interface InputCmd {
@@ -36,11 +36,13 @@ self.onmessage = (ev: MessageEvent) => {
 
   switch (msg.e) {
     case 'init': {
-      const cfg = d as { difficulty: BotDifficulty; bots: number; mode?: GameMode }
+      const cfg = d as { difficulty: BotDifficulty; bots: number; mode?: GameMode; mapId?: MapId }
       sim?.stop()
-      sim = new GameSim(cfg.difficulty, cfg.mode ?? 'escaramuza')
+      sim = new GameSim(cfg.difficulty, cfg.mode ?? 'escaramuza', cfg.mapId ?? 'ciudad')
       sim.onRoute((e, data, to) => post(e, data, to))
-      if (cfg.bots > 0) sim.addBots(cfg.bots)
+      // en la misión todos los bots son enemigos (equipo B)
+      if (cfg.mode === 'historia') sim.addBots(cfg.bots, true)
+      else if (cfg.bots > 0) sim.addBots(cfg.bots)
       sim.start()
       break
     }
@@ -86,6 +88,12 @@ self.onmessage = (ev: MessageEvent) => {
       const c = d as BarrelCmd
       const p = sim?.getPlayer(c.id)
       if (p && sim && c.data) sim.handleBarrelShot(p, c.data.pos)
+      break
+    }
+    case 'storyCmd': {
+      const c = d as { id?: string; data?: { cmd?: string; botId?: string; weapon?: WeaponId } }
+      const pid = c.id ?? ''
+      if (sim && pid) sim.handleStoryCmd(pid, c.data ?? {})
       break
     }
     case 'leave': {

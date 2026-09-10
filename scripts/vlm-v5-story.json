@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Aquí tienes el análisis conciso de la imagen:\n\n1. **¿Se ve un mapa militar amurallado?** No, la imagen es una pantalla de carga negra con texto.\n2. **¿Hay HUD de misión arriba?** No hay HUD de juego; solo un título central (\"INICIANDO OPERACIÓN\") y un icono de carga.\n3. **¿Hay balizas/columnas de luz amarillas?** No hay elementos 3D ni iluminación ambiental, solo un icono circular amarillo (letra \"C\" o símbolo de carga) en el centro.\n4. **¿El arma se ve bien orientada?** No se ve ningún arma ni entorno de juego.\n5. **¿Anomalías graves?** No es una anomalía del juego en sí, sino que la captura corresponde a una **pantalla de carga/inicio** (texto: \"Desplegando en la instalación... FRONTERA CERO - V5.0\"), por lo que falta todo el contenido de gameplay típico de un FPS.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789004701,
+  "id": "202609100944496f4022f550ec4905",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609100944496f4022f550ec4905",
+  "usage": {
+    "completion_tokens": 230,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1142,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1372
+  }
+}

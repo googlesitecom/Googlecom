@@ -28,6 +28,19 @@ export interface Announcement {
 export type Phase = 'menu' | 'connecting' | 'playing' | 'paused' | 'dead'
 export type NetStatus = 'idle' | 'connecting' | 'waiting' | 'connected' | 'error'
 
+export interface StoryState {
+  active: boolean
+  chapter: number
+  chapterTitle: string
+  objective: string
+  progress: string
+  hint: string
+  timer: number
+  dialogue: { who: string; text: string } | null
+  status: 'playing' | 'victory'
+  stats: { time: number; kills: number }
+}
+
 interface GameState {
   phase: Phase
   playerName: string
@@ -78,10 +91,15 @@ interface GameState {
     adsSens: number
     padSens: number
     volume: number
+    musicVol: number
+    sfxVol: number
     quality: 'baja' | 'media' | 'alta'
     keybinds: Record<ActionId, string>
     padBinds: Record<PadAction, number>
   }
+
+  /** estado del modo historia (lo actualiza el director) */
+  story: StoryState
 
   fps: number
   ping: number
@@ -98,6 +116,7 @@ interface GameState {
   setKeybind: (action: ActionId, code: string) => void
   setPadBind: (action: PadAction, button: number) => void
   resetKeybinds: () => void
+  setStory: (partial: Partial<StoryState>) => void
 }
 
 let feedId = 0
@@ -148,9 +167,24 @@ export const useGame = create<GameState>((set) => ({
     adsSens: 0.75,
     padSens: 1.0,
     volume: 0.7,
+    musicVol: 0.6,
+    sfxVol: 1.0,
     quality: 'alta',
     keybinds: { ...DEFAULT_KEYBINDS },
     padBinds: { ...DEFAULT_PAD_BINDS },
+  },
+
+  story: {
+    active: false,
+    chapter: 0,
+    chapterTitle: '',
+    objective: '',
+    progress: '',
+    hint: '',
+    timer: 0,
+    dialogue: null,
+    status: 'playing',
+    stats: { time: 0, kills: 0 },
   },
 
   fps: 0,
@@ -203,6 +237,9 @@ export const useGame = create<GameState>((set) => ({
   resetKeybinds: () => {
     useGame.getState().setSettings({ keybinds: { ...DEFAULT_KEYBINDS }, padBinds: { ...DEFAULT_PAD_BINDS } })
   },
+  setStory: (partial) => {
+    set((s) => ({ story: { ...s.story, ...partial } }))
+  },
 }))
 
 // restaurar ajustes persistidos (calidad/sensibilidad/volumen/teclas)
@@ -218,6 +255,8 @@ try {
         adsSens: parsed.adsSens ?? cur.adsSens,
         padSens: parsed.padSens ?? cur.padSens,
         volume: parsed.volume ?? cur.volume,
+        musicVol: parsed.musicVol ?? cur.musicVol,
+        sfxVol: parsed.sfxVol ?? cur.sfxVol,
         keybinds: { ...cur.keybinds, ...(parsed.keybinds ?? {}) },
         padBinds: { ...cur.padBinds, ...(parsed.padBinds ?? {}) },
       })

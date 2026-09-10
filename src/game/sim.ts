@@ -4,9 +4,10 @@
 // enrutan al jugador local y, si lo hay, al invitado P2P.
 // ============================================================
 import {
-  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, PICKUP_SPOTS, computeDamage, spawnPoint, segmentBlocked,
-  WAYPOINTS, WAYPOINT_EDGES, BOT_NAMES, MAP_AABBS, BOT_SKILL, SPAWN_A, SPAWN_B,
-  MODES, FLAG_A, FLAG_B, DOM_ZONES,
+  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, computeDamage, segmentBlocked,
+  WAYPOINTS, BOT_NAMES, BOT_SKILL,
+  MODES, FLAG_A, FLAG_B, DOM_ZONES, getMapData,
+  type MapId, type MapData,
   type Team, type WeaponId, type BodyPart, type BotDifficulty, type PickupKind, type GrenadeKind, type GameMode,
   type NetPlayerState, type NetGrenade, type NetPickup, type NetRoundState, type NetKillEvent, type NetSnapshot,
   type NetFlagState, type NetZoneState,
@@ -143,10 +144,10 @@ function segSphereHit(ax: number, ay: number, az: number, bx: number, by: number
   return px * px + py * py + pz * pz < r * r
 }
 
-function nearestWaypoint(x: number, z: number): number {
+function nearestWaypoint(x: number, z: number, wps: [number, number][] = WAYPOINTS): number {
   let best = 0, bestD = Infinity
-  for (let i = 0; i < WAYPOINTS.length; i++) {
-    const d = Math.hypot(WAYPOINTS[i][0] - x, WAYPOINTS[i][1] - z)
+  for (let i = 0; i < wps.length; i++) {
+    const d = Math.hypot(wps[i][0] - x, wps[i][1] - z)
     if (d < bestD) { bestD = d; best = i }
   }
   return best
@@ -185,12 +186,17 @@ export class GameSim {
     roundWinsB: 0,
   }
 
-  constructor(private difficulty: BotDifficulty = 'normal', mode: GameMode = 'escaramuza') {
+  /** mapa activo (ciudad o instalación del modo historia) */
+  private md: MapData
+
+  constructor(private difficulty: BotDifficulty = 'normal', mode: GameMode = 'escaramuza', mapId: MapId = 'ciudad') {
     this.mode = mode
-    this.round.endsAt = now() + MODES[mode].time * 1000
+    this.md = getMapData(mapId)
+    // en la misión no hay límite de ronda: el ritmo lo marca el director
+    this.round.endsAt = now() + (mode === 'historia' ? 3_600_000 : MODES[mode].time * 1000)
     // pociones repartidas por el mapa (respawn escalonado)
     let pk = 0
-    for (const s of PICKUP_SPOTS) {
+    for (const s of this.md.pickups) {
       this.pickups.push({
         id: `p${pk++}`, kind: s.kind, x: s.x, z: s.z,
         active: true, respawnAt: 0,
@@ -231,7 +237,12 @@ export class GameSim {
     return c
   }
 
-  addBots(perTeam: number): void {
+  addBots(perTeam: number, allTeamB = false): void {
+    if (allTeamB) {
+      // modo historia: todos los enemigos son del bando B
+      for (let i = 0; i < perTeam; i++) this.spawnBot('B')
+      return
+    }
     for (let t = 0; t < 2; t++) {
       const team: Team = t === 0 ? 'A' : 'B'
       for (let i = 0; i < perTeam; i++) {
@@ -290,7 +301,7 @@ export class GameSim {
     }
     if (bot) {
       p.ai = {
-        state: 'patrol', wp: nearestWaypoint(p.x, p.z),
+        state: 'patrol', wp: nearestWaypoint(p.x, p.z, this.md.waypoints),
         target: null, reactAt: 0, strafe: Math.random() < 0.5 ? -1 : 1, strafePhase: Math.random() * 2,
         nextShotAt: 0, burst: 0,
         lastScan: Math.floor(Math.random() * 200), lastSeen: 0, lastKnown: null, huntUntil: 0, retreatUntil: 0, crouchUntil: 0,
@@ -307,16 +318,30 @@ export class GameSim {
 
   private respawnPlayer(p: SimPlayer, initial = false): void {
     const idx = Array.from(this.players.values()).filter(q => q.team === p.team).indexOf(p)
-    const [x, , z] = spawnPoint(p.team, Math.max(0, idx))
+    const base = p.team === 'A' ? this.md.spawnA : this.md.spawnB
+    const ang = (idx * 2.399) % (Math.PI * 2)
+    const rr = 1.5 + (idx % 3) * 1.2
+    const x = base[0] + Math.cos(ang) * rr
+    const z = base[2] + Math.sin(ang) * rr
     p.x = x; p.y = 0.02; p.z = z
     p.hp = 100
     p.shield = 0
     p.dead = false
     p.crouch = false
     p.lastDamageAt = 0
-    p.protectUntil = now() + GAME.SPAWN_PROTECT * 1000
-    p.owned = ['knife', 'p9']
-    p.weapon = 'p9'
+    p.protectUntil = now() + (this.mode === 'historia' ? 4000 : GAME.SPAWN_PROTECT * 1000)
+    if (initial) {
+      p.owned = ['knife', 'p9']
+      p.weapon = 'p9'
+    } else {
+      // v5: el inventario se CONSERVA al reaparecer (dos armas + secundaria)
+      if (!p.owned.includes('knife')) p.owned.unshift('knife')
+      if (!p.owned.includes('p9')) p.owned.push('p9')
+      if (!p.owned.includes(p.weapon)) p.weapon = p.owned[p.owned.length - 1] ?? 'p9'
+      for (const wid of p.owned) {
+        if (WEAPONS[wid].mag > 0) this.emit('refillAmmo', { weapon: wid }, p.id)
+      }
+    }
     // granadas de cortesía al reaparecer (mín. 1 de cada una, máx. 2)
     p.frags = clamp(p.frags, 1, 2)
     p.smokes = clamp(p.smokes, 1, 2)
@@ -325,7 +350,7 @@ export class GameSim {
     p.flag = null
     if (p.ai) {
       p.ai.state = 'patrol'
-      p.ai.wp = nearestWaypoint(x, z)
+      p.ai.wp = nearestWaypoint(x, z, this.md.waypoints)
       p.ai.target = null
       p.ai.lastKnown = null
     }
@@ -346,14 +371,24 @@ export class GameSim {
   // ------------------------------------------------------------
   // Economía / compra
   // ------------------------------------------------------------
-  private spawnX(team: Team): number { return team === 'A' ? SPAWN_A[0] : SPAWN_B[0] }
-  private spawnZ(team: Team): number { return team === 'A' ? SPAWN_A[2] : SPAWN_B[2] }
+  private spawnX(team: Team): number { return team === 'A' ? this.md.spawnA[0] : this.md.spawnB[0] }
+  private spawnZ(team: Team): number { return team === 'A' ? this.md.spawnA[2] : this.md.spawnB[2] }
 
   private inBuyZone(p: SimPlayer): boolean {
     return Math.hypot(p.x - this.spawnX(p.team), p.z - this.spawnZ(p.team)) < GAME.BUY_RADIUS + 2.5
   }
 
   private botBuy(p: SimPlayer): void {
+    // modo historia: armamento fijo decente, sin economía
+    if (this.mode === 'historia') {
+      if (!p.owned.some(w => w === 'ar47' || w === 'cr4')) {
+        const w: WeaponId = Math.random() < 0.5 ? 'ar47' : 'cr4'
+        p.owned.push(w)
+        p.weapon = w
+      }
+      if (p.shield < 25) p.shield = 50
+      return
+    }
     if (p.money >= 4750 && Math.random() < 0.22) {
       p.owned = ['knife', 'p9', 'awp338']; p.weapon = 'awp338'; p.money -= 4750
     } else if (p.money >= 2900) {
@@ -404,6 +439,47 @@ export class GameSim {
     }
     this.emit('buyResult', { ok: true, itemId, money: p.money }, p.id)
     this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
+  }
+
+  // ------------------------------------------------------------
+  // Comandos del director del modo historia
+  // ------------------------------------------------------------
+  handleStoryCmd(playerId: string, data: { cmd?: string; botId?: string; weapon?: WeaponId }): void {
+    const cmd = data?.cmd
+    if (cmd === 'boss') {
+      // convierte un bot en el jefe final
+      const p = data.botId ? this.players.get(data.botId) : null
+      if (!p) {
+        // sin id explícito: el primer bot del bando B
+        for (const q of this.players.values()) {
+          if (q.bot && q.team === 'B') { q.name = 'Cnel. Vega'; q.hp = 400; q.shield = 150; q.weapon = 'cr4'; if (!q.owned.includes('cr4')) q.owned.push('cr4'); break }
+        }
+      } else {
+        p.name = 'Cnel. Vega'
+        p.hp = 400
+        p.shield = 150
+        p.weapon = 'cr4'
+        if (!p.owned.includes('cr4')) p.owned.push('cr4')
+      }
+      this.broadcastSnapshot()
+    } else if (cmd === 'give' && data.weapon) {
+      // entrega de arma al jugador de la misión
+      const p = this.players.get(playerId)
+      const w = data.weapon
+      if (p && WEAPONS[w]) {
+        if (!p.owned.includes(w)) {
+          p.owned.push(w)
+          this.emit('giveWeapon', { weapon: w }, p.id)
+        } else {
+          this.emit('refillAmmo', { weapon: w }, p.id)
+        }
+      }
+    } else if (cmd === 'ammo') {
+      const p = this.players.get(playerId)
+      if (p) for (const wid of p.owned) {
+        if (WEAPONS[wid].mag > 0) this.emit('refillAmmo', { weapon: wid }, p.id)
+      }
+    }
   }
 
   // ------------------------------------------------------------
@@ -511,6 +587,7 @@ export class GameSim {
 
   private checkRoundEnd(): void {
     if (this.round.phase !== 'live') return
+    if (this.mode === 'historia') return   // el ritmo lo marca el director de la misión
     const target = MODES[this.mode].target
     if (this.mode === 'escaramuza') {
       if (this.round.scoresA >= target || this.round.scoresB >= target) {
@@ -742,7 +819,7 @@ export class GameSim {
     const bx = b.x, by = b.y + (b.crouch ? 0.9 : 1.2), bz = b.z
     const d = dist3(ax, ay, az, bx, by, bz)
     if (d > skill.seeDist) return false
-    if (segmentBlocked(ax, ay, az, bx, by, bz, MAP_AABBS)) return false
+    if (segmentBlocked(ax, ay, az, bx, by, bz, this.md.aabbs)) return false
     // cortina de humo: bloquea la línea de visión de los bots
     const t = now()
     for (const s of this.smokes) {
@@ -968,18 +1045,18 @@ export class GameSim {
     } else {
       // --- patrulla: con objetivo táctico (bandera/zona) o sesgo territorial ---
       p.crouch = false
-      const [wx, wz] = WAYPOINTS[ai.wp]
+      const [wx, wz] = this.md.waypoints[ai.wp]
       const dx = wx - p.x, dz = wz - p.z
       const d = Math.hypot(dx, dz)
       if (d < 1.4) {
-        const edges = WAYPOINT_EDGES[ai.wp]
+        const edges = this.md.edges[ai.wp]
         if (edges.length) {
           const obj = this.botObjective(p)
           if (obj) {
             // ir hacia el objetivo por el grafo
             let bestW = edges[0], bestD = Infinity
             for (const e of edges) {
-              const dd = Math.hypot(WAYPOINTS[e][0] - obj[0], WAYPOINTS[e][1] - obj[1])
+              const dd = Math.hypot(this.md.waypoints[e][0] - obj[0], this.md.waypoints[e][1] - obj[1])
               if (dd < bestD) { bestD = dd; bestW = e }
             }
             ai.wp = bestW
@@ -989,7 +1066,7 @@ export class GameSim {
               // sesgo al centro (acción)
               let bestW = edges[0], bestD = Infinity
               for (const e of edges) {
-                const dd = Math.hypot(WAYPOINTS[e][0], WAYPOINTS[e][1])
+                const dd = Math.hypot(this.md.waypoints[e][0], this.md.waypoints[e][1])
                 if (dd < bestD) { bestD = dd; bestW = e }
               }
               ai.wp = bestW
@@ -998,14 +1075,18 @@ export class GameSim {
             }
           } else {
             // escaramuza: sesgo hacia el territorio enemigo
-            const exX = this.spawnX(p.team === 'A' ? 'B' : 'A')
-            const exZ = this.spawnZ(p.team === 'A' ? 'B' : 'A')
-            const distEnemy = Math.hypot(p.x - exX, p.z - exZ)
-            const bias = distEnemy > 38 ? 0.72 : 0.35
+            // historia: los enemigos DEFIENDEN el corazón del complejo (0,0)
+            // — no persiguen la aparición del jugador en la brecha sur
+            const guardX = this.mode === 'historia' ? 0 : this.spawnX(p.team === 'A' ? 'B' : 'A')
+            const guardZ = this.mode === 'historia' ? 0 : this.spawnZ(p.team === 'A' ? 'B' : 'A')
+            const distGuard = Math.hypot(p.x - guardX, p.z - guardZ)
+            const bias = this.mode === 'historia'
+              ? (distGuard > 26 ? 0.5 : 0.12)
+              : (distGuard > 38 ? 0.72 : 0.35)
             if (Math.random() < bias) {
               let bestW = edges[0], bestD = Infinity
               for (const e of edges) {
-                const dd = Math.hypot(WAYPOINTS[e][0] - exX, WAYPOINTS[e][1] - exZ)
+                const dd = Math.hypot(this.md.waypoints[e][0] - guardX, this.md.waypoints[e][1] - guardZ)
                 if (dd < bestD) { bestD = dd; bestW = e }
               }
               ai.wp = bestW
@@ -1014,7 +1095,7 @@ export class GameSim {
             }
           }
         } else {
-          ai.wp = nearestWaypoint(p.x, p.z)
+          ai.wp = nearestWaypoint(p.x, p.z, this.md.waypoints)
         }
       } else {
         const wantYaw = Math.atan2(dx, dz)
@@ -1023,15 +1104,15 @@ export class GameSim {
         const nx = p.x + (dx / d) * MOVE * dt
         const nz = p.z + (dz / d) * MOVE * dt
         if (!this.posBlocked(nx, nz)) { p.x = nx; p.z = nz; p.speed = MOVE; p.sprint = MOVE > 4.6 }
-        else { ai.wp = nearestWaypoint(p.x, p.z); p.speed = 0 }
+        else { ai.wp = nearestWaypoint(p.x, p.z, this.md.waypoints); p.speed = 0 }
       }
     }
 
     // anti-atasco: si no se mueve, saltar al waypoint más cercano
     if (t - ai.stuckCheck > 2500) {
       if (Math.hypot(p.x - ai.lastX, p.z - ai.lastZ) < 1 && ai.state !== 'combat') {
-        ai.wp = nearestWaypoint(p.x, p.z)
-        const [tx, tz] = WAYPOINTS[ai.wp]
+        ai.wp = nearestWaypoint(p.x, p.z, this.md.waypoints)
+        const [tx, tz] = this.md.waypoints[ai.wp]
         if (!this.posBlocked(tx, tz)) { p.x = tx; p.z = tz }
       }
       ai.lastX = p.x; ai.lastZ = p.z; ai.stuckCheck = t
@@ -1047,7 +1128,7 @@ export class GameSim {
   }
 
   private posBlocked(x: number, z: number): boolean {
-    for (const b of MAP_AABBS) {
+    for (const b of this.md.aabbs) {
       if (x > b.minX - 0.35 && x < b.maxX + 0.35 && z > b.minZ - 0.35 && z < b.maxZ + 0.35 && b.minY < 1.6) return true
     }
     return false
@@ -1124,7 +1205,7 @@ export class GameSim {
       p.frags--
     }
     const id = `g${this.grenadeSeq++}`
-    const lim = GAME.MAP_HALF - 0.5
+    const lim = this.md.half - 0.5
     const g: SimGrenade = {
       id, owner: p.id, team: p.team, kind,
       x: clamp(pos[0], -lim, lim), y: clamp(pos[1], 0.2, 30), z: clamp(pos[2], -lim, lim),
@@ -1137,7 +1218,7 @@ export class GameSim {
   }
 
   private updateGrenades(dt: number): void {
-    const lim = GAME.MAP_HALF - 0.5
+    const lim = this.md.half - 0.5
     for (const g of this.grenades.values()) {
       g.fuse -= dt
       if (g.fuse <= 0) { this.explodeGrenade(g); continue }
@@ -1151,7 +1232,7 @@ export class GameSim {
         g.vx *= 0.72
         g.vz *= 0.72
       }
-      for (const b of MAP_AABBS) {
+      for (const b of this.md.aabbs) {
         if (nx > b.minX - 0.1 && nx < b.maxX + 0.1 && ny > b.minY - 0.1 && ny < b.maxY + 0.1 && nz > b.minZ - 0.1 && nz < b.maxZ + 0.1) {
           const px = Math.min(nx - (b.minX - 0.1), (b.maxX + 0.1) - nx)
           const py = Math.min(ny - (b.minY - 0.1), (b.maxY + 0.1) - ny)
@@ -1185,7 +1266,7 @@ export class GameSim {
       if (p.dead) continue
       const d = dist3(g.x, g.y, g.z, p.x, p.y + 1, p.z)
       if (d > RADIUS) continue
-      const blocked = segmentBlocked(g.x, g.y + 0.2, g.z, p.x, p.y + 1, p.z, MAP_AABBS)
+      const blocked = segmentBlocked(g.x, g.y + 0.2, g.z, p.x, p.y + 1, p.z, this.md.aabbs)
       let dmg = 112 * (1 - d / RADIUS) * (blocked ? 0.35 : 1)
       dmg = Math.round(dmg)
       if (dmg < 8) continue
@@ -1205,7 +1286,7 @@ export class GameSim {
     aiming?: boolean; sprint?: boolean
   }): void {
     if (p.dead) return
-    const lim = GAME.MAP_HALF - 0.5
+    const lim = this.md.half - 0.5
     p.x = clamp(Number(data.pos?.[0]) || 0, -lim, lim)
     p.y = clamp(Number(data.pos?.[1]) || 0, -1, 30)
     p.z = clamp(Number(data.pos?.[2]) || 0, -lim, lim)
@@ -1269,7 +1350,7 @@ export class GameSim {
       if (victim.dead) continue
       const d = dist3(pos[0], pos[1], pos[2], victim.x, victim.y + 1, victim.z)
       if (d > RADIUS) continue
-      const blocked = segmentBlocked(pos[0], pos[1] + 0.2, pos[2], victim.x, victim.y + 1, victim.z, MAP_AABBS)
+      const blocked = segmentBlocked(pos[0], pos[1] + 0.2, pos[2], victim.x, victim.y + 1, victim.z, this.md.aabbs)
       let dmg = 96 * (1 - d / RADIUS) * (blocked ? 0.3 : 1)
       dmg = Math.round(dmg)
       if (dmg < 6) continue

@@ -52,7 +52,7 @@ export const GAME = {
 // ------------------------------------------------------------
 // MODOS DE JUEGO
 // ------------------------------------------------------------
-export type GameMode = 'escaramuza' | 'ffa' | 'bandera' | 'dominacion'
+export type GameMode = 'escaramuza' | 'ffa' | 'bandera' | 'dominacion' | 'historia'
 
 export interface ModeInfo {
   id: GameMode
@@ -84,6 +84,11 @@ export const MODES: Record<GameMode, ModeInfo> = {
     id: 'dominacion', name: 'DOMINACIÓN', short: 'DOMINACIÓN',
     desc: 'Toma y conserva las 3 zonas del mapa · primero a 150 puntos',
     target: GAME.DOM_TARGET, time: 300, teams: true,
+  },
+  historia: {
+    id: 'historia', name: 'OPERACIÓN CENIZA', short: 'HISTORIA',
+    desc: 'Misión de 4 capítulos contra la instalación militar · 15-20 min',
+    target: 0, time: 1260, teams: true,
   },
 }
 
@@ -1443,7 +1448,7 @@ export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Pum
 // ------------------------------------------------------------
 // SALAS P2P (PeerJS)
 // ------------------------------------------------------------
-export const PEER_APP_PREFIX = 'fzcero2'
+export const PEER_APP_PREFIX = 'fzcero3'
 export function peerIdForRoom(code: string): string {
   return `${PEER_APP_PREFIX}-${code.toLowerCase()}`
 }
@@ -1452,4 +1457,286 @@ export function generateRoomCode(): string {
   let s = ''
   for (let i = 0; i < 5; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]
   return s
+}
+
+// ============================================================
+// MODO HISTORIA — INSTALACIÓN CENIZA (mapa militar 112×112)
+// Un complejo amurallado completamente distinto a la ciudad:
+// comando central, radar, depósito de combustible, antenas,
+// cuarteles, torretas de vigilancia y helipuerto de extracción.
+// ============================================================
+export type MapId = 'ciudad' | 'instalacion'
+
+const STORY_BOXES: MapBox[] = []
+function SB(x: number, y: number, z: number, w: number, h: number, d: number, mat: MatKey): void {
+  STORY_BOXES.push({ x, y, z, w, h, d, mat })
+}
+/** muro que corre a lo largo de X (en z=at), con puerta opcional en x=door */
+function SWX(z: number, x0: number, x1: number, H: number, mat: MatKey, door?: number, dh = 1.15): void {
+  const lo = Math.min(x0, x1), hi = Math.max(x0, x1)
+  if (door === undefined) { SB((lo + hi) / 2, H / 2, z, hi - lo, H, 0.35, mat); return }
+  if (door - dh - lo > 0.05) SB((lo + door - dh) / 2, H / 2, z, door - dh - lo, H, 0.35, mat)
+  if (hi - door - dh > 0.05) SB((hi + door + dh) / 2, H / 2, z, hi - door - dh, H, 0.35, mat)
+  const lint = H - 2.25
+  if (lint > 0.15) SB(door, 2.25 + lint / 2, z, dh * 2, lint, 0.35, mat)
+}
+/** muro que corre a lo largo de Z (en x=at), con puerta opcional en z=door */
+function SWZ(x: number, z0: number, z1: number, H: number, mat: MatKey, door?: number, dh = 1.15): void {
+  const lo = Math.min(z0, z1), hi = Math.max(z0, z1)
+  if (door === undefined) { SB(x, H / 2, (lo + hi) / 2, 0.35, H, hi - lo, mat); return }
+  if (door - dh - lo > 0.05) SB(x, H / 2, (lo + door - dh) / 2, 0.35, H, door - dh - lo, mat)
+  if (hi - door - dh > 0.05) SB(x, H / 2, (hi + door + dh) / 2, 0.35, H, hi - door - dh, mat)
+  const lint = H - 2.25
+  if (lint > 0.15) SB(x, 2.25 + lint / 2, door, 0.35, lint, dh * 2, mat)
+}
+/** escalera recta: peldaño i con altura creciente, avanza (dx,dz) por peldaño */
+function SST(xAt: number, zAt: number, dx: number, dz: number, steps: number, rise: number, run: number, w: number): void {
+  for (let i = 0; i < steps; i++) {
+    const h = rise * (i + 1)
+    SB(xAt + dx * run * i, h / 2, zAt + dz * run * i, dx !== 0 ? run + 0.04 : w, h, dz !== 0 ? run + 0.04 : w, 'concrete')
+  }
+}
+
+// --- Perímetro amurallado 112×112 (brecha sur de 6 m = entrada) ---
+SWX(-54.5, -55, 55, 5, 'concrete')
+SWX(54.5, -55, -3, 5, 'concrete')     // sur, lado oeste (brecha en x -3..3)
+SWX(54.5, 3, 55, 5, 'concrete')       // sur, lado este
+SWZ(-54.5, -55, 55, 5, 'concrete')
+SWZ(54.5, -55, 55, 5, 'concrete')
+// torres de la puerta
+SB(-6, 3, 52.5, 2.5, 6, 2.5, 'concrete')
+SB(6, 3, 52.5, 2.5, 6, 2.5, 'concrete')
+
+// --- EDIFICIO DE COMANDO (centro, 18×13, interior + tejado) ---
+SWX(-4.5, -9, 9, 3.4, 'sand', 0)      // norte, puerta central
+SWX(8.5, -9, 9, 3.4, 'sand', 0)       // sur, puerta central
+SWZ(-9, -4.5, 8.5, 3.4, 'sand')
+SWZ(9, -4.5, 8.5, 3.4, 'sand', 6.5, 1.0) // este, puerta hacia el enlace
+SB(0, 3.55, 2, 18.4, 0.35, 13.4, 'roof')
+SB(-4.5, 0.5, 4, 2.4, 1, 1.1, 'metalGrey')     // mesa de radio (lado oeste, sin tapar el pasillo)
+SB(-7.4, 1.15, -1.5, 1.4, 2.3, 3.5, 'metalGreen') // racks
+SB(6.5, 0.5, 6.5, 1.2, 1, 1.2, 'crate')
+SB(-6, 0.45, 6, 1.4, 0.9, 1.2, 'wood')
+
+// --- Pista del ENLACE (este del comando) ---
+SB(13.5, 0.15, 2, 3.4, 0.3, 3.4, 'concrete')
+SB(14.9, 1.25, 0.7, 0.35, 2.5, 0.35, 'metalGrey')
+
+// --- ESTACIÓN DE RADAR (oeste): anillo bajo con 2 pasillos + mástil ---
+for (let k = 0; k < 8; k++) {
+  if (k === 2 || k === 6) continue    // huecos norte/sur
+  const a = (k / 8) * Math.PI * 2 + Math.PI / 8
+  SB(-27 + Math.cos(a) * 6.5, 0.5, Math.sin(a) * 6.5, 3.2, 1.0, 1.1, 'concrete')
+}
+SB(-27, 0.5, 0, 3, 1, 3, 'concrete')
+SB(-27, 2.75, 0, 0.9, 3.5, 0.9, 'metalGrey')
+
+// --- DEPÓSITO DE COMBUSTIBLE (este): 3 tanques + barriles ---
+SB(22, 1.3, 1, 6.4, 2.6, 2.6, 'metalOrange')
+SB(22, 1.3, 4.6, 6.4, 2.6, 2.6, 'metalOrange')
+SB(22, 1.3, 8.2, 6.4, 2.6, 2.6, 'metalOrange')
+
+// --- ANTENAS (3): base + mástil ---
+for (const [ax, az] of [[30, -27], [-29, -28], [27, 29]] as [number, number][]) {
+  SB(ax, 0.4, az, 2.4, 0.8, 2.4, 'concrete')
+  SB(ax, 5.4, az, 0.5, 10, 0.5, 'metalGrey')
+  SB(ax, 8.6, az + 0.7, 2.0, 2.8, 0.3, 'metalGrey')   // plato
+}
+
+// --- CUARTELES (sur, 2× 12×8 con interior) ---
+SWX(30, -22, -10, 3.2, 'sand', -16)  // B1 norte, puerta
+SWX(38, -22, -10, 3.2, 'sand')
+SWZ(-22, 30, 38, 3.2, 'sand')
+SWZ(-10, 30, 38, 3.2, 'sand')
+SB(-16, 3.35, 34, 12.6, 0.3, 8.6, 'roof')
+SB(-20.5, 0.4, 32, 2, 0.8, 1.1, 'sandbag')
+SB(-20.5, 0.4, 35.5, 2, 0.8, 1.1, 'sandbag')
+SB(-12, 0.5, 36.5, 1.2, 1, 1.2, 'crate')
+SWX(30, 10, 22, 3.2, 'sand', 16)     // B2 norte, puerta
+SWX(38, 10, 22, 3.2, 'sand')
+SWZ(10, 30, 38, 3.2, 'sand')
+SWZ(22, 30, 38, 3.2, 'sand')
+SB(16, 3.35, 34, 12.6, 0.3, 8.6, 'roof')
+SB(20.5, 0.4, 32, 2, 0.8, 1.1, 'sandbag')
+SB(20.5, 0.4, 35.5, 2, 0.8, 1.1, 'sandbag')
+SB(12, 0.5, 36.5, 1.2, 1, 1.2, 'crate')
+
+// --- PARQUE DE VEHÍCULOS (sureste) ---
+SB(29, 1.1, 38, 2.4, 2.2, 5.6, 'metalGreen')
+SB(35, 1.1, 41, 2.4, 2.2, 5.6, 'metalBlue')
+SB(28, 1.3, 44.5, 6, 2.6, 2.4, 'metalRed')
+
+// --- TORRETAS DE VIGILANCIA (4 esquinas, con escalera) ---
+for (const [tx, tz, sx] of [[45, 45, 1], [-45, 45, -1], [45, -45, 1], [-45, -45, -1]] as [number, number, number][]) {
+  SB(tx, 3.75, tz, 3, 7.5, 3, 'concrete')
+  SB(tx, 7.6, tz, 4.4, 0.4, 4.4, 'wood')
+  SB(tx, 8.2, tz - 2.1, 4.4, 0.35, 0.22, 'concrete')
+  SB(tx, 8.2, tz + 2.1, 4.4, 0.35, 0.22, 'concrete')
+  SST(sx > 0 ? 35.3 : -35.3, tz, sx, 0, 12, 0.62, 0.62, 1.6)
+}
+
+// --- HELIPUERTO (norte) ---
+SB(0, 0.15, -40, 11, 0.3, 11, 'concrete')
+
+// --- COBERTURA: sacos, barreras y cajas esparcidas ---
+SB(-4, 0.4, 20, 2.6, 0.8, 0.6, 'sandbag')
+SB(4, 0.4, 16, 2.6, 0.8, 0.6, 'sandbag')
+SB(-10, 0.4, 26, 0.6, 0.8, 2.6, 'sandbag')
+SB(12, 0.4, 22, 2.6, 0.8, 0.6, 'sandbag')
+SB(-14, 0.4, 14, 2.6, 0.8, 0.6, 'sandbag')
+SB(18, 0.55, -12, 0.6, 1.1, 2.2, 'concrete')
+SB(-18, 0.55, -12, 0.6, 1.1, 2.2, 'concrete')
+SB(8, 0.55, -16, 2.2, 1.1, 0.6, 'concrete')
+SB(-8, 0.4, 24, 2.6, 0.8, 0.6, 'sandbag')
+SB(-3.5, 0.55, 30, 2.2, 1.1, 0.5, 'concrete')
+SB(3.5, 0.55, 34, 2.2, 1.1, 0.5, 'concrete')
+SB(-3.5, 0.55, 12, 2.2, 1.1, 0.5, 'concrete')
+SB(3.5, 0.55, 12, 2.2, 1.1, 0.5, 'concrete')
+for (const [cx, cz] of [[6, 18], [-6, 18], [24, 26], [-24, 26], [26, -16], [-26, -16], [10, -24], [-10, -24], [34, 22], [-34, 18]] as [number, number][]) {
+  SB(cx, 0.5, cz, 1.2, 1, 1.2, 'crate')
+}
+
+// --- Waypoints del complejo ---
+const STORY_WAYPOINTS: [number, number][] = [
+  [0, 48], [0, 38], [0, 26], [0, 14], [0, 10],
+  [0, 2], [5.5, 5],
+  [0, -7],
+  [13.5, 6], [13.5, -6],
+  [22, -2], [22, 10],
+  [30, -21],
+  [-29, -22],
+  [27, 23],
+  [-14, 8], [-14, -8],
+  [-16, 27], [-16, 34], [16, 27], [16, 34],
+  [32, 36], [38.5, 41.5],
+  [0, -30], [7.5, -38], [-7.5, -47],
+  [36, 36], [-36, 36], [36, -36], [-36, -36],
+  [18, 18], [-18, 18], [18, -18], [-18, -18],
+  [26, -26], [-22, -30],
+  [8, 0], [-8, -8], [40, 40], [-40, 40], [40, -40], [-40, -40],
+  [-27, 8], [-27, -8],
+]
+const STORY_EDGES: number[][] = STORY_WAYPOINTS.map(() => [])
+{
+  const MAXD = 24
+  const storyAabbs = STORY_BOXES.map(boxToAABB)
+  for (let i = 0; i < STORY_WAYPOINTS.length; i++) {
+    for (let j = i + 1; j < STORY_WAYPOINTS.length; j++) {
+      const dx = STORY_WAYPOINTS[i][0] - STORY_WAYPOINTS[j][0]
+      const dz = STORY_WAYPOINTS[i][1] - STORY_WAYPOINTS[j][1]
+      if (Math.hypot(dx, dz) > MAXD) continue
+      if (!segmentBlocked(STORY_WAYPOINTS[i][0], 0.5, STORY_WAYPOINTS[i][1], STORY_WAYPOINTS[j][0], 0.5, STORY_WAYPOINTS[j][1], storyAabbs)) {
+        STORY_EDGES[i].push(j)
+        STORY_EDGES[j].push(i)
+      }
+    }
+  }
+}
+
+// --- Objetivos de la misión (los usa el director del modo historia) ---
+export interface StoryObjective { x: number; z: number; label: string }
+export const STORY_INTEL: StoryObjective[] = [
+  { x: 2, z: 2, label: 'COMANDO' },
+  { x: -27, z: 3, label: 'RADAR' },
+  { x: 16, z: 34, label: 'CUARTEL' },
+]
+export const STORY_UPLINK: StoryObjective = { x: 13.5, z: 2, label: 'ENLACE' }
+export const STORY_ANTENNAS: StoryObjective[] = [
+  { x: 30, z: -27, label: 'ANTENA ALFA' },
+  { x: -29, z: -28, label: 'ANTENA BRAVO' },
+  { x: 27, z: 29, label: 'ANTENA CHARLIE' },
+]
+export const STORY_EXTRACTION: StoryObjective = { x: 0, z: -40, label: 'EXTRACCIÓN' }
+
+const STORY_MAP_SPawn_A: [number, number, number] = [0, 0, 50]
+const STORY_SPAWN_B: [number, number, number] = [0, 0, -49]
+
+// ============================================================
+// REGISTRO DE MAPAS — el motor y la simulación eligen el mapa
+// según el modo de juego (carga perezosa: solo se construye el
+// del modo activo)
+// ============================================================
+export interface MapData {
+  half: number
+  boxes: MapBox[]
+  aabbs: AABB[]
+  waypoints: [number, number][]
+  edges: number[][]
+  trees: [number, number][]
+  lamps: [number, number][]
+  barrels: ExplosiveBarrel[]
+  ziplines: ZiplineSpec[]
+  jumpPads: JumpPadSpec[]
+  pickups: PickupSpot[]
+  neons: NeonSpec[]
+  puddles: PuddleSpec[]
+  spawnA: [number, number, number]
+  spawnB: [number, number, number]
+}
+
+export const MAPS: Record<MapId, MapData> = {
+  ciudad: {
+    half: GAME.MAP_HALF,
+    boxes: MAP_BOXES,
+    aabbs: MAP_AABBS,
+    waypoints: WAYPOINTS,
+    edges: WAYPOINT_EDGES,
+    trees: TREES,
+    lamps: LAMPS,
+    barrels: EXPLODING_BARRELS,
+    ziplines: ZIPLINES,
+    jumpPads: JUMP_PADS,
+    pickups: PICKUP_SPOTS,
+    neons: NEONS,
+    puddles: PUDDLES,
+    spawnA: SPAWN_A,
+    spawnB: SPAWN_B,
+  },
+  instalacion: {
+    half: 55,
+    boxes: STORY_BOXES,
+    aabbs: STORY_BOXES.map(boxToAABB),
+    waypoints: STORY_WAYPOINTS,
+    edges: STORY_EDGES,
+    trees: [],
+    lamps: [[0, 44], [10, 10], [-10, 10], [0, -32], [20, 30], [-20, 30], [24, 8]],
+    barrels: [
+      { x: 25.5, z: 0.5 }, { x: 25.5, z: 3 }, { x: 18.5, z: 7 },
+      { x: -13, z: -2 }, { x: 31.5, z: -24 }, { x: -30.5, z: -25 },
+    ],
+    ziplines: [
+      { from: [45, 7.9, 45], to: [9.2, 4.0, 2] },    // torreta SE → tejado del comando
+      { from: [-45, 7.9, -45], to: [0, 1.2, -40] },  // torreta NO → helipuerto
+    ],
+    jumpPads: [
+      { x: 16, z: 42 },   // cuartel este → tejado
+      { x: -10, z: -14 }, // patio norte → tejado del comando
+    ],
+    pickups: [
+      { kind: 'medkit', x: -16, z: 34 },
+      { kind: 'shieldSmall', x: 13.5, z: 4.5 },
+      { kind: 'medkit', x: 0, z: 36 },
+      { kind: 'bandage', x: -27, z: 8 },
+      { kind: 'shieldBig', x: 22, z: 10 },
+      { kind: 'medkit', x: 30, z: -21 },
+      { kind: 'bandage', x: -29, z: -22 },
+      { kind: 'medkit', x: 36, z: 41 },
+    ],
+    neons: [
+      { text: 'COMANDO', x: 0, y: 3.7, z: 8.8, ry: 0, color: '#fbbf24', w: 4.5 },
+      { text: 'HELIPUERTO', x: 0, y: 2.4, z: -45.9, ry: 0, color: '#22d3ee', w: 5 },
+      { text: 'COMBUSTIBLE', x: 18.6, y: 2.4, z: 4.6, ry: Math.PI / 2, color: '#f87171', w: 4.5 },
+      { text: 'RADAR', x: -21, y: 2.0, z: 0, ry: Math.PI / 2, color: '#4ade80', w: 4 },
+      { text: 'CUARTEL', x: 16, y: 3.2, z: 29.7, ry: 0, color: '#f472b6', w: 4 },
+    ],
+    puddles: [
+      { x: 8, z: -20, r: 1.4 }, { x: -18, z: 18, r: 1.2 }, { x: 24, z: 30, r: 1.5 },
+    ],
+    spawnA: STORY_MAP_SPawn_A,
+    spawnB: STORY_SPAWN_B,
+  },
+}
+
+export function getMapData(id: MapId): MapData {
+  return MAPS[id] ?? MAPS.ciudad
 }

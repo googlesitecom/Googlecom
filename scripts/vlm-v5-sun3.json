@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Sí\n2) Sí (parcialmente, se ven edificios/estructuras)\n3) Sí\n4) Sí",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789006684,
+  "id": "202609101018022ba78de28d814272",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609101018022ba78de28d814272",
+  "usage": {
+    "completion_tokens": 33,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2212,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 2245
+  }
+}

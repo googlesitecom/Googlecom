@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Sí, **siguen apareciendo las líneas blancas radiales** (rayos de luz que parten desde un punto en el horizonte hacia los bordes superiores de la pantalla).\n\nSí, **el jugador está recibiendo daño o acaba de ser eliminado**: se observa un **fuerte destello rojo** que cubre toda la escena, la palabra **\"ELIMINADO\"** en grande, y un contador de reaparición (\"Reapareciendo en 3 s\"). Además, las barras de vida y escudo en la esquina inferior izquierda están vacías (en 0).\n\n**Descripción breve:** Es una captura de pantalla de un videojuego de disparos en primera persona (estilo *Counter-Strike* o similar) que muestra la pantalla de muerte del jugador. El entorno es un mapa al aire libre con suelo de tierra/arena y estructuras de hormigón. La interfaz muestra que fuiste eliminado por un jugador llamado \"Puma\", tienes el arma \"P9: COMPACTO\" con 15/90 balas, y aparece información de misión (\"ropitiendo el capítulo actual\") y una racha de 5 bajas del enemigo.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789004864,
+  "id": "2026091009473441fb4225b65d463f",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026091009473441fb4225b65d463f",
+  "usage": {
+    "completion_tokens": 259,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1099,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1358
+  }
+}

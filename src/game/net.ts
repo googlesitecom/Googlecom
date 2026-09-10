@@ -9,7 +9,7 @@ import type { Game } from './engine'
 import { useGame } from './store'
 import {
   GAME, generateRoomCode, peerIdForRoom,
-  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode,
+  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId,
 } from './shared'
 
 export type NetMode = 'solo' | 'host' | 'guest'
@@ -20,6 +20,18 @@ export interface ConnectOpts {
   fillBots?: number
   difficulty?: BotDifficulty
   gameMode?: GameMode
+}
+
+/** servidores STUN públicos para atravesar NAT (fiabilidad P2P) */
+const PEER_OPTS = {
+  debug: 0 as const,
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+    ],
+  },
 }
 
 interface InputMsg {
@@ -54,14 +66,19 @@ export class NetClient {
     const s = useGame.getState()
     s.setPhase('connecting')
     s.setHud({ netStatus: 'connecting', netError: '', ping: 0 })
+    const gameMode = opts.gameMode ?? 'escaramuza'
+    // el mapa depende del modo: la misión se juega en la instalación
+    this.mapId = gameMode === 'historia' ? 'instalacion' : 'ciudad'
     if (opts.mode === 'solo') {
-      this.connectSolo(name, opts.difficulty ?? 'normal', opts.gameMode ?? 'escaramuza')
+      this.connectSolo(name, opts.difficulty ?? 'normal', gameMode)
     } else if (opts.mode === 'host') {
-      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0, opts.gameMode ?? 'escaramuza')
+      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0, gameMode)
     } else {
       this.connectGuest(name, opts.roomCode ?? '')
     }
   }
+
+  private mapId: MapId = 'ciudad'
 
   // ------------------------------------------------------------
   // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
@@ -78,7 +95,7 @@ export class NetClient {
       // reenviar al invitado P2P (broadcast o dirigido a él)
       if (!msg.to || msg.to === GUEST_ID) this.forwardToGuest({ e: msg.e, d: msg.d })
     }
-    this.sendToSim({ e: 'init', d: { difficulty, bots, mode: gameMode } })
+    this.sendToSim({ e: 'init', d: { difficulty, bots, mode: gameMode, mapId: this.mapId } })
   }
 
   private sendToSim(msg: unknown): void {
@@ -102,7 +119,9 @@ export class NetClient {
   // ------------------------------------------------------------
   private connectSolo(name: string, difficulty: BotDifficulty, gameMode: GameMode): void {
     this.id = HOST_ID
-    this.startSimWorker(difficulty, Math.floor(GAME.BOT_COUNT / 2), gameMode)
+    // modo historia: 7 enemigos del bando B en el mapa instalación
+    const bots = gameMode === 'historia' ? 7 : Math.floor(GAME.BOT_COUNT / 2)
+    this.startSimWorker(difficulty, bots, gameMode)
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
     useGame.getState().setHud({ netStatus: 'connected' })
   }
@@ -118,12 +137,20 @@ export class NetClient {
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
     useGame.getState().setHud({ netStatus: 'waiting' })
 
-    const peer = new Peer(peerIdForRoom(code), { debug: 0 })
+    const peer = new Peer(peerIdForRoom(code), PEER_OPTS)
     this.peer = peer
 
     peer.on('open', () => {
       if (this.disposed) return
       useGame.getState().addAnnouncement(`SALA ${code} CREADA — comparte el código`, 'info')
+    })
+
+    // si el servidor de señalización se cae, reconectar para que la sala
+    // siga admitiendo invitados (v5: fiabilidad del multijugador)
+    peer.on('disconnected', () => {
+      if (this.disposed || !this.peer) return
+      useGame.getState().addAnnouncement('Reconectando la sala con el servidor…', 'info')
+      try { this.peer.reconnect() } catch { /* el peer se recrea abajo si falla */ }
     })
 
     peer.on('connection', (conn: DataConnection) => {
@@ -187,6 +214,21 @@ export class NetClient {
         this.connectHost(name, newCode, fill, difficulty, attempt + 1, gameMode)
       } else if (type === 'unavailable-id') {
         useGame.getState().addAnnouncement('No se pudo crear la sala, inténtalo de nuevo', 'info')
+      } else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
+        // v5: el servidor de salas falló → reintentar hasta 3 veces antes
+        // de rendirse (el juego local con bots sigue funcionando)
+        if (attempt < 3) {
+          useGame.getState().addAnnouncement(`Servidor de salas ocupado, reintentando (${attempt + 1}/3)…`, 'info')
+          peer.destroy()
+          this.peer = null
+          setTimeout(() => {
+            if (this.disposed) return
+            this.connectHost(name, code, fill, difficulty, attempt + 1, gameMode)
+          }, 2500)
+        } else {
+          useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS) — juega contra bots', 'info')
+          useGame.getState().setHud({ netStatus: 'connected' })
+        }
       } else {
         useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS)', 'info')
         useGame.getState().setHud({ netStatus: 'connected' }) // el juego local sigue funcionando
@@ -199,7 +241,11 @@ export class NetClient {
 
   // ------------------------------------------------------------
   // MODO INVITADO — se une a la sala del anfitrión
+  // v5: hasta 3 intentos (peer nuevo en cada uno) con tiempo límite
+  // por intento y mensajes de error claros
   // ------------------------------------------------------------
+  private guestAttempt = 0
+
   private connectGuest(name: string, code: string): void {
     this.id = GUEST_ID
     this.mode = 'guest'
@@ -209,15 +255,27 @@ export class NetClient {
       return
     }
     useGame.getState().setHud({ roomCode: clean })
+    this.guestAttempt = 0
+    this.guestAttemptConnect(name, clean)
+  }
 
-    this.welcomeTimeout = setTimeout(() => {
-      if (useGame.getState().netStatus !== 'connected') {
-        this.fail('Tiempo de conexión agotado. Revisa el código o tu conexión.')
-      }
-    }, 30000)
+  private guestAttemptConnect(name: string, clean: string): void {
+    // tiempo límite del intento (12 s): cubre la señalización + ICE
+    const attemptTimer = setTimeout(() => {
+      if (useGame.getState().netStatus === 'connected') return
+      this.retryGuest(name, clean, 'El enlace no llegó a abrirse')
+    }, 12000)
+    this.welcomeTimeout = attemptTimer
 
-    const peer = new Peer({ debug: 0 }) // id aleatorio
+    const peer = new Peer(PEER_OPTS) // id aleatorio
     this.peer = peer
+    let retried = false
+    const retryOnce = (msg: string): void => {
+      if (retried || this.disposed) return
+      retried = true
+      clearTimeout(attemptTimer)
+      this.retryGuest(name, clean, msg)
+    }
 
     peer.on('open', () => {
       if (this.disposed) return
@@ -254,7 +312,7 @@ export class NetClient {
         useGame.getState().setConnected(false)
         useGame.getState().setHud({ netStatus: 'error', netError: 'Se perdió la conexión con el anfitrión' })
       })
-      conn.on('error', () => { /* manejado por peer error */ })
+      conn.on('error', () => retryOnce('Fallo del canal de datos'))
     })
 
     peer.on('error', (err: unknown) => {
@@ -262,11 +320,32 @@ export class NetClient {
       const type = (err as { type?: string })?.type
       if (type === 'peer-unavailable') this.fail('Sala no encontrada. Revisa el código.')
       else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
-        this.fail('No se puede alcanzar el servidor de salas (PeerJS)')
+        retryOnce('No se puede alcanzar el servidor de salas (PeerJS)')
+      } else if (type === 'unavailable-id') {
+        retryOnce('Id de sala ocupada, reintentando')
       } else {
-        this.fail(`Error de conexión (${type ?? 'desconocido'})`)
+        retryOnce(`Error de conexión (${type ?? 'desconocido'})`)
       }
     })
+  }
+
+  private retryGuest(name: string, clean: string, motivo: string): void {
+    this.guestAttempt++
+    try { this.hostConn?.close() } catch { /* ok */ }
+    this.hostConn = null
+    try { this.peer?.destroy() } catch { /* ok */ }
+    this.peer = null
+    if (this.guestAttempt >= 3) {
+      this.fail(`${motivo}. Revisa el código o tu conexión.`)
+      return
+    }
+    useGame.getState().setHud({ netStatus: 'connecting' })
+    useGame.getState().addAnnouncement(`Reintentando unirse (${this.guestAttempt + 1}/3)…`, 'info')
+    setTimeout(() => {
+      if (this.disposed) return
+      if (useGame.getState().netStatus === 'connected') return
+      this.guestAttemptConnect(name, clean)
+    }, 1200)
   }
 
   private fail(msg: string): void {
@@ -347,6 +426,12 @@ export class NetClient {
       return
     }
     this.sendToSim({ e: 'barrelShot', d: { id: this.id, data: { pos } } })
+  }
+
+  /** Comandos del director del modo historia (jefe, entrega de armas) */
+  sendStoryCmd(data: { cmd: string; botId?: string; weapon?: WeaponId }): void {
+    if (this.mode === 'guest') return   // la misión es local
+    this.sendToSim({ e: 'storyCmd', d: { id: this.id, data } })
   }
 
   disconnect(): void {

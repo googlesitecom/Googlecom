@@ -52,6 +52,13 @@ export function GameMount() {
         className="absolute inset-0 w-full h-full pointer-events-none"
         style={{ width: '100%', height: '100%' }}
       />
+      {/* viñeta cinematográfica (v5): coste cero en el GPU */}
+      <div
+        className="absolute inset-0 pointer-events-none z-10"
+        style={{
+          background: 'radial-gradient(ellipse 82% 74% at 50% 46%, transparent 58%, rgba(0,0,0,0.42) 100%)',
+        }}
+      />
       {/* minimapa (dibujado por el motor) */}
       <canvas
         ref={minimapRef}

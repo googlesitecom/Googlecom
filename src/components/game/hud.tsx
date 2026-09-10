@@ -3,7 +3,9 @@
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { WEAPONS, TEAM_INFO, keyLabel, MODES, type Team } from '@/game/shared'
-import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords } from 'lucide-react'
+import { getGame } from '@/game/game-instance'
+import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 
 export function Hud() {
   const hp = useGame(s => s.hp)
@@ -28,6 +30,7 @@ export function Hud() {
   const gamepadConnected = useGame(s => s.gamepadConnected)
   const carryingFlag = useGame(s => s.carryingFlag)
   const scoreboard = useGame(s => s.scoreboard)
+  const story = useGame(s => s.story)
   const w = WEAPONS[weapon]
 
   if (phase !== 'playing' && phase !== 'dead') return null
@@ -78,6 +81,7 @@ export function Hud() {
             <ZoneChip id="C" zone={round?.zones?.find(z => z.id === 'C')} />
           </div>
         )}
+        {gameMode === 'historia' && <StoryPanel />}
       </div>
 
       {/* ===== Chip de sala (multijugador P2P) ===== */}
@@ -177,6 +181,28 @@ export function Hud() {
           {w.sniper && <div className="text-emerald-400 text-[10px] tracking-widest">MIRA ×8</div>}
         </div>
       </div>
+
+      {/* ===== MODO HISTORIA: diálogo de radio y pista ===== */}
+      {story.active && phase === 'playing' && (
+        <>
+          {story.dialogue && (
+            <div className="absolute bottom-28 left-1/2 -translate-x-1/2 max-w-xl">
+              <div className="flex items-start gap-3 bg-stone-950/85 border border-amber-700/50 rounded-lg px-4 py-2.5 shadow-2xl">
+                <Radio className="w-4 h-4 text-amber-300 mt-0.5 shrink-0 animate-pulse" />
+                <div>
+                  <span className="text-amber-300 text-[10px] font-bold tracking-[0.3em] uppercase">{story.dialogue.who}</span>
+                  <p className="text-stone-200 text-xs leading-snug">{story.dialogue.text}</p>
+                </div>
+              </div>
+            </div>
+          )}
+          {story.hint && (
+            <div className="absolute top-[58%] left-1/2 -translate-x-1/2 bg-stone-950/75 border border-stone-600/60 rounded px-4 py-1.5">
+              <span className="text-amber-200 text-xs font-bold tracking-wider">{story.hint}</span>
+            </div>
+          )}
+        </>
+      )}
 
       {/* ===== Aviso de zona de compra ===== */}
       {buyZone && phase === 'playing' && (
@@ -360,6 +386,79 @@ export function DeathOverlay() {
         <p className="text-stone-400 text-lg">
           Reapareciendo en <span className="text-amber-300 font-black text-2xl tabular-nums">{countdown}</span> s
         </p>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// MODO HISTORIA — panel de capítulo y pantalla de victoria
+// ============================================================
+function StoryPanel() {
+  const story = useGame(s => s.story)
+  if (!story.active) return null
+  return (
+    <div className="flex items-center gap-3">
+      <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 shadow-xl text-left">
+        <div className="flex items-center gap-2">
+          <Radio className="w-3.5 h-3.5 text-amber-300" />
+          <span className="text-amber-200 text-[10px] font-bold tracking-[0.25em] uppercase">
+            {story.chapterTitle}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          <Target className="w-3.5 h-3.5 text-stone-500" />
+          <span className="text-stone-200 text-xs font-bold tracking-wide">{story.objective}</span>
+          {story.progress && <span className="text-amber-300 text-xs font-bold tabular-nums">{story.progress}</span>}
+        </div>
+      </div>
+      {story.timer > 0 && (
+        <div className="bg-stone-950/85 border border-amber-700/60 rounded-lg px-4 py-2 flex items-center gap-2 shadow-xl">
+          <Timer className="w-4 h-4 text-amber-300" />
+          <span className={`text-xl font-black tabular-nums ${story.timer <= 10 ? 'text-red-400 animate-pulse' : 'text-amber-200'}`}>
+            {formatTime(story.timer)}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function StoryVictory() {
+  const story = useGame(s => s.story)
+  const phase = useGame(s => s.phase)
+  if (!story.active || story.status !== 'victory') return null
+  void phase
+  const mins = Math.floor(story.stats.time / 60)
+  const secs = story.stats.time % 60
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 backdrop-blur-sm pointer-events-auto">
+      <div className="text-center space-y-6 max-w-lg px-6">
+        <div>
+          <p className="text-[11px] font-bold tracking-[0.5em] text-amber-300/70 uppercase">Operación Ceniza</p>
+          <h2 className="text-5xl font-extrabold tracking-[0.15em] text-white mt-2">MISIÓN</h2>
+          <h2 className="text-5xl font-extrabold tracking-[0.15em] text-amber-400 -mt-1">COMPLETADA</h2>
+        </div>
+        <div className="flex items-center justify-center gap-8 bg-stone-950/80 border border-stone-700 rounded-lg px-8 py-4">
+          <div>
+            <div className="text-[10px] font-bold tracking-[0.3em] text-stone-500 uppercase">Tiempo</div>
+            <div className="text-2xl font-black tabular-nums text-stone-100">{mins}:{String(secs).padStart(2, '0')}</div>
+          </div>
+          <div className="w-px h-10 bg-stone-700" />
+          <div>
+            <div className="text-[10px] font-bold tracking-[0.3em] text-stone-500 uppercase">Bajas</div>
+            <div className="text-2xl font-black tabular-nums text-stone-100">{story.stats.kills}</div>
+          </div>
+        </div>
+        <Button
+          onClick={() => {
+            getGame()?.dispose()
+            useGame.getState().setPhase('menu')
+          }}
+          className="h-12 px-10 bg-stone-100 text-stone-900 font-bold tracking-[0.25em] uppercase hover:bg-amber-200"
+        >
+          Volver al menú
+        </Button>
       </div>
     </div>
   )

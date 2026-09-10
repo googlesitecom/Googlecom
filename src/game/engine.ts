@@ -11,10 +11,12 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
   PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS, FLAG_A, FLAG_B, DOM_ZONES,
+  getMapData,
+  type MapData, type MapId,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
   isMouseButton, mouseButtonIndex,
 } from './shared'
-import { AudioEngine } from './audio'
+import { AudioEngine, getAudio } from './audio'
 import { Effects } from './effects'
 import { RemotePlayers } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
@@ -22,6 +24,7 @@ import { makeWorldTextures, makeSkyTexture, makeAOBlobTexture, makeNeonTexture, 
 import { useGame } from './store'
 import { NetClient } from './net'
 import { preloadAssets, buildGLBWeapon, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
+import { StoryDirector } from './story'
 
 interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
 interface HitMarker { t: number; headshot: boolean }
@@ -81,6 +84,8 @@ export class Game {
   // three
   private renderer!: THREE.WebGLRenderer
   private scene!: THREE.Scene
+  /** escena 3D (la usa el director del modo historia) */
+  getStoryScene(): THREE.Scene { return this.scene }
   private camera!: THREE.PerspectiveCamera
   private sunLight!: THREE.DirectionalLight
   private composer: EffectComposer | null = null
@@ -94,10 +99,15 @@ export class Game {
   private mapStatic!: HTMLCanvasElement
 
   // módulos
-  audio = new AudioEngine()
+  audio: AudioEngine = getAudio()
   private effects!: Effects
   private remotes!: RemotePlayers
   net!: NetClient
+  /** director del modo historia (solo en la misión) */
+  story: StoryDirector | null = null
+  /** mapa activo: ciudad o instalación militar de la misión */
+  mapId: MapId = 'ciudad'
+  md!: MapData
 
   // estado del jugador local
   pos = new THREE.Vector3(SPAWN_A[0], 0.02, SPAWN_A[2])
@@ -199,8 +209,8 @@ export class Game {
   /** aviso contextual ([E] tirolina) */
   interactHint = ''
   // pasto instanciado (viento)
+  // (v5: sin malla de pasto — eliminada para reducir el lag)
   private grassUniform = { value: 0 }
-  private grassMesh: THREE.InstancedMesh | null = null
 
   // ---- objetivos de los modos (banderas / zonas) ----
   private flagViews = new Map<'a' | 'b', { group: THREE.Group; cloth: THREE.Mesh; beam: THREE.Mesh }>()
@@ -250,6 +260,12 @@ export class Game {
 
     const quality = useGame.getState().settings.quality
 
+    // mapa según el modo: la misión usa la instalación militar (v5)
+    this.mapId = useGame.getState().gameMode === 'historia' ? 'instalacion' : 'ciudad'
+    this.md = getMapData(this.mapId)
+    this.pos.set(this.md.spawnA[0], 0.02, this.md.spawnA[2])
+    this.audio.setDuck(true)
+
     this.renderer = new THREE.WebGLRenderer({
       canvas: canvas3d,
       antialias: quality !== 'baja',
@@ -273,13 +289,14 @@ export class Game {
     this.buildEnvironment()
     this.buildLights(quality)
     this.buildMap(quality)
-    this.buildStreets()
-    this.buildObjectives()
+    if (this.mapId === 'ciudad') this.buildStreets()
+    if (this.mapId !== 'instalacion') this.buildObjectives()
     this.buildMinimapStatic()
 
-    // assets del usuario (GLB de armas/árbol + texturas): se cargan en segundo
-    // plano y se integran al llegar (con fallback procedural hasta entonces)
-    preloadAssets().then(() => {
+    // assets del usuario (GLB de armas + texturas; árboles solo en la ciudad
+    // → carga perezosa según el modo): se cargan en segundo plano y se
+    // integran al llegar (con fallback procedural hasta entonces)
+    preloadAssets({ trees: this.mapId === 'ciudad' }).then(() => {
       if (this.disposed) return
       // DIAGNÓSTICO: partes integradas por separado para localizar cuelgues
       const parts = (new URLSearchParams(location.search).get('assets') ?? 'all').split(',')
@@ -295,6 +312,12 @@ export class Game {
 
     this.effects = new Effects(this.scene)
     this.remotes = new RemotePlayers(this.scene)
+
+    // director de la misión (modo historia)
+    if (this.mapId === 'instalacion') {
+      this.story = new StoryDirector(this)
+      this.story.begin()
+    }
 
     // viewmodel holder
     this.vmHolder = new THREE.Group()
@@ -330,20 +353,47 @@ export class Game {
     )
     this.scene.add(sky)
     this.skyMesh = sky
-    // halo del sol bajo (atardecer)
-    const sunDir = new THREE.Vector3(0.62, 0.42, -0.52).normalize()
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: makeSkyTexture(), color: 0xffd9a0, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, fog: false,
+    // ---- SOL (v5): disco + corona + halo con degradado radial propio,
+    // alineado con la dirección de la luz direccional (antes usaba la
+    // textura del cielo entera como sprite y se veía como una mancha) ----
+    const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
+    const sunTex = this.makeSunTexture()
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: sunTex, color: 0xffb566, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
     }))
-    glow.position.copy(sunDir.clone().multiplyScalar(300))
-    glow.scale.setScalar(150)
-    this.scene.add(glow)
-    const core = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: makeSkyTexture(), color: 0xfff2cc, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, fog: false,
+    halo.position.copy(sunDir).multiplyScalar(315)
+    halo.scale.set(230, 230, 1)
+    this.scene.add(halo)
+    const corona = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: sunTex, color: 0xffd9a6, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
     }))
-    core.position.copy(sunDir.clone().multiplyScalar(298))
-    core.scale.setScalar(46)
-    this.scene.add(core)
+    corona.position.copy(sunDir).multiplyScalar(302)
+    corona.scale.set(95, 95, 1)
+    this.scene.add(corona)
+    const disc = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: sunTex, color: 0xfff6e0, transparent: true, opacity: 0.98, blending: THREE.AdditiveBlending, fog: false, depthWrite: false,
+    }))
+    disc.position.copy(sunDir).multiplyScalar(299)
+    disc.scale.set(30, 30, 1)
+    this.scene.add(disc)
+  }
+
+  /** textura del sol: núcleo blanco → ámbar → transparente (degradado radial) */
+  private makeSunTexture(): THREE.Texture {
+    const c = document.createElement('canvas')
+    c.width = c.height = 256
+    const ctx = c.getContext('2d')!
+    const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
+    g.addColorStop(0.0, 'rgba(255,255,255,1)')
+    g.addColorStop(0.18, 'rgba(255,246,225,1)')
+    g.addColorStop(0.35, 'rgba(255,214,150,0.85)')
+    g.addColorStop(0.6, 'rgba(255,178,96,0.32)')
+    g.addColorStop(1.0, 'rgba(255,150,60,0)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, 256, 256)
+    const tex = new THREE.CanvasTexture(c)
+    tex.colorSpace = THREE.SRGBColorSpace
+    return tex
   }
 
   /** Mapa de entorno para reflexiones PBR (PMREM del cielo de atardecer) */
@@ -359,7 +409,7 @@ export class Game {
       new THREE.SphereGeometry(5, 12, 12),
       new THREE.MeshBasicMaterial({ color: 0xfff0c8 }),
     )
-    sunBall.position.set(30, 20, -25)
+    sunBall.position.set(25, 19, -19)   // misma dirección que el sol visual
     envScene.add(sunBall)
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(120, 120),
@@ -405,11 +455,13 @@ export class Game {
 
   private buildMap(quality: 'baja' | 'media' | 'alta'): void {
     const texs = makeWorldTextures()
+    const map = this.md
 
     // suelo (ligeramente satinado para reflejar el cielo del atardecer)
     const groundMat = new THREE.MeshStandardMaterial({ map: texs.sand, roughness: 0.88, metalness: 0.05 })
     groundMat.map!.repeat.set(46, 46)
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(230, 230), groundMat)
+    const groundSize = map.half * 2 + 90
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), groundMat)
     ground.rotation.x = -Math.PI / 2
     ground.receiveShadow = true
     this.scene.add(ground)
@@ -432,7 +484,7 @@ export class Game {
     const geoCache = new Map<string, THREE.BufferGeometry>()
     let barrelSeq = 0
     const staticGeos = new Map<MatKey, THREE.BufferGeometry[]>()
-    for (const b of MAP_BOXES) {
+    for (const b of map.boxes) {
       if (b.mat === 'barrel' || b.mat === 'explosive') {
         // los barriles siguen siendo meshes individuales (explotan/desaparecen)
         const key = `b${b.h}`
@@ -486,22 +538,42 @@ export class Game {
     // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
     this.buildDecor(texs)
 
-    // ---- mecánicas del mapa: pasto, arbustos, flores, tirolinas, plataformas ----
-    this.buildGrass(quality)
-    this.buildBushes(quality)
-    this.buildFlowers(quality)
+    // ---- mecánicas del mapa: tirolinas y plataformas ----
+    // (v5: el pasto, arbustos y flores del suelo se ELIMINARON a petición
+    // del usuario para reducir el lag — los árboles GLB se mantienen)
     this.buildZiplines()
     this.buildJumpPads()
 
-    // marcas de spawn (zonas de compra)
-    for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(GAME.BUY_RADIUS - 0.15, GAME.BUY_RADIUS, 40),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+    // marcas de spawn (zonas de compra) — solo en los modos con tienda
+    if (this.mapId === 'ciudad') {
+      for (const [sp, color] of [[SPAWN_A, 0xf59e0b], [SPAWN_B, 0x22c55e]] as [number[], number][]) {
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(GAME.BUY_RADIUS - 0.15, GAME.BUY_RADIUS, 40),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
+        )
+        ring.rotation.x = -Math.PI / 2
+        ring.position.set(sp[0], 0.03, sp[2])
+        this.scene.add(ring)
+      }
+    } else {
+      // helipuerto de la misión: círculo con H (el director marca la extracción)
+      const heli = new THREE.Group()
+      const circle = new THREE.Mesh(
+        new THREE.RingGeometry(4.4, 4.7, 48),
+        new THREE.MeshBasicMaterial({ color: 0xd9b36c, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
       )
-      ring.rotation.x = -Math.PI / 2
-      ring.position.set(sp[0], 0.03, sp[2])
-      this.scene.add(ring)
+      circle.rotation.x = -Math.PI / 2
+      circle.position.y = 0.32
+      heli.add(circle)
+      const barMat = new THREE.MeshBasicMaterial({ color: 0xd9b36c, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+      for (const [bx, bz, bw, bd] of [[-1.1, 0, 0.5, 4.4], [1.1, 0, 0.5, 4.4], [0, 0, 2.7, 0.55]] as number[][]) {
+        const bar = new THREE.Mesh(new THREE.PlaneGeometry(bw, bd), barMat)
+        bar.rotation.x = -Math.PI / 2
+        bar.position.set(bx, 0.32, bz)
+        heli.add(bar)
+      }
+      heli.position.set(0, 0, -40)
+      this.scene.add(heli)
     }
   }
 
@@ -529,7 +601,7 @@ export class Game {
   private buildContactShadows(): void {
     const pos: number[] = []
     const uvs: number[] = []
-    for (const b of MAP_BOXES) {
+    for (const b of this.md.boxes) {
       if (b.h < 1.0) continue                       // solo objetos altos
       if (b.y - b.h / 2 > 0.6) continue             // apoyados en el suelo
       if (b.w > 26 || b.d > 26) continue            // sin muros de perímetro
@@ -561,7 +633,7 @@ export class Game {
     const leafMatA = new THREE.MeshStandardMaterial({ color: 0x55683d, roughness: 0.95, flatShading: true })
     const leafMatB = new THREE.MeshStandardMaterial({ color: 0x47592f, roughness: 0.95, flatShading: true })
     const leafGeo = new THREE.SphereGeometry(1, 8, 7)
-    for (const [tx, tz] of TREES) {
+    for (const [tx, tz] of this.md.trees) {
       for (const [ox, oy, oz, s, m] of [
         [0, 4.6, 0, 2.1, leafMatA], [0.9, 3.8, 0.4, 1.5, leafMatB], [-0.8, 3.9, -0.3, 1.4, leafMatB],
       ] as [number, number, number, number, THREE.MeshStandardMaterial][]) {
@@ -585,8 +657,8 @@ export class Game {
     const headMat = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.6, metalness: 0.7 })
     const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc26b, emissiveIntensity: 4, roughness: 0.4 })
     const sparkTex = makeSparkTexture()
-    this.lampPos = LAMPS.map(([lx, lz]) => [lx, lz] as [number, number])
-    for (const [lx, lz] of LAMPS) {
+    this.lampPos = this.md.lamps.map(([lx, lz]) => [lx, lz] as [number, number])
+    for (const [lx, lz] of this.md.lamps) {
       const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.22, 0.42), headMat)
       head.position.set(lx, 5.15, lz)
       head.castShadow = true
@@ -601,16 +673,16 @@ export class Game {
       glow.scale.setScalar(1.6)
       this.scene.add(glow)
     }
-    const nLampLights = Math.min(6, LAMPS.length)
+    const nLampLights = Math.min(6, this.md.lamps.length)
     for (let i = 0; i < nLampLights; i++) {
       const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
-      light.position.set(LAMPS[i][0], 4.85, LAMPS[i][1])
+      light.position.set(this.md.lamps[i][0], 4.85, this.md.lamps[i][1])
       this.scene.add(light)
       this.lampLights.push(light)
     }
 
     // --- letreros de neón ---
-    for (const n of NEONS) {
+    for (const n of this.md.neons) {
       const tex = makeNeonTexture(n.text, n.color)
       const aspect = tex.image ? (tex.image as HTMLCanvasElement).width / (tex.image as HTMLCanvasElement).height : 4
       const h = n.w / aspect
@@ -633,7 +705,7 @@ export class Game {
     const puddleMat = new THREE.MeshStandardMaterial({
       color: 0x2a3038, roughness: 0.12, metalness: 0.85, envMapIntensity: 1.8,
     })
-    for (const p of PUDDLES) {
+    for (const p of this.md.puddles) {
       const puddle = new THREE.Mesh(new THREE.CircleGeometry(p.r, 20), puddleMat)
       puddle.rotation.x = -Math.PI / 2
       puddle.position.set(p.x, 0.024, p.z)
@@ -641,230 +713,28 @@ export class Game {
       this.scene.add(puddle)
     }
 
-    // --- neumáticos apilados (barrio y gasolinera) ---
-    const tireMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95 })
-    const tireGeo = new THREE.TorusGeometry(0.46, 0.2, 8, 16)
-    for (const [tx, tz, count] of [
-      [-46.5, -9.6, 3], [33.5, -25.5, 2], [-33.5, 25.5, 2], [41.5, -26.5, 3],
-    ] as [number, number, number][]) {
-      for (let i = 0; i < count; i++) {
-        const tire = new THREE.Mesh(tireGeo, tireMat)
-        tire.rotation.x = -Math.PI / 2
-        tire.rotation.z = Math.random() * Math.PI
-        tire.position.set(tx + (Math.random() - 0.5) * 0.15, 0.2 + i * 0.38, tz + (Math.random() - 0.5) * 0.15)
-        tire.castShadow = true
-        tire.receiveShadow = true
-        this.scene.add(tire)
+    // --- neumáticos apilados (solo ciudad: barrio y gasolinera) ---
+    if (this.mapId === 'ciudad') {
+      const tireMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95 })
+      const tireGeo = new THREE.TorusGeometry(0.46, 0.2, 8, 16)
+      for (const [tx, tz, count] of [
+        [-46.5, -9.6, 3], [33.5, -25.5, 2], [-33.5, 25.5, 2], [41.5, -26.5, 3],
+      ] as [number, number, number][]) {
+        for (let i = 0; i < count; i++) {
+          const tire = new THREE.Mesh(tireGeo, tireMat)
+          tire.rotation.x = -Math.PI / 2
+          tire.rotation.z = Math.random() * Math.PI
+          tire.position.set(tx + (Math.random() - 0.5) * 0.15, 0.2 + i * 0.38, tz + (Math.random() - 0.5) * 0.15)
+          tire.castShadow = true
+          tire.receiveShadow = true
+          this.scene.add(tire)
+        }
       }
     }
     void texs
   }
 
-  // ----------------------------------------------------------
-  // Pasto instanciado (1 draw call, viento en el vertex shader)
-  // ----------------------------------------------------------
-  private buildGrass(quality: 'baja' | 'media' | 'alta'): void {
-    const bladeH = 0.55
-    // dos quads cruzados por brizna
-    const plane = new THREE.PlaneGeometry(0.095, bladeH)
-    plane.translate(0, bladeH / 2, 0)
-    const plane2 = plane.clone()
-    plane2.rotateY(Math.PI / 2)
-    const geo = mergeGeometries([plane, plane2])!
-    const mat = new THREE.MeshLambertMaterial({
-      color: 0xffffff, side: THREE.DoubleSide, fog: true,
-    })
-    // viento: balanceo en el vertex shader usando la fase por instancia
-    mat.onBeforeCompile = shader => {
-      shader.uniforms.uTime = this.grassUniform
-      // declarar el uniform en el GLSL (sin esto el programa no compila)
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        '#include <common>\nuniform float uTime;',
-      )
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-        #ifdef USE_INSTANCING
-          float gwx = instanceMatrix[3][0];
-          float gwz = instanceMatrix[3][2];
-          float gph = gwx * 0.35 + gwz * 0.41;
-          float gsway = sin(uTime * 1.7 + gph) * 0.5 + sin(uTime * 2.6 + gph * 1.7) * 0.5;
-          float ghFac = max(0.0, position.y) / ${bladeH.toFixed(2)};
-          transformed.x += gsway * 0.085 * ghFac;
-          transformed.z += cos(uTime * 1.3 + gph) * 0.045 * ghFac;
-        #endif`,
-      )
-    }
-
-    const count = quality === 'alta' ? 14000 : quality === 'media' ? 9000 : 3200
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    mesh.frustumCulled = false
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
-    const pos = new THREE.Vector3()
-    const col = new THREE.Color()
-    let placed = 0
-    // matones alrededor de puntos abiertos (evitando AABBs y charcos)
-    const clumps = Math.floor(count / 78)
-    for (let c = 0; c < clumps && placed < count; c++) {
-      const cx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      const cz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      // cerca de árboles: matones más densos y verdes
-      let nearTree = 0
-      for (const [tx, tz] of TREES) {
-        const d = Math.hypot(tx - cx, tz - cz)
-        if (d < 18) { nearTree = Math.max(nearTree, 1 - d / 18); break }
-      }
-      if (this.grassBlocked(cx, cz, 1.4)) continue
-      const per = 58 + Math.floor(Math.random() * 34) + Math.floor(nearTree * 34)
-      for (let i = 0; i < per && placed < count; i++) {
-        const a = Math.random() * Math.PI * 2
-        const r = Math.pow(Math.random(), 0.6) * 1.5
-        const gx = cx + Math.cos(a) * r
-        const gz = cz + Math.sin(a) * r
-        if (this.grassBlocked(gx, gz, 0.45)) continue
-        pos.set(gx, 0, gz)
-        q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
-        const hS = 0.65 + Math.random() * 0.75 + nearTree * 0.25
-        sc.set(1, hS, 1)
-        m.compose(pos, q, sc)
-        mesh.setMatrixAt(placed, m)
-        // tonos de pasto seco del desierto (más verde cerca de árboles)
-        const t = Math.random()
-        // verde oliva más marcado (tonos pajizos claros se leían como palos
-        // pálidos en la distancia; el usuario pidió pasto más verde)
-        col.setRGB(
-          0.30 + t * 0.11 + nearTree * 0.04,
-          0.44 + t * 0.16 + nearTree * 0.16,
-          0.18 + t * 0.07,
-        )
-        mesh.setColorAt(placed, col)
-        placed++
-      }
-    }
-    // rellenar hasta el total con briznas sueltas si faltó
-    while (placed < count) {
-      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 4)
-      if (this.grassBlocked(gx, gz, 0.45)) { mesh.setMatrixAt(placed, m.makeScale(0, 0, 0)); placed++; continue }
-      pos.set(gx, 0, gz)
-      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
-      sc.set(1, 0.6 + Math.random() * 0.6, 1)
-      m.compose(pos, q, sc)
-      mesh.setMatrixAt(placed, m)
-      col.setRGB(0.30 + Math.random() * 0.08, 0.44 + Math.random() * 0.14, 0.18 + Math.random() * 0.06)
-      mesh.setColorAt(placed, col)
-      placed++
-    }
-    mesh.count = placed
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.instanceMatrix.needsUpdate = true
-    this.grassMesh = mesh
-    this.scene.add(mesh)
-  }
-
-  /** ¿hay un obstáculo, charco o CALLE en (x,z)? (para no plantar pasto en el asfalto) */
-  private grassBlocked(x: number, z: number, margin: number): boolean {
-    // calles y aceras (más un margen)
-    if (Math.abs(x) < 6.2 + margin || Math.abs(z) < 6.2 + margin) return true
-    if (Math.abs(Math.abs(x) - 35) < 4.2 + margin || Math.abs(Math.abs(z) - 35) < 4.2 + margin) return true
-    if (Math.hypot(x, z) < 10.4 + margin) return true   // rotonda
-    for (let i = 0; i < MAP_AABBS.length; i++) {
-      const b = MAP_AABBS[i]
-      if (b.minY > 0.6) continue // encima del suelo (techos) no importa
-      if (x > b.minX - margin && x < b.maxX + margin && z > b.minZ - margin && z < b.maxZ + margin) {
-        if (b.maxY > 0.25) return true
-      }
-    }
-    for (const p of PUDDLES) {
-      if (Math.hypot(p.x - x, p.z - z) < p.r + 0.3) return true
-    }
-    return false
-  }
-
-  // ----------------------------------------------------------
-  // Arbustos instanciados (1 draw call, sombra suave)
-  // ----------------------------------------------------------
-  private buildBushes(quality: 'baja' | 'media' | 'alta'): void {
-    const count = quality === 'alta' ? 170 : quality === 'media' ? 110 : 50
-    const geo = new THREE.IcosahedronGeometry(0.55, 1)
-    geo.translate(0, 0.3, 0)
-    geo.scale(1, 0.65, 1)
-    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true })
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
-    const pos = new THREE.Vector3()
-    const col = new THREE.Color()
-    let placed = 0
-    let guard = 0
-    while (placed < count && guard++ < count * 30) {
-      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      if (this.grassBlocked(gx, gz, 0.8)) continue
-      pos.set(gx, 0, gz)
-      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI * 2)
-      const s = 0.7 + Math.random() * 0.9
-      sc.set(s, s * (0.75 + Math.random() * 0.5), s)
-      m.compose(pos, q, sc)
-      mesh.setMatrixAt(placed, m)
-      const t = Math.random()
-      col.setRGB(0.26 + t * 0.12, 0.36 + t * 0.16, 0.18 + t * 0.08)
-      mesh.setColorAt(placed, col)
-      placed++
-    }
-    mesh.count = placed
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.instanceMatrix.needsUpdate = true
-    this.scene.add(mesh)
-  }
-
-  // ----------------------------------------------------------
-  // Flores silvestres instanciadas (toques de color)
-  // ----------------------------------------------------------
-  private buildFlowers(quality: 'baja' | 'media' | 'alta'): void {
-    const count = quality === 'alta' ? 700 : quality === 'media' ? 420 : 140
-    const plane = new THREE.PlaneGeometry(0.17, 0.17)
-    plane.translate(0, 0.12, 0)
-    const plane2 = plane.clone()
-    plane2.rotateY(Math.PI / 2)
-    const geo = mergeGeometries([plane, plane2])!
-    // Lambert (NO Basic): instanceColor no se aplica en MeshBasicMaterial
-    // (las flores salían blancas); con Lambert el color por instancia funciona
-    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide, fog: true })
-    const mesh = new THREE.InstancedMesh(geo, mat, count)
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
-    const pos = new THREE.Vector3()
-    const col = new THREE.Color()
-    const palette = [0xffd94d, 0xfff3c8, 0xb18cff, 0xff8fb0]
-    let placed = 0
-    let guard = 0
-    while (placed < count && guard++ < count * 30) {
-      const gx = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      const gz = (Math.random() * 2 - 1) * (GAME.MAP_HALF - 5)
-      if (this.grassBlocked(gx, gz, 0.4)) continue
-      pos.set(gx, 0, gz)
-      q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI)
-      const s = 0.7 + Math.random() * 0.7
-      sc.set(s, s, s)
-      m.compose(pos, q, sc)
-      mesh.setMatrixAt(placed, m)
-      col.setHex(palette[Math.floor(Math.random() * palette.length)])
-      mesh.setColorAt(placed, col)
-      placed++
-    }
-    mesh.count = placed
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.instanceMatrix.needsUpdate = true
-    this.scene.add(mesh)
-  }
+  // (v5: pasto/arbustos/flores eliminados para reducir el lag)
 
   // ----------------------------------------------------------
   // Tirolinas: cable + anclas + agarre con E
@@ -872,7 +742,7 @@ export class Game {
   private buildZiplines(): void {
     const cableMat = new THREE.MeshStandardMaterial({ color: 0x2a2c2e, roughness: 0.35, metalness: 0.85 })
     const postMat = new THREE.MeshStandardMaterial({ color: 0x4a4235, roughness: 0.8, metalness: 0.2 })
-    for (const z of ZIPLINES) {
+    for (const z of this.md.ziplines) {
       const from = new THREE.Vector3(...z.from)
       const to = new THREE.Vector3(...z.to)
       const dir = to.clone().sub(from)
@@ -912,7 +782,7 @@ export class Game {
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x1f2326, roughness: 0.5, metalness: 0.6 })
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
     const sparkTex = makeSparkTexture()
-    for (const p of JUMP_PADS) {
+    for (const p of this.md.jumpPads) {
       const g = new THREE.Group()
       g.position.set(p.x, 0, p.z)
       const base = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.5, 0.14, 20), baseMat)
@@ -1235,7 +1105,7 @@ export class Game {
         this.procTrees.remove(c)
       }
       // número de árboles según calidad (el modelo es detallado: ~12k tris)
-      const count = quality === 'alta' ? TREES.length : quality === 'media' ? Math.min(TREES.length, 28) : Math.min(TREES.length, 16)
+      const count = quality === 'alta' ? this.md.trees.length : quality === 'media' ? Math.min(this.md.trees.length, 28) : Math.min(this.md.trees.length, 16)
       const s = 9.5 / tree.rawHeight
       // hornear las transformaciones de todos los árboles en UNA geometría por
       // material (4 draw calls, sin instancing: el combo instancing+alphaTest
@@ -1249,7 +1119,7 @@ export class Game {
         if (onlyBark && !/^sugar_maple_bark$/i.test(part.mat.name)) continue
         const geos: THREE.BufferGeometry[] = []
         for (let i = 0; i < count; i++) {
-          const [tx, tz] = TREES[i]
+          const [tx, tz] = this.md.trees[i]
           pos.set(tx, 0, tz)
           q.setFromAxisAngle(UP_AXIS, Math.random() * Math.PI * 2)
           const v = 0.8 + Math.random() * 0.45
@@ -1302,6 +1172,9 @@ export class Game {
     document.removeEventListener('pointerlockchange', this.onLockChange)
     removeEventListener('contextmenu', this.onCtxMenu)
     this.net?.disconnect()
+    this.story?.dispose()
+    this.story = null
+    this.audio.setDuck(false)   // devolver la música a su volumen de menú
     this.effects?.dispose()
     for (const sv of this.smokeViews.values()) {
       this.scene.remove(sv.group)
@@ -1328,6 +1201,12 @@ export class Game {
     return useGame.getState().settings.keybinds[action] || ''
   }
 
+  /** teclas pulsadas ahora (las usa el director de la misión) */
+  heldKeys(): Set<string> { return this.keys }
+
+  /** código de la acción indicada (para interactuar en la misión) */
+  bindCode(action: ActionId): string { return this.kb(action) }
+
   private get locked(): boolean {
     return document.pointerLockElement === this.canvas3d
   }
@@ -1347,7 +1226,12 @@ export class Game {
   }
 
   requestLock(): void {
-    this.canvas3d.requestPointerLock()
+    try {
+      // puede fallar si no hay gesto reciente (p.ej. al acabar la cinemática):
+      // el jugador verá el overlay de "haz clic para jugar"
+      const p = this.canvas3d.requestPointerLock() as unknown as Promise<void> | undefined
+      if (p && typeof p.catch === 'function') p.catch(() => { /* sin gesto: reintento al clicar */ })
+    } catch { /* navegador antiguo: ignorar */ }
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
@@ -1561,6 +1445,10 @@ export class Game {
   // Menú de compra
   // ----------------------------------------------------------
   openBuyMenu(): void {
+    if (this.mapId === 'instalacion') {
+      useGame.getState().addAnnouncement('Sin tienda en la misión: usa los kits del terreno', 'info')
+      return
+    }
     const s = useGame.getState()
     if (this.dead) return
     if (!s.buyZone) {
@@ -1635,6 +1523,9 @@ export class Game {
     this.updateCamera(dt, t)
     this.updateViewmodel(dt, t)
 
+    // director del modo historia
+    this.story?.update(dt, t)
+
     // remotos (interpolación)
     const renderT = performance.now() - GAME.INTERP_DELAY
     const states = this.remotes.update(dt, renderT, this.team, this.camera.position)
@@ -1665,8 +1556,7 @@ export class Game {
     // pociones flotantes
     this.updatePickupViews(dt, t)
 
-    // mecánicas del mapa: viento del pasto, barriles, saltadores
-    this.grassUniform.value = t
+    // mecánicas del mapa: barriles y saltadores
     this.updateBarrels()
     this.updateJumpPadFX(dt)
 
@@ -1713,8 +1603,8 @@ export class Game {
     const minX = x - HALF_W, maxX = x + HALF_W
     const minY = y, maxY = y + h
     const minZ = z - HALF_W, maxZ = z + HALF_W
-    for (let i = 0; i < MAP_AABBS.length; i++) {
-      const b = MAP_AABBS[i]
+    for (let i = 0; i < this.md.aabbs.length; i++) {
+      const b = this.md.aabbs[i]
       if (maxX > b.minX && minX < b.maxX && maxY > b.minY && minY < b.maxY && maxZ > b.minZ && minZ < b.maxZ) {
         return true
       }
@@ -1843,8 +1733,8 @@ export class Game {
     if (this.vel.y <= 0) {
       // buscar suelo
       let groundY = 0
-      for (let i = 0; i < MAP_AABBS.length; i++) {
-        const b = MAP_AABBS[i]
+      for (let i = 0; i < this.md.aabbs.length; i++) {
+        const b = this.md.aabbs[i]
         if (this.pos.x + HALF_W > b.minX && this.pos.x - HALF_W < b.maxX &&
             this.pos.z + HALF_W > b.minZ && this.pos.z - HALF_W < b.maxZ) {
           if (b.maxY <= this.pos.y + 0.01 && b.maxY > groundY) groundY = b.maxY
@@ -1867,7 +1757,7 @@ export class Game {
       }
     }
     this.pos.y = Math.max(0, ny)
-    const lim = GAME.MAP_HALF - 0.8
+    const lim = this.md.half - 0.8
     this.pos.x = Math.max(-lim, Math.min(lim, this.pos.x))
     this.pos.z = Math.max(-lim, Math.min(lim, this.pos.z))
 
@@ -1909,7 +1799,7 @@ export class Game {
 
   /** Zona de compra (anillo de la base) */
   private updateBuyZone(): void {
-    const sp = this.team === 'A' ? SPAWN_A : SPAWN_B
+    const sp = this.team === 'A' ? this.md.spawnA : this.md.spawnB
     const inZone = Math.hypot(this.pos.x - sp[0], this.pos.z - sp[2]) < GAME.BUY_RADIUS
     if (inZone !== useGame.getState().buyZone) {
       useGame.getState().setHud({ buyZone: inZone })
@@ -2144,9 +2034,9 @@ export class Game {
       const dip = Math.sin(Math.min(1, progress) * Math.PI)
       reloadRot = dip * 0.9
       py -= dip * 0.16
-      // sonidos por etapas
-      if (progress > 0.25 && this.reloadStage === 0) { this.reloadStage = 1; this.audio.reload('mag') }
-      if (progress > 0.85 && this.reloadStage === 1) { this.reloadStage = 2; this.audio.reload('end') }
+      // sonidos por etapas (30 %: cargador fuera · 82 %: cargador dentro + cerrojo)
+      if (progress > 0.3 && this.reloadStage === 0) { this.reloadStage = 1; this.audio.reload('mag') }
+      if (progress > 0.82 && this.reloadStage === 1) { this.reloadStage = 2; this.audio.reload('end') }
     }
 
     px += Math.cos(this.bobT) * 0.012 * bob - this.swayX * 0.028 * (1 - adsA * 0.8)
@@ -2635,6 +2525,7 @@ export class Game {
     this.deathT = 0
     this.audio.deathSound()
     this.trauma = 1
+    this.story?.onPlayerDeath()
     useGame.getState().setHud({
       phase: 'dead',
       deathInfo: { killer: killerName, respawnIn, diedAt: performance.now() },
@@ -2826,6 +2717,7 @@ export class Game {
     // ronda
     const me = snap.players.find(p => p.id === this.net.id)
     useGame.getState().setHud({ round: snap.round, carryingFlag: !!me?.flag })
+    this.story?.onSnapshot(snap)
   }
 
   private updateJumpPadFX(dt: number): void {
@@ -3130,23 +3022,25 @@ export class Game {
     const ctx = c.getContext('2d')!
     ctx.fillStyle = 'rgba(12,14,10,0.88)'
     ctx.fillRect(0, 0, 240, 240)
-    const S = 240 / (GAME.MAP_HALF * 2 + 2) // escala px/m
+    const S = 240 / (this.md.half * 2 + 2) // escala px/m
     const O = 120
     // cajas (solo muros altos visibles)
-    for (const b of MAP_BOXES) {
+    for (const b of this.md.boxes) {
       if (b.h < 1.0) continue
       const x = O + b.x * S, y = O + b.z * S
       ctx.fillStyle = b.h > 2.5 ? 'rgba(150,140,120,0.65)' : 'rgba(120,112,96,0.45)'
       ctx.fillRect(x - (b.w * S) / 2, y - (b.d * S) / 2, b.w * S, b.d * S)
     }
     // zonas de spawn
-    ctx.strokeStyle = 'rgba(245,158,11,0.5)'
-    ctx.beginPath(); ctx.arc(O + SPAWN_A[0] * S, O + SPAWN_A[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
-    ctx.strokeStyle = 'rgba(34,197,94,0.5)'
-    ctx.beginPath(); ctx.arc(O + SPAWN_B[0] * S, O + SPAWN_B[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+    if (this.mapId === 'ciudad') {
+      ctx.strokeStyle = 'rgba(245,158,11,0.5)'
+      ctx.beginPath(); ctx.arc(O + this.md.spawnA[0] * S, O + this.md.spawnA[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+      ctx.strokeStyle = 'rgba(34,197,94,0.5)'
+      ctx.beginPath(); ctx.arc(O + this.md.spawnB[0] * S, O + this.md.spawnB[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+    }
     // barriles explosivos (puntos rojos)
     ctx.fillStyle = 'rgba(220,60,40,0.85)'
-    for (const b of EXPLODING_BARRELS) {
+    for (const b of this.md.barrels) {
       ctx.beginPath()
       ctx.arc(O + b.x * S, O + b.z * S, 2.2, 0, Math.PI * 2)
       ctx.fill()
@@ -3154,7 +3048,7 @@ export class Game {
     // tirolinas (líneas)
     ctx.strokeStyle = 'rgba(190,200,210,0.55)'
     ctx.lineWidth = 1.4
-    for (const z of ZIPLINES) {
+    for (const z of this.md.ziplines) {
       ctx.beginPath()
       ctx.moveTo(O + z.from[0] * S, O + z.from[2] * S)
       ctx.lineTo(O + z.to[0] * S, O + z.to[2] * S)
@@ -3162,7 +3056,7 @@ export class Game {
     }
     // plataformas de salto (cuadrados naranjas)
     ctx.fillStyle = 'rgba(255,140,26,0.9)'
-    for (const p of JUMP_PADS) {
+    for (const p of this.md.jumpPads) {
       ctx.fillRect(O + p.x * S - 2.5, O + p.z * S - 2.5, 5, 5)
     }
     this.mapStatic = c
@@ -3173,7 +3067,7 @@ export class Game {
     const W = this.minimap.width
     ctx.clearRect(0, 0, W, W)
     ctx.drawImage(this.mapStatic, 0, 0)
-    const S = 240 / (GAME.MAP_HALF * 2 + 2)
+    const S = 240 / (this.md.half * 2 + 2)
     const O = 120
     const now = performance.now()
 
@@ -3202,6 +3096,19 @@ export class Game {
       ctx.strokeStyle = 'rgba(255,255,255,0.8)'
       ctx.lineWidth = 1
       ctx.strokeRect(x - 3, y - 3, 6, 6)
+    }
+
+    // objetivos del modo historia (marcadores parpadeantes del director)
+    if (this.story) {
+      const blink = 0.55 + 0.45 * Math.sin(now / 260)
+      for (const mk of this.story.minimapMarkers()) {
+        ctx.globalAlpha = blink
+        ctx.fillStyle = mk.color
+        ctx.beginPath()
+        ctx.arc(O + mk.x * S, O + mk.z * S, 4.5, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.globalAlpha = 1
+      }
     }
 
     // zonas de dominación

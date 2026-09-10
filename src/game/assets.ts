@@ -130,12 +130,15 @@ export function onWeaponGLBsReady(cb: () => void): () => void {
 }
 
 /**
- * Precarga todos los assets del usuario. No lanza si ya está en curso.
+ * Precarga los assets del usuario. No lanza si ya está en curso.
+ * `opts.trees = false` omite Arbol.glb (el mapa de la misión no tiene
+ * árboles → carga perezosa según el modo de juego).
  * Resuelve siempre (los fallos dejan fallbacks procedurales).
  */
-export function preloadAssets(): Promise<void> {
+export function preloadAssets(opts?: { trees?: boolean }): Promise<void> {
   if (preloadStarted) return Promise.resolve()
   preloadStarted = true
+  const loadTrees = opts?.trees !== false
 
   const loader = new GLTFLoader()
   const texLoader = new THREE.TextureLoader()
@@ -189,24 +192,26 @@ export function preloadAssets(): Promise<void> {
     )
   }
 
-  // ---- árbol ----
-  tasks.push(
-    new Promise<void>(resolve => {
-      loader.load(
-        `${ASSET_BASE}/models/Arbol.glb`,
-        gltf => {
-          try {
-            treeTemplate = buildTreeTemplate(gltf.scene)
-          } catch (e) {
-            console.warn('FRONTERA CERO: no se pudo preparar Arbol.glb', e)
-          }
-          resolve()
-        },
-        undefined,
-        () => resolve(),
-      )
-    }),
-  )
+  // ---- árbol (solo si el mapa lo usa; la misión no tiene) ----
+  if (loadTrees) {
+    tasks.push(
+      new Promise<void>(resolve => {
+        loader.load(
+          `${ASSET_BASE}/models/Arbol.glb`,
+          gltf => {
+            try {
+              treeTemplate = buildTreeTemplate(gltf.scene)
+            } catch (e) {
+              console.warn('FRONTERA CERO: no se pudo preparar Arbol.glb', e)
+            }
+            resolve()
+          },
+          undefined,
+          () => resolve(),
+        )
+      }),
+    )
+  }
 
   return Promise.allSettled(tasks).then(() => {
     preloadDone = true

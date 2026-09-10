@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Sí, se ven muros de hormigón y estructuras tipo torretas.\n2) Sí, arriba en el centro: \"CAPÍTULO I - INFILTRACIÓN\" y el objetivo.\n3) Sí, una columna vertical de luz amarilla/blanca.\n4) Sí, se ve el cañón del arma (P9 COMPACTO) en la parte inferior derecha.\n5) Sí, visible en la esquina superior izquierda.\n6) Sí, hay un grave defecto gráfico: líneas blancas radiales (rayos) que cruzan toda la pantalla desde el centro, distorsionando la visión.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789004753,
+  "id": "20260910094549f4040d5916b44de2",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260910094549f4040d5916b44de2",
+  "usage": {
+    "completion_tokens": 141,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1172,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1313
+  }
+}
