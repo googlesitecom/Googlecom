@@ -364,11 +364,11 @@ export function SettingsPanel() {
           ))}
         </div>
         <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-          Baja: máx. FPS · Media: sombras 2K · Alta: sombras 4K y bloom (recomendada).
-          <b className="text-amber-200/70"> ULTRA</b>: luces reales (fogonazos que iluminan),
-          sol con destello de lente, sombras más nítidas, calles mojadas y <b className="text-amber-200/70">reflexión
-          real del agua</b>. No viene activado y, si tu equipo no da abasto, se ajusta solo para no dar lag.
-          Se aplica al iniciar una partida.
+          <b className="text-stone-300">Se aplica AL INSTANTE</b>, incluso en plena partida (se nota en los FPS).
+          <b className="text-stone-300"> Baja</b>: sin sombras, sin bloom, niebla cerrada y 30 % menos resolución → máx. FPS.
+          <b className="text-stone-300"> Media</b>: sombras 1K, 2 farolas. <b className="text-stone-300"> Alta</b>: sombras 2K, bloom y polvo/aves (recomendada).
+          <b className="text-amber-200/70"> ULTRA</b>: luces reales (fogonazos que iluminan), sol con destello de lente,
+          sombras 4K nítidas, calles mojadas y <b className="text-amber-200/70">reflexión real del agua</b>. No viene activado y, si tu equipo no da abasto, se ajusta solo para no dar lag.
         </p>
       </section>
     </div>

@@ -12,6 +12,7 @@ export function GameMount() {
   const phase = useGame(s => s.phase)
   const playerName = useGame(s => s.playerName)
   const buyOpen = useGame(s => s.buyOpen)
+  const quality = useGame(s => s.settings.quality)
   const initRef = useRef(false)
 
   useEffect(() => {
@@ -43,6 +44,12 @@ export function GameMount() {
       setGame(null)
     }
   }, [])
+
+  // v6.4: la calidad se aplica EN VIVO — cambiarla en AJUSTES (incluso
+  // desde el menú de pausa) reconfigura el render al instante
+  useEffect(() => {
+    getGame()?.applyQuality(quality)
+  }, [quality])
 
   const showClickToPlay = (phase === 'playing' || phase === 'paused') && !buyOpen
 

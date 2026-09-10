@@ -116,6 +116,16 @@ self.onmessage = (ev: MessageEvent) => {
       sim?.fillTeamBot(team)
       break
     }
+    case 'pause': {
+      // v6.4: pausa real offline — congela bots, rondas y respawns
+      sim?.pause()
+      break
+    }
+    case 'resume': {
+      // v6.4: reanudar tras la pausa (los relojes se desplazan)
+      sim?.resume()
+      break
+    }
     case 'leave': {
       const c = d as { id: string }
       sim?.leave(c.id)

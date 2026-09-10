@@ -149,6 +149,8 @@ export class Game {
   private effects!: Effects
   private remotes!: RemotePlayers
   net!: NetClient
+  /** v6.4: fase del frame anterior (detecta pausa/reanudación) */
+  private prevPhase: string = ''
   /** director del modo historia (solo en la misión) */
   story: StoryDirector | null = null
   private storyStarted = false
@@ -274,6 +276,16 @@ export class Game {
   private ultraScaled = false                 // el guardia de FPS ya redujo ULTRA
   private lowFpsMs = 0
   private ultraBloom: UnrealBloomPass | null = null
+  private ultraAnchor: THREE.Object3D | null = null // punto del sol con el lens flare
+
+  // ---- v6.4: calidad EN VIVO (el selector de AJUSTES se nota al instante) ----
+  private curQuality: Quality | null = null
+  /** textura de entorno PBR (se restaura al volver de BAJA) */
+  private envTex: THREE.Texture | null = null
+  /** mallas de árboles GLB horneadas (para reconstruir al cambiar calidad) */
+  private glbTreeMeshes: THREE.Mesh[] = []
+  /** materiales de las calles (brillo húmedo de ULTRA en vivo) */
+  private streetMats: { asphalt: THREE.MeshStandardMaterial; sidewalk: THREE.MeshStandardMaterial } | null = null
 
   // pociones visibles
   private pickupViews = new Map<string, PickupView>()
@@ -376,6 +388,9 @@ export class Game {
     if (this.mapId === 'ciudad') this.buildStreets(quality)
     if (this.mapId !== 'instalacion') this.buildObjectives()
     this.buildMinimapStatic()
+    this.curQuality = quality
+    this.applyAmbienceQuality(quality)
+    this.applyLampQuality(quality)
     // v6.2: extras de ULTRA (destello de sol, reflejo real del agua, luz de
     // fogonazo) — OPCIONAL, solo si el jugador lo activó en AJUSTES
     if (quality === 'ultra') this.buildUltraFX()
@@ -418,7 +433,7 @@ export class Game {
       this.composer.addPass(new RenderPass(this.scene, this.camera))
       const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), quality === 'ultra' ? 0.55 : 0.42, 0.7, 0.88)
       this.composer.addPass(bloom)
-      this.ultraBloom = quality === 'ultra' ? bloom : null
+      this.ultraBloom = bloom   // v6.4: referencia al pase (ajustable en vivo)
       this.composer.addPass(new OutputPass())
     }
 
@@ -583,6 +598,7 @@ export class Game {
     envScene.add(ground)
     const envRT = pmrem.fromScene(envScene, 0.05)
     this.scene.environment = envRT.texture
+    this.envTex = envRT.texture   // v6.4: guardar para restaurar al salir de BAJA
     envRT.texture.needsUpdate = true
     pmrem.dispose()
   }
@@ -592,7 +608,9 @@ export class Game {
     sun.position.set(52, 58, -40)
     if (quality !== 'baja') {
       sun.castShadow = true
-      sun.shadow.mapSize.set(quality === 'alta' || quality === 'ultra' ? 4096 : 2048, quality === 'alta' || quality === 'ultra' ? 4096 : 2048)
+      // v6.4: escalera de sombras 1K (MEDIA) · 2K (ALTA) · 4K (ULTRA) —
+      // el salto entre niveles se nota a simple vista
+      sun.shadow.mapSize.set(quality === 'ultra' ? 4096 : quality === 'alta' ? 2048 : 1024, quality === 'ultra' ? 4096 : quality === 'alta' ? 2048 : 1024)
       // la cámara de sombras sigue al jugador → sombras detalladas donde importa
       // ULTRA: caja 20 % más estrecha → sombras más nítidas a la misma 4K
       const box = quality === 'ultra' ? 40 : 48
@@ -698,30 +716,38 @@ export class Game {
   // hace falta (por eso ULTRA no causa lag sostenido).
   // ----------------------------------------------------------
   private buildUltraFX(): void {
+    // v6.4: idempotente — crea lo que falte (para poder volver a ULTRA
+    // en vivo tras degradarlo o apagarlo) y restaura los niveles
+    // completos si el guardia de FPS los había rebajado
     // ---- 1) SOL REALISTA: destello de lente (lens flare) dinámico —
     // parpadea al asomarse entre edificios, como una cámara real ----
     const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
-    const anchor = new THREE.Object3D()
-    anchor.position.copy(sunDir).multiplyScalar(299)
-    const flare = new Lensflare()
-    const haloTex = this.makeFlareTexture(0, 'rgba(255,255,255,1)', 0.55)
-    const hexTexA = this.makeFlareTexture(6, 'rgba(255,190,120,0.9)', 0.35)
-    const hexTexB = this.makeFlareTexture(6, 'rgba(140,190,255,0.55)', 0.3)
-    const dotTex = this.makeFlareTexture(0, 'rgba(255,220,170,0.9)', 0.5)
-    flare.addElement(new LensflareElement(haloTex, 340, 0, new THREE.Color(0xffe0b0)))
-    flare.addElement(new LensflareElement(hexTexA, 70, 0.28))
-    flare.addElement(new LensflareElement(dotTex, 46, 0.46))
-    flare.addElement(new LensflareElement(hexTexB, 110, 0.62))
-    flare.addElement(new LensflareElement(dotTex, 28, 0.8))
-    flare.addElement(new LensflareElement(hexTexA, 160, 1.0, new THREE.Color(0xffd9a6)))
-    anchor.add(flare)
-    this.scene.add(anchor)
+    if (!this.ultraAnchor) {
+      const anchor = new THREE.Object3D()
+      anchor.position.copy(sunDir).multiplyScalar(299)
+      const flare = new Lensflare()
+      const haloTex = this.makeFlareTexture(0, 'rgba(255,255,255,1)', 0.55)
+      const hexTexA = this.makeFlareTexture(6, 'rgba(255,190,120,0.9)', 0.35)
+      const hexTexB = this.makeFlareTexture(6, 'rgba(140,190,255,0.55)', 0.3)
+      const dotTex = this.makeFlareTexture(0, 'rgba(255,220,170,0.9)', 0.5)
+      flare.addElement(new LensflareElement(haloTex, 340, 0, new THREE.Color(0xffe0b0)))
+      flare.addElement(new LensflareElement(hexTexA, 70, 0.28))
+      flare.addElement(new LensflareElement(dotTex, 46, 0.46))
+      flare.addElement(new LensflareElement(hexTexB, 110, 0.62))
+      flare.addElement(new LensflareElement(dotTex, 28, 0.8))
+      flare.addElement(new LensflareElement(hexTexA, 160, 1.0, new THREE.Color(0xffd9a6)))
+      anchor.add(flare)
+      this.scene.add(anchor)
+      this.ultraAnchor = anchor
+    }
+    this.ultraAnchor.visible = true
 
     // ---- 2) REFLEXIÓN REALISTA: el lago (mayor lámina de agua) pasa de
     // «cielo pintado por fresnel» a un REFLECTOR de verdad: la escena se
     // renderiza reflejada (montañas, cielo, edificios) y se mezcla con
-    // las olas del shader de agua. 1024 px: coste contenido. ----
-    if (this.waterMeshes.length && this.md.water.length) {
+    // las olas del shader de agua. 1024 px: coste contenido.
+    // (v6.4: solo si aún no existe — idempotente) ----
+    if (!this.ultraReflector && this.waterMeshes.length && this.md.water.length) {
       let best = 0
       let bestArea = -1
       for (let i = 0; i < this.md.water.length; i++) {
@@ -813,8 +839,13 @@ export class Game {
     // ---- 3) LUCES REALISTAS: fogonazos que ILUMINAN de verdad —
     // un PointLight reutilizable que salta a cada disparo y se apaga
     // solo (los disparos del jugador iluminan muros y compañeros) ----
-    this.muzzleLight = new THREE.PointLight(0xffb46a, 0, 15, 2)
-    this.scene.add(this.muzzleLight)
+    if (!this.muzzleLight) {
+      this.muzzleLight = new THREE.PointLight(0xffb46a, 0, 15, 2)
+      this.scene.add(this.muzzleLight)
+    }
+    this.muzzleLight.distance = 15
+    // restaurar el bloom fuerte de ULTRA si el guardia lo rebajó
+    if (this.ultraBloom) this.ultraBloom.strength = 0.55
   }
 
   /** textura de un elemento del lens flare: halo suave o hexágono de diafragma */
@@ -861,6 +892,8 @@ export class Game {
   // extra) para mantener la fluidez. Solo actúa UNA vez.
   // ----------------------------------------------------------
   private updateUltraGuard(dt: number, fps: number): void {
+    // v6.4: el guardia solo vigila el modo ULTRA activo
+    if (this.curQuality !== 'ultra') return
     if (this.ultraScaled || !this.muzzleLight && !this.ultraReflector && !this.ultraBloom) return
     if (fps > 0 && fps < 38) this.lowFpsMs += dt * 1000
     else if (this.lowFpsMs > 0) this.lowFpsMs = Math.max(0, this.lowFpsMs - dt * 400)
@@ -878,6 +911,149 @@ export class Game {
     // 3) menos fogonazos con luz
     if (this.muzzleLight) this.muzzleLight.distance = 9
     useGame.getState().addAnnouncement('Gráficos ULTRA ajustados automáticamente para mantener los FPS', 'info')
+  }
+
+  // ----------------------------------------------------------
+  // v6.4: CALIDAD EN VIVO — cambiar el ajuste se NOTA al instante
+  // (resolución interna, sombras, bloom, niebla, entorno, árboles,
+  // luces y extras ULTRA) y hasta el FPS del HUD se mueve.
+  // ----------------------------------------------------------
+  applyQuality(q: Quality): void {
+    if (this.disposed || !this.renderer || this.curQuality === q) return
+    this.curQuality = q
+    const ultra = q === 'ultra'
+
+    // 1) RESOLUCIÓN de render: lo que más salta a la vista (y en los FPS).
+    //    BAJA renderiza a 0,7× (image pixelada estilo rendimiento) y ULTRA
+    //    hasta 2× con devicePixelRatio
+    const pr = q === 'baja' ? 0.7 : q === 'media' ? 1 : q === 'alta' ? Math.min(devicePixelRatio, 1.5) : Math.min(devicePixelRatio, 2)
+    this.renderer.setPixelRatio(pr)
+    this.renderer.setSize(innerWidth, innerHeight)
+
+    // 2) tono/exposición
+    this.renderer.toneMappingExposure = ultra ? 1.17 : q === 'alta' ? 1.12 : q === 'media' ? 1.1 : 1.05
+
+    // 3) SOMBRAS (diferencia brutal entre niveles): BAJA sin sombras,
+    //    MEDIA 1K, ALTA 2K, ULTRA 4K con caja cerrada y PCF fino
+    const wantShadows = q !== 'baja'
+    if (this.renderer.shadowMap.enabled !== wantShadows) {
+      this.renderer.shadowMap.enabled = wantShadows
+      // recompilar materiales para activar/desactivar sombras en vivo
+      this.scene.traverse(o => {
+        const mat = (o as THREE.Mesh).material
+        if (!mat) return
+        for (const mm of Array.isArray(mat) ? mat : [mat]) mm.needsUpdate = true
+      })
+    }
+    if (wantShadows) {
+      const sun = this.sunLight
+      sun.castShadow = true
+      const size = ultra ? 4096 : q === 'alta' ? 2048 : 1024
+      // regenerar el mapa de sombras a la nueva resolución
+      if (sun.shadow.map) { sun.shadow.map.dispose(); (sun.shadow as unknown as { map: null }).map = null }
+      sun.shadow.mapSize.set(size, size)
+      const box = ultra ? 40 : 48
+      sun.shadow.camera.left = -box
+      sun.shadow.camera.right = box
+      sun.shadow.camera.top = box
+      sun.shadow.camera.bottom = -box
+      sun.shadow.camera.updateProjectionMatrix()
+      sun.shadow.normalBias = ultra ? 0.028 : 0.035
+      sun.shadow.radius = ultra ? 2.2 : 1
+    }
+
+    // 4) NIEBLA: BAJA cierra el horizonte (menos mundo que dibujar);
+    //    ALTA/ULTRA abren la vista completa del valle/sierra
+    if (this.scene.fog) (this.scene.fog as THREE.FogExp2).density = q === 'baja' ? 0.011 : q === 'media' ? 0.008 : 0.0062
+
+    // 5) BLOOM/post-proceso: BAJA/MEDIA dibujan directo (cero coste);
+    //    ALTA/ULTRA encienden el compositor con neones y fogonazos
+    if ((q === 'alta' || ultra) && !this.composer) {
+      this.composer = new EffectComposer(this.renderer)
+      this.composer.addPass(new RenderPass(this.scene, this.camera))
+      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.42, 0.7, 0.88)
+      this.composer.addPass(bloom)
+      this.composer.addPass(new OutputPass())
+      this.ultraBloom = bloom
+    } else if (q === 'baja' || q === 'media') {
+      if (this.composer) {
+        this.composer.dispose()
+        this.composer = null
+        this.ultraBloom = null
+      }
+    }
+    if (this.composer) this.composer.setSize(innerWidth, innerHeight)
+    if (this.ultraBloom) this.ultraBloom.strength = ultra ? 0.55 : 0.42
+
+    // 6) entorno PBR (reflejos de atardecer en muros y metal): BAJA lo
+    //    apaga → materiales planos y mucho más baratos
+    this.scene.environment = q === 'baja' ? null : this.envTex
+
+    // 7) ambiente: nubes/aves fuera en BAJA, polvo solo en ALTA/ULTRA
+    this.applyAmbienceQuality(q)
+    this.applyLampQuality(q)
+    this.applyStreetQuality(q)
+
+    // 8) extras de ULTRA en vivo (sol con destello, reflejo real del
+    //    lago, fogonazos con luz, calles mojadas)
+    if (ultra) {
+      this.ultraScaled = false
+      this.lowFpsMs = 0
+      this.buildUltraFX()
+    } else {
+      this.disableUltraFX()
+    }
+
+    // 9) árboles GLB: reconstruir con el número de la nueva calidad
+    //    (BAJA 16 · MEDIA 28 · ALTA/ULTRA todos) — si aún no han
+    //    cargado, se hornearán ya con el valor nuevo
+    if (this.glbTreeMeshes.length || getTreeTemplate()) this.applyRepoTrees(q)
+
+    const NAMES: Record<Quality, string> = { baja: 'BAJA', media: 'MEDIA', alta: 'ALTA', ultra: 'ULTRA' }
+    useGame.getState().addAnnouncement(`Gráficos ${NAMES[q]} aplicados al instante`, 'info')
+  }
+
+  /** v6.4: visibilidad del ambiente según calidad (nubes, aves, polvo) */
+  private applyAmbienceQuality(q: Quality): void {
+    const full = q === 'alta' || q === 'ultra'
+    for (const c of this.clouds) c.visible = full
+    for (const b of this.birds) b.visible = full
+    if (this.dust) this.dust.visible = full
+  }
+
+  /** v6.4: cuántas luces de farola se encienden (2 · 4 · 6 · 10) */
+  private applyLampQuality(q: Quality): void {
+    const active = q === 'baja' ? 2 : q === 'media' ? 4 : q === 'alta' ? 6 : 10
+    for (let i = 0; i < this.lampLights.length; i++) {
+      const on = i < active
+      this.lampLights[i].visible = on
+      this.lampLights[i].intensity = q === 'ultra' ? 30 : 26
+      this.lampLights[i].distance = q === 'ultra' ? 18 : 16
+    }
+  }
+
+  /** v6.4: asfalto seco (BAJA/MEDIA) o calles mojadas (ULTRA) en vivo */
+  private applyStreetQuality(q: Quality): void {
+    if (!this.streetMats) return
+    const ultra = q === 'ultra'
+    const { asphalt, sidewalk } = this.streetMats
+    asphalt.roughness = ultra ? 0.52 : 0.7
+    asphalt.metalness = ultra ? 0.14 : 0.08
+    asphalt.envMapIntensity = ultra ? 1.4 : 0.85
+    sidewalk.roughness = ultra ? 0.62 : 0.78
+    sidewalk.envMapIntensity = ultra ? 0.9 : 0.55
+  }
+
+  /** v6.4: quitar los extras de ULTRA al bajar de calidad (en vivo) */
+  private disableUltraFX(): void {
+    if (this.ultraAnchor) this.ultraAnchor.visible = false
+    if (this.ultraReflector) {
+      this.scene.remove(this.ultraReflector)
+      this.ultraReflector.dispose?.()
+      this.ultraReflector = null
+      if (this.ultraReflectorBase) this.ultraReflectorBase.visible = true
+    }
+    if (this.muzzleLight) this.muzzleLight.intensity = 0
   }
 
   private buildAmbience(quality: Quality): void {
@@ -917,7 +1093,9 @@ export class Game {
     }
 
     // --- motas de polvo flotando cerca de la cámara (180 puntos) ---
-    if (quality !== 'baja') {
+    // (v6.4: se crean SIEMPRE y la visibilidad se gobierna por calidad:
+    // BAJA/MEDIA las oculta, ALTA/ULTRA las enciende — en vivo)
+    {
       const N = 180
       const pos = new Float32Array(N * 3)
       this.dustVel = new Float32Array(N * 3)
@@ -1187,9 +1365,11 @@ export class Game {
       glow.scale.setScalar(1.6)
       this.scene.add(glow)
     }
-    const nLampLights = Math.min(quality === 'ultra' ? 10 : 6, this.md.lamps.length)
+    // v6.4: el pool de luces se crea COMPLETO (hasta 10) y la cantidad
+    // activa se gobierna en vivo por calidad (applyLampQuality)
+    const nLampLights = Math.min(10, this.md.lamps.length)
     for (let i = 0; i < nLampLights; i++) {
-      const light = new THREE.PointLight(0xffc477, quality === 'ultra' ? 30 : 26, quality === 'ultra' ? 18 : 16, 1.9)
+      const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
       light.position.set(this.md.lamps[i][0], 4.85, this.md.lamps[i][1])
       this.scene.add(light)
       this.lampLights.push(light)
@@ -1339,6 +1519,7 @@ export class Game {
     const ultra = quality === 'ultra'
     const asphalt = new THREE.MeshStandardMaterial({ color: 0x2b2e32, roughness: ultra ? 0.52 : 0.7, metalness: ultra ? 0.14 : 0.08, envMapIntensity: ultra ? 1.4 : 0.85 })
     const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: ultra ? 0.62 : 0.78, envMapIntensity: ultra ? 0.9 : 0.55 })
+    this.streetMats = { asphalt, sidewalk }   // v6.4: brillo húmedo regulable en vivo
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8d8c8 })
     // alturas escalonadas para evitar z-fighting con el terreno (mm → cm)
     const Y_ASPHALT = 0.03
@@ -1580,6 +1761,7 @@ export class Game {
           const envRT = pmrem.fromScene(envScene, 0.05)
           this.scene.environment?.dispose()
           this.scene.environment = envRT.texture
+          this.envTex = envRT.texture   // v6.4: guardar para restaurar al salir de BAJA
           envRT.texture.needsUpdate = true
           pmrem.dispose()
         } catch { /* mantener el entorno anterior */ }
@@ -1613,13 +1795,21 @@ export class Game {
     // --- árboles GLB (Arbol.glb) ---
   }
 
-  private applyRepoTrees(): void {
-    const quality = useGame.getState().settings.quality
+  private applyRepoTrees(q?: Quality): void {
+    // v6.4: la calidad se puede forzar (cambio en vivo) o leer del ajuste
+    const quality = q ?? useGame.getState().settings.quality
     const tree = getTreeTemplate()
     if (tree && this.procTrees) {
+      // v6.4: quitar horneados anteriores (cambio de calidad en vivo →
+      // se rehornea con el nuevo número de árboles)
+      for (const m of this.glbTreeMeshes) {
+        this.scene.remove(m)
+        m.geometry.dispose()
+      }
+      this.glbTreeMeshes = []
       // quitar las copas procedurales
       for (const c of [...this.procTrees.children]) {
-        const i = this.shootables.indexOf(c)
+        const i = this.shootables.indexOf(c as THREE.Mesh)
         if (i >= 0) this.shootables.splice(i, 1)
         this.procTrees.remove(c)
       }
@@ -1655,6 +1845,7 @@ export class Game {
         mesh.receiveShadow = false
         mesh.frustumCulled = false   // geometría gigante: no dejar que el frustum la descarte entera
         this.scene.add(mesh)
+        this.glbTreeMeshes.push(mesh)
       }
       this.procTrees.visible = false
     }
@@ -2076,6 +2267,14 @@ export class Game {
 
     const phase = useGame.getState().phase
     const playing = phase === 'playing' || phase === 'dead'
+
+    // v6.4: pausa REAL offline — al entrar en pausa se congela la
+    // simulación (los bots dejan de disparar); al volver, se reanuda
+    if (phase !== this.prevPhase) {
+      this.prevPhase = phase
+      const offline = useGame.getState().mode === 'solo'
+      if (offline) this.net.setPaused(phase === 'paused')
+    }
 
     if (playing && !this.cine.active) {
       this.updateGamepad(dt)
@@ -2817,7 +3016,8 @@ export class Game {
     const mzl = this.muzzleWorld()
     this.effects.muzzleFlash(mzl, this.weapon === 'awp338' ? 1.6 : this.weapon === 'breacher' ? 1.3 : 1)
     // v6.2 ULTRA: el disparo ILUMINA de verdad (luz puntual que se apaga sola)
-    if (this.muzzleLight) {
+    // v6.4: solo con calidad ULTRA activa (en vivo)
+    if (this.muzzleLight && this.curQuality === 'ultra') {
       this.muzzleLight.position.copy(mzl)
       this.muzzleLight.intensity = 42 + Math.random() * 14
     }

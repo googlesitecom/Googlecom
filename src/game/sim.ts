@@ -228,6 +228,57 @@ export class GameSim {
     this.grenades.clear()
   }
 
+  // ------------------------------------------------------------
+  // v6.4: PAUSA real en partidas offline — el jugador pulsa ESC y TODO
+  // se congela (los bots dejan de disparar). Al reanudar, los relojes
+  // de ronda/respawn/IA se desplazan el tiempo pausado para que la
+  // partida continúe exactamente donde estaba.
+  // ------------------------------------------------------------
+  pause(): void {
+    if (!this.timer) return
+    clearInterval(this.timer)
+    this.timer = null
+    this.pausedAt = now()
+  }
+
+  resume(): void {
+    if (this.timer) return
+    const delta = Math.max(0, now() - this.pausedAt)
+    if (delta > 0) {
+      this.lastTick = now()
+      // congelar los relojes del juego
+      this.round.endsAt += delta
+      if (this.round.intermissionEndsAt > 0) this.round.intermissionEndsAt += delta
+      for (const p of this.players.values()) {
+        p.respawnAt += delta
+        if (p.lastDamageAt > 0) p.lastDamageAt += delta
+        if (p.lastShotAt > 0) p.lastShotAt += delta
+        if (p.lastHitsAt > 0) p.lastHitsAt += delta
+        if (p.protectUntil > 0) p.protectUntil += delta
+        if (p.lastSeenEnemy > 0) p.lastSeenEnemy += delta
+        if (p.lastKillAt > 0) p.lastKillAt += delta
+        if (p.bot && p.ai) {
+          p.ai.reactAt += delta
+          p.ai.nextShotAt += delta
+          p.ai.lastScan += delta
+          p.ai.lastSeen += delta
+          p.ai.aimErrNext += delta
+          p.ai.stuckCheck += delta
+          p.ai.huntUntil += delta
+          p.ai.retreatUntil += delta
+          p.ai.crouchUntil += delta
+          p.ai.objUntil += delta
+        }
+      }
+      for (const s of this.smokes) s.until += delta
+      for (const pk of this.pickups) if (pk.respawnAt > 0) pk.respawnAt += delta
+      for (const fl of [this.flags.a, this.flags.b]) if (fl.returnAt > 0) fl.returnAt += delta
+    }
+    this.timer = setInterval(() => this.tick(), GAME.TICK)
+  }
+
+  private pausedAt = 0
+
   private emit(ev: string, data: unknown, to?: string): void {
     this.route?.(ev, data, to)
   }

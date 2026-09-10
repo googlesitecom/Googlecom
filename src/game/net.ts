@@ -610,6 +610,17 @@ export class NetClient {
     this.sendToSim({ e: 'input', d: { id: this.id, data: this.lastInput } })
   }
 
+  /** v6.4: pausa real de la simulación en partidas OFFLINE (solo) —
+   *  en online el mundo sigue para los demás jugadores */
+  setPaused(paused: boolean): void {
+    if (this.disposed || this.mode !== 'solo') return
+    if (paused === this.simPaused) return
+    this.simPaused = paused
+    this.sendToSim({ e: paused ? 'pause' : 'resume' })
+  }
+
+  private simPaused = false
+
   sendHits(weapon: WeaponId, hits: { target: string; part: 'head' | 'body' | 'legs'; dist: number }[]): void {
     const payload = {
       weapon,

@@ -613,9 +613,14 @@ function hotel(cx: number, cz: number, f: Facing): void {
   BR(cx, cz, f, -6, 0.4, 1.5, 2.0, 0.8, 0.9, 'sandbag')          // sofá
   BR(cx, cz, f, -3.2, 0.45, 1.5, 1.2, 0.9, 0.9, 'wood')         // mesa baja
   BR(cx, cz, f, -7.6, 0.9, -1, 0.7, 1.8, 1.6, 'wood')           // estante
-  // ---- escalera interior: 2 tramos apilados (lado este, suben hacia -z) ----
-  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, 0)      // tramo A: planta baja → P1
-  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, F2)    // tramo B: P1 → P2 (apilado)
+  // ---- escalera interior v6.4: DOS CARRILES EN U (en lugar de tramos
+  // apilados, que dejaban el 2.º inalcanzable: escalera trabada).
+  // Tramo A en el carril ESTE sube del lobby al rellano norte de P1;
+  // tramo B en el carril OESTE arranca de ese rellano y sube hacia +z
+  // hasta P2. Peldaño de 0,28: al abordar de lado el jugador solapa dos
+  // peldaños (0,56) y el escalón automático de 0,58 lo salva ----
+  stairsBR(cx, cz, f, 7.6, 6.4, 0, -1, 11, 0.28, 0.55, 1.4, 0)     // tramo A (carril este): lobby → rellano P1
+  stairsBR(cx, cz, f, 6.2, 0.4, 0, 1, 11, 0.28, 0.55, 1.4, F2)     // tramo B (carril oeste): rellano P1 → P2
   // ---- forjado P1 con hueco sobre la escalera (x 5..9, z 0.4..7) ----
   BR(cx, cz, f, -2.1, 3.15, 0, 14.2, 0.3, 14, 'concrete')       // franja oeste
   BR(cx, cz, f, 7, 3.15, -3.85, 4, 0.3, 6.3, 'concrete')        // rincón este-sur
@@ -633,6 +638,10 @@ function hotel(cx: number, cz: number, f: Facing): void {
   BR(cx, cz, f, -2.1, F3 + 0.15 - 0.3, 0, 14.2, 0.3, 14, 'concrete')
   BR(cx, cz, f, 7, F3 - 0.15, -3.85, 4, 0.3, 6.3, 'concrete')
   BR(cx, cz, f, 6.9, F3 - 0.15, -0.15, 2.8, 0.3, 1.1, 'concrete')
+  // v6.4: rellano SUR de P2 — desembarco del tramo B (carril oeste) y
+  // enlace con la franja oeste del forjado: la escalera interior ya
+  // entrega en el piso 2.º sin trabarse
+  BR(cx, cz, f, 6.65, F3 - 0.15, 6.5, 3.3, 0.3, 0.4, 'concrete')
   wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-6, 0, 6] })
   wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
@@ -689,16 +698,24 @@ function torreOficina(cx: number, cz: number, f: Facing): void {
   BR(cx, cz, f, -4.5, 3.55, 3.5, 1.6, 0.9, 0.9, 'wood')
   BR(cx, cz, f, -4.5, 6.65, -3.5, 1.6, 0.9, 0.9, 'wood')
   BR(cx, cz, f, 3, 0.45, 5, 1.3, 0.9, 0.9, 'wood')
-  // ---- escalera interior: 4 tramos apilados (núcleo este) ----
-  for (let p = 0; p < 4; p++) {
-    stairsBR(cx, cz, f, 5.6, 6.4, 0, -1, 10, 0.28, 0.55, 2.4, F[p])
-  }
+  // ---- escalera interior v6.4: DOS CARRILES EN ZIGZAG (los tramos
+  // apilados dejaban los tramos 2.º-4.º inalcanzables: núcleo trabado).
+  // Tramos PARES en el carril ESTE suben hacia -z (del sur al rellano
+  // norte); tramos IMPARES en el carril OESTE arrancan del rellano
+  // norte y suben hacia +z hasta el rellano sur del piso siguiente.
+  // De la planta baja a la azotea, siempre transitable ----
+  stairsBR(cx, cz, f, 6.2, 6.4, 0, -1, 11, 0.28, 0.55, 1.2, F[0])  // t0 (este): baja → rellano norte P1
+  stairsBR(cx, cz, f, 5.0, 0.4, 0, 1, 11, 0.28, 0.55, 1.2, F[1])   // t1 (oeste): rellano P1 → rellano sur P2
+  stairsBR(cx, cz, f, 6.2, 6.4, 0, -1, 11, 0.28, 0.55, 1.2, F[2])  // t2 (este): rellano sur P2 → rellano norte P3
+  stairsBR(cx, cz, f, 5.0, 0.4, 0, 1, 11, 0.28, 0.55, 1.2, F[3])   // t3 (oeste): rellano P3 → azotea (salida oeste)
   // ---- forjados (hueco del núcleo x 4.2..7, z 0.4..7 + rellano) ----
   for (let p = 1; p < 4; p++) {
     BR(cx, cz, f, -1.6, F[p] - 0.15, 0, 11.2, 0.3, 14, 'concrete')   // franja oeste
     BR(cx, cz, f, 6.2, F[p] - 0.15, -3.85, 2.6, 0.3, 6.3, 'concrete')
     BR(cx, cz, f, 5.6, F[p] - 0.15, -0.15, 2.4, 0.3, 1.1, 'concrete')
   }
+  // v6.4: rellano SUR de P2 — desembarco del t1 y arranque del t2
+  BR(cx, cz, f, 5.6, F[2] - 0.15, 6.5, 2.4, 0.3, 0.4, 'concrete')
   // ---- azotea con mirador (pretil alto) + hueco de la escalera ----
   BR(cx, cz, f, -1.6, ROOF, 0, 11.2, 0.3, 14, 'roof')
   BR(cx, cz, f, 6.2, ROOF, -3.85, 2.6, 0.3, 6.3, 'concrete')
@@ -808,6 +825,11 @@ function bigHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void
   wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
   // escalera interior junto a la pared este
   stairsBR(cx, cz, f, 3.55, 2.7, 0, -1, 8, 0.4, 0.8, 1.4, 0)
+  // v6.4: laterales de la escalera — sin ellos, al acercarse de costado
+  // el jugador embiste peldaños de 1,2 m y la escalera se siente trabada;
+  // con los muretes se sube por el frente (z 2.7) sin atascos
+  BR(cx, cz, f, 2.78, 1.6, -0.1, 0.16, 3.2, 5.8, 'sand')   // murete oeste del hueco
+  BR(cx, cz, f, 4.32, 1.6, -0.1, 0.16, 3.2, 5.8, 'sand')   // murete este del hueco
   // mobiliario planta baja
   BR(cx, cz, f, -3.4, 0.4, -3.3, 2.1, 0.8, 0.85, 'sandbag')
   BR(cx, cz, f, -1.2, 0.45, -2.7, 1.3, 0.9, 0.9, 'wood')

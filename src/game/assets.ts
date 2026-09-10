@@ -407,6 +407,8 @@ function keyOutWhite(tex: THREE.Texture): THREE.Texture {
 function buildTreeTemplate(scene: THREE.Object3D): TreeTemplate | null {
   const meshes = collectMeshes(scene)
   if (!meshes.length) return null
+  // v6.4: parte de pasto del GLB (para hundirla bajo el terreno)
+  let grassPart: { geo: THREE.BufferGeometry; maxY: number } | null = null
   // agrupar por material (nombre) y fusionar cada grupo
   const byMat = new Map<string, { geos: THREE.BufferGeometry[]; mat: THREE.Material }>()
   for (const m of meshes) {
@@ -436,13 +438,17 @@ function buildTreeTemplate(scene: THREE.Object3D): TreeTemplate | null {
       })
       parts.push({ geo: merged, mat: basic })
     } else if (/grass|groundcover|wood_mix/i.test(name)) {
-      // cobertura del suelo: básico oscurecido, doble cara
+      // cobertura del suelo: básico oscurecido, doble cara.
+      // v6.4: ese pasto de la base del GLB se HUNDE bajo el terreno (se
+      // registra su altura para empujarlo abajo del mapa en la plantilla)
       const basic = new THREE.MeshBasicMaterial({
         map: (g.mat as THREE.MeshStandardMaterial).map ?? null,
         color: 0x93a37c,
         side: THREE.DoubleSide,
         fog: true,
       })
+      merged.computeBoundingBox()
+      grassPart = { geo: merged, maxY: merged.boundingBox!.max.y }
       parts.push({ geo: merged, mat: basic })
     } else {
       // tronco y demás: PBR estándar (funciona en todos los lados)
@@ -460,5 +466,9 @@ function buildTreeTemplate(scene: THREE.Object3D): TreeTemplate | null {
   }
   // bajar la plantilla para que la base quede en y=0
   for (const p of parts) p.geo.translate(0, -minY, 0)
+  // v6.4: el pasto/groundcover del GLB queda ENTERO bajo el terreno —
+  // el tronco arranca a ras de suelo y la "alfombrilla" de hierba ya
+  // no sobresale alrededor del árbol (queda oculta bajo el mapa)
+  if (grassPart) grassPart.geo.translate(0, -(grassPart.maxY - minY) - 0.25, 0)
   return { parts, rawHeight: maxY - minY }
 }
