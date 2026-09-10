@@ -5,7 +5,7 @@
 import { create } from 'zustand'
 import type { Team, WeaponId, NetRoundState, NetPlayerState, BotDifficulty, ActionId, GameMode, PadAction } from './shared'
 import { DEFAULT_KEYBINDS, DEFAULT_PAD_BINDS } from './shared'
-import type { NetMode } from './net'
+import type { NetMode, RoomKind } from './net'
 
 export interface KillFeedEntry {
   id: number
@@ -16,6 +16,17 @@ export interface KillFeedEntry {
   weapon: WeaponId
   headshot: boolean
   t: number
+}
+
+/** v6.2: sala 2v2 — jugadores reunidos antes de iniciar la partida */
+export interface LobbySlot {
+  id: string
+  name: string
+  team: Team
+}
+export interface LobbyState {
+  kind: RoomKind
+  players: LobbySlot[]
 }
 
 export interface Announcement {
@@ -57,6 +68,13 @@ interface GameState {
   netStatus: NetStatus
   netError: string
 
+  /** v6.2: formato de la sala online (1v1 clásico o 2v2 por equipos) */
+  roomKind: RoomKind
+  /** v6.2: en 2v2, rellenar con bots los huecos vacíos al iniciar */
+  fillEmptyWithBots: boolean
+  /** v6.2: estado del lobby (anfitrión e invitados 2v2) */
+  lobby: LobbyState | null
+
   hp: number
   armor: number
   money: number
@@ -97,7 +115,7 @@ interface GameState {
     volume: number
     musicVol: number
     sfxVol: number
-    quality: 'baja' | 'media' | 'alta'
+    quality: 'baja' | 'media' | 'alta' | 'ultra'
     keybinds: Record<ActionId, string>
     padBinds: Record<PadAction, number>
   }
@@ -140,6 +158,9 @@ export const useGame = create<GameState>((set) => ({
   gameMode: 'escaramuza',
   netStatus: 'idle',
   netError: '',
+  roomKind: '1v1',
+  fillEmptyWithBots: true,
+  lobby: null,
 
   hp: 100,
   armor: 0,
@@ -175,6 +196,8 @@ export const useGame = create<GameState>((set) => ({
     volume: 0.7,
     musicVol: 0.6,
     sfxVol: 1.0,
+    // 'alta' sigue siendo el valor por defecto: ULTRA es OPCIONAL y el
+    // jugador debe activarlo a propósito en AJUSTES (v6.2)
     quality: 'alta',
     keybinds: { ...DEFAULT_KEYBINDS },
     padBinds: { ...DEFAULT_PAD_BINDS },

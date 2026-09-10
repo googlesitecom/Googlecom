@@ -30,6 +30,8 @@ export function GameMount() {
       fillBots: st.fillBots,
       difficulty: st.botDifficulty,
       gameMode: st.gameMode,
+      roomKind: st.roomKind,          // v6.2: 1v1 clásico o 2v2 con lobby
+      fillEmpty: st.fillEmptyWithBots, // v6.2: huecos vacíos con bots
     })
     if (process.env.NODE_ENV === 'development') {
       ;(window as unknown as Record<string, unknown>).__game = game

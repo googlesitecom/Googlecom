@@ -255,6 +255,20 @@ export class GameSim {
     }
   }
 
+  /** v6.2: bots en cantidades distintas por bando (relleno de huecos 2v2) */
+  addBotsPer(a: number, b: number): void {
+    for (let i = 0; i < a; i++) this.spawnBot('A')
+    for (let i = 0; i < b; i++) this.spawnBot('B')
+  }
+
+  /** v6.2: sustituye por un bot al jugador que abandona una 2v2 (mantiene
+   *  el bando equilibrado: 2 operadores por lado) */
+  fillTeamBot(team: Team): SimPlayer | null {
+    const members = Array.from(this.players.values()).filter(p => p.team === team).length
+    if (members >= 2) return null // el bando ya está completo
+    return this.spawnBot(team)
+  }
+
   private spawnBot(team: Team): SimPlayer {
     const id = `bot-${this.botSeq++}`
     let name = ''

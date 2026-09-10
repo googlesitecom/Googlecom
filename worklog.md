@@ -394,3 +394,36 @@ Stage Summary:
 - La compra de dos armas funciona y el dinero se ve subir al instante (bug de econ arreglado)
 - Tienda con EQUIPAR y elección de hueco (1/2) + HUD con los 3 huecos; todo persiste al morir
 - Ciudad (modo normal) con charcos de agua animados, aves y calles con brillo — sin coste de FPS
+
+---
+Task ID: 13
+Agent: Super Z (agente principal)
+Task: v6.2 — Modo de gráficos ULTRA opcional (luces/sol/sombras/reflejos realistas, sin lag) y modo online 2vs2 (mensaje #17)
+
+Work Log:
+- RECUPERACIÓN del proyecto: main remoto con v6.1 ( Emergency Strike + armería con huecos) ya desplegada en gh-pages; repo migrado a Next.js (src/game/* + componentes React), assets MP3/GLB en public/
+- MODO ULTRA (v6.2, OPCIONAL y DESACTIVADO por defecto — solo si el jugador lo elige en AJUSTES):
+  - quality 'baja'|'media'|'alta' → +'ultra' en store/motor/menús; persistido como el resto de ajustes; por defecto sigue siendo 'alta'
+  - SOL REALISTA: Lensflare de three/addons con 6 elementos propios (halo + hexágonos de diafragma + discos, texturas procedurales makeFlareTexture) anclado a la posición real del sol → destello dinámico que se oculta tras edificios (verificado por VLM: "dos formas hexagonales grandes, semitransparentes y brillantes")
+  - REFLEXIÓN REALISTA: la mayor lámina de agua (lago del VALLE SERENO) pasa de fresnel pintado a un Reflector real (1024 px) con shader propio UltraWater que mezcla el render reflejado (montañas/cielo/edificios) con las olas del agua (perturbación por ruido + fresnel + destello solar); el agua original queda oculta como respaldo (verificado: reflector en escena, base oculta, reflejo del atardecer visible)
+  - LUCES REALISTAS: pool de farolas 6→10 con más alcance; fogonazos con PointLight real (42-56 de intensidad, decae en ~55 ms) que ilumina muros y compañeros al disparar; hemi 0.5→0.62; exposición 1.17
+  - SOMBRAS REALISTAS: caja de sombras 48→40 (más nítidas a 4K) + normalBias 0.028 + radius 2.2; árboles GLB proyectan sombra también en ultra
+  - CIUDAD (ULTRA): asfalto roughness 0.52 + envMapIntensity 1.4 y aceras 0.62/0.9 → calles mojadas reflejando el atardecer
+  - ANTI-LAG: guardia adaptativa updateUltraGuard — si el FPS medio < 38 durante 3,5 s se degrada UNA vez sola (reflector fuera → vuelve el agua animada, bloom 0.4, fogonazo 9 m) con aviso; en el navegador headless (software ~10 fps) se activó correctamente (guardActivo: true)
+- MODO ONLINE 2v2 (v6.2):
+  - net.ts reescrito para multi-conexión: huecos p2(A)/p3(B)/p4(B), lobby en el store, broadcast/difusión dirigida por id de jugador del worker (1v1 conserva el flujo clásico intacto)
+  - LOBBY: el anfitrión crea sala 2v2 SIN arrancar la simulación; los invitados entran y ven la sala (lobbyAck cancela su tiempo de espera de 12 s); 4 huecos con equipos ÁMBAR/VERDE; INICIAR del anfitrión o auto-arranque al 4/4 (cuenta atrás 2,6 s, cancelable si alguien sale); sala llena → roomFull
+  - startDuoMatch: bots desiguales por bando (addBotsPer) para rellenar huecos (2−humanos de cada lado); joins del anfitrión + invitados con equipos fijos → welcome por id → partida para todos
+  - Abandono en partida → leave + bot de reemplazo (fillTeamBot con tope de 2 por bando) — la 2v2 nunca queda desequilibrada
+  - sim.ts: addBotsPer(a,b) + fillTeamBot(team) con conteo de MIEMBROS (bug de la 1ª versión corregido: contaba humanos y permitía 3+); sim-worker: init con botsA/botsB + caso fillBot
+  - Menús: FORMATO DE SALA (1 vs 1 / 2 vs 2) al crear; toggle RELLENAR HUECOS CON BOTS (2v2); chips de bots por bando solo en 1v1; ConnectingScreen con lobby (código + 4 tarjetas de hueco + INICIAR/Esperando); store con roomKind/fillEmptyWithBots/lobby
+  - Fuego amigo OFF (applyDamage ya saltaba aliados), marcador por equipos, spawnEvent dirigido por jugador — verificado con tests
+- VERIFICACIÓN (20/20 tests deterministas bun test-duo-v62.ts): 4 humanos 2+2 · relleno desigual (2 y 3 humanos) · baja→bot de reemplazo y no añade de más · fuego amigo OFF (aliado sin daño/hitConfirm, rival con daño+confirmación) · bajas suman al equipo · welcome data por id
+- REGRESIÓN VERDE: test-armory-v61 33/33 · test-story-give-v61 15/15 · tsc limpio (solo skills/ ajenos) · eslint limpio en tocados (el aviso de boot-screen set-state-in-effect es preexistente e intencional)
+- E2E en build de producción servida local (/Googlecom con serve): menú v6.2 → AJUSTES con botón ULTRA + insignia OPCIONAL (persiste en localStorage) → CREAR SALA → 2 vs 2 → lobby con código 9XQFV + 4 huecos (Capitán (TÚ) en ÁMBAR, 3 libres) → INICIAR 2V2 (1/4) CON BOTS → partida viva con 3 remotos (1 bot ÁMBAR + 2 bots VERDE) + HUD completo + Ronda 1 ÁMBAR vs VERDE + arma P9 bien orientada → lens flare hexagonal al sol → luz de fogonazo decae 50→0 → historia: reflector del lago en escena con agua original oculta y reflejo del atardecer confirmado → 0 errores de consola
+- DESPLIEGUE: build:pages (NEXT_PUBLIC_BASE_PATH=/Googlecom) + rama gh-pages + push main
+
+Stage Summary:
+- v6.2 en https://googlesitecom.github.io/Googlecom/: ULTRA opcional (lens flare del sol, reflejo real del lago, fogonazos con luz, sombras nítidas, calles mojadas) que se degrada solo para no dar lag, y salas ONLINE 2v2 con lobby, bots de relleno y reemplazo al abandonar
+- El 1v1 clásico conserva su flujo intacto; la simulación por equipos y sin fuego amigo ya cubría 4 humanos
+- Pendiente: recomendar al usuario ROTAR el PAT (expuesto en el chat)

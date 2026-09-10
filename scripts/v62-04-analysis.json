@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Basándome en la imagen proporcionada, aquí están las respuestas a tus preguntas:\n\n1.  **¿Se ve el HUD (vida, escudo, munición, dinero, minimapa)?**\n    **No**. La pantalla muestra un mensaje de título (\"EMERGENCY STRIKE\") y una instrucción para omitirlo (\"CLIC O CUALQUIER TECLA PARA OMITIR\"). No se muestran barras de vida, escudo, contadores de munición ni un minimapa en esta captura específica.\n\n2.  **¿Se ve el arma en primera persona?**\n    **Sí**, parcialmente. En el borde inferior central de la pantalla se puede ver lo que parece ser el cañón o parte de una arma de fuego en primera persona.\n\n3.  **¿Se ve un entorno urbano con edificios?**\n    **Sí**. Se observa una carretera asfaltada con líneas blancas, aceras, farolas, árboles y estructuras que parecen ser edificios o casas simples en el fondo, así como contenedores (azul y rojo) a los lados de la calle.\n\n4.  **¿Hay indicador de ronda o equipo (ÁMBAR/VERDE)?**\n    **No**. No hay indicadores visibles de equipos (como ÁMBAR o VERDE) ni de número de ronda. El texto visible es \"EMERGENCY STRIKE\", \"ESTACIÓN MERIDIANO 50 · ZONA DE EXCLUSIÓN TOTAL\" y la instrucción para continuar.\n\n5.  **¿Alguna anomalía visual grave?**\n    **No**. Aunque el estilo gráfico es simple (similar a Roblox o juegos low-poly), no parecen existir anomalías graves como texturas corruptas, fallos de renderizado o artefactos extraños. La escena se ve coherente con su estilo visual.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789063018,
+  "id": "2026091101564565f6ac3708da442d",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026091101564565f6ac3708da442d",
+  "usage": {
+    "completion_tokens": 409,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1156,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1565
+  }
+}

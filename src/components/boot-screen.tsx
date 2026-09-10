@@ -1,7 +1,7 @@
 'use client'
 
 // ============================================================
-// EMERGENCY STRIKE — Pantalla de carga (v6.1)
+// EMERGENCY STRIKE — Pantalla de carga (v6.2)
 // Al abrir la página: 3 segundos exactos, diseño sobrio y
 // fino (militar/táctico): logo con trazo, barra fina de
 // progreso, consejos rotativos y porcentaje.
@@ -92,7 +92,7 @@ export function BootScreen({ onDone }: { onDone: () => void }) {
           <span className="h-px w-10 bg-stone-600" />
         </div>
         <p className="mt-4 text-[10px] font-semibold tracking-[0.4em] text-stone-500 uppercase">
-          Operación Ceniza · v6.1
+          Operación Ceniza · v6.2
         </p>
       </div>
 

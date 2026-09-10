@@ -33,7 +33,6 @@ check('owned derivado', JSON.stringify(p.owned) === JSON.stringify(['p9', 'knife
 console.log('— 2. comprar 2 armas (dinero suficiente) —')
 p.money = 8000
 // colocar al jugador dentro de su zona de compra
-p.x = sim.getMapSpawn?.() ?? 0
 const spawnA = (sim as any).md?.spawnA ?? [0, 0, 60]
 p.x = spawnA[0]; p.z = spawnA[2]
 events.length = 0

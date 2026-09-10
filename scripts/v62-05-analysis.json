@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) **Sí**, HUD completo: vida (100), escudo (0), munición (15/90), dinero ($1000) y minimapa.\n2) **Sí**, arma (P9 Compacto) visible en primera persona y orientada al frente.\n3) **Sí**, marcador de ronda (\"Ronda 1\") y equipos (\"Ámbar\" vs \"Verde\").\n4) **No**, sin anomalías visuales graves.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789063084,
+  "id": "20260911015722530b25580a7946f4",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260911015722530b25580a7946f4",
+  "usage": {
+    "completion_tokens": 99,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1141,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1240
+  }
+}

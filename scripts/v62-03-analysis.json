@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Sí, la imagen muestra exactamente lo que describes. Aquí están los detalles:\n\n**Código de sala:** Sí, se ve un código grande y destacado en color **ÁMBAR/DORADO** que dice: **`9XQFV`** (con un icono de copiar al lado).\n\n**Ranuras de jugadores (4 huecos):** Sí, se ven 4 ranuras organizadas en una cuadrícula 2x2:\n*   **Equipo ÁMBAR (izquierda):**\n    *   1 hueco **OCUPADO**: \"Capitán (TU)\" - EQUIPO ÁMBAR\n    *   1 hueco **LIBRE**: \"HUECO LIBRE\" - EQUIPO ÁMBAR\n*   **Equipo VERDE (derecha):**\n    *   1 hueco **LIBRE**: \"HUECO LIBRE\" - EQUIPO VERDE\n    *   1 hueco **LIBRE**: \"HUECO LIBRE\" - EQUIPO VERDE\n\n**Resumen de ocupación:** Hay **1 ocupado** (el jugador local) y **3 libres** (que se llenarán con bots al iniciar).\n\n**Botón INICIAR:** Sí, hay un botón grande y blanco en la parte inferior que dice: **▶ INICIAR 2V2 (1/4) CON BOTS**.\n\n*(Nota adicional: El texto indica que faltan 3 operadores más y que la sala arrancará automáticamente al llegar a 4/4 jugadores).*",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789062912,
+  "id": "20260911015505a7662f69918a47d6",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260911015505a7662f69918a47d6",
+  "usage": {
+    "completion_tokens": 337,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1125,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1462
+  }
+}

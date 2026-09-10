@@ -343,24 +343,32 @@ export function SettingsPanel() {
         <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] flex items-center gap-2 uppercase border-b border-stone-800 pb-2 mb-3">
           <Gauge className="w-4 h-4" /> Gráficos
         </h4>
-        <div className="grid grid-cols-3 gap-2">
-          {(['baja', 'media', 'alta'] as const).map(q => (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {(['baja', 'media', 'alta', 'ultra'] as const).map(q => (
             <button
               key={q}
               onClick={() => setSettings({ quality: q })}
-              className={`rounded-md py-2.5 font-bold tracking-widest text-[11px] border uppercase transition-colors ${
+              className={`rounded-md py-2.5 font-bold tracking-widest text-[11px] border uppercase transition-colors relative ${
                 settings.quality === q
                   ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
                   : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
               }`}
             >
               {q.toUpperCase()}
+              {q === 'ultra' && (
+                <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-amber-500 text-stone-900 rounded-sm px-1 py-px">
+                  OPCIONAL
+                </span>
+              )}
             </button>
           ))}
         </div>
         <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-          Baja: sombras suaves y sin floritura (máx. FPS) · Media: sombras 2K · Alta: sombras 4K
-          y bloom. La calidad se aplica al iniciar una partida.
+          Baja: máx. FPS · Media: sombras 2K · Alta: sombras 4K y bloom (recomendada).
+          <b className="text-amber-200/70"> ULTRA</b>: luces reales (fogonazos que iluminan),
+          sol con destello de lente, sombras más nítidas, calles mojadas y <b className="text-amber-200/70">reflexión
+          real del agua</b>. No viene activado y, si tu equipo no da abasto, se ajusta solo para no dar lag.
+          Se aplica al iniciar una partida.
         </p>
       </section>
     </div>
@@ -439,6 +447,7 @@ export function InfoPanel() {
 // ============================================================
 type MenuTab = 'desplegar' | 'historia' | 'controles' | 'ajustes' | 'info'
 type PlayMode = 'solo' | 'host' | 'guest'
+type RoomKind = '1v1' | '2v2'
 
 export function MainMenu() {
   const phase = useGame(s => s.phase)
@@ -452,6 +461,9 @@ export function MainMenu() {
   const [fillBots, setFillBots] = useState(0)
   const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
   const [error, setError] = useState('')
+  // v6.2: formato de sala online + relleno de huecos con bots
+  const [roomKind, setRoomKind] = useState<RoomKind>('1v1')
+  const [fillEmpty, setFillEmpty] = useState(true)
 
   if (phase !== 'menu') return null
 
@@ -466,6 +478,9 @@ export function MainMenu() {
       botDifficulty: difficulty,
       fillBots,
       gameMode: forceMode ?? gameMode,
+      roomKind,
+      fillEmptyWithBots: fillEmpty,
+      lobby: null,
       netStatus: 'connecting',
       netError: '',
       story: {
@@ -501,7 +516,7 @@ export function MainMenu() {
               </p>
             </div>
             <div className="hidden sm:flex flex-col items-end gap-1">
-              <span className="text-[10px] font-bold tracking-[0.3em] text-amber-300/70 uppercase">v6.1</span>
+              <span className="text-[10px] font-bold tracking-[0.3em] text-amber-300/70 uppercase">v6.2</span>
               <span className="text-[10px] font-semibold tracking-[0.2em] text-stone-600 uppercase">
                 Three.js · WebRTC · 5 modos
               </span>
@@ -543,7 +558,7 @@ export function MainMenu() {
                 <div className="grid grid-cols-3 gap-2.5">
                   {([
                     { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Escaramuza 4v4 contra IA', meta: 'offline' },
-                    { icon: Users, id: 'host', title: 'CREAR SALA', desc: '1v1 con código P2P', meta: 'online' },
+                    { icon: Users, id: 'host', title: 'CREAR SALA', desc: '1v1 o 2v2 con código P2P', meta: 'online' },
                     { icon: Link2, id: 'guest', title: 'UNIRSE', desc: 'Entra con un código', meta: 'online' },
                   ] as const).map(m => (
                     <button
@@ -606,16 +621,68 @@ export function MainMenu() {
                 )}
                 {mode === 'host' && (
                   <div className="space-y-4">
+                    {/* v6.2: formato de la sala online */}
                     <div>
-                      <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 uppercase">BOTS DE RELLENO (POR BANDO)</p>
-                      <div className="grid grid-cols-4 gap-2">
-                        {[0, 1, 2, 3].map(n => (
-                          <Chip key={n} active={fillBots === n} onClick={() => setFillBots(n)}>
-                            {n === 0 ? 'PURO 1v1' : `${n} vs ${n}`}
-                          </Chip>
+                      <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 flex items-center gap-2 uppercase">
+                        <Users className="w-3.5 h-3.5" /> Formato de sala
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          { id: '1v1', title: '1 vs 1', desc: 'Duelo clásico · entra y juega' },
+                          { id: '2v2', title: '2 vs 2', desc: 'Equipos de 2 · lobby + bots de relleno' },
+                        ] as const).map(k => (
+                          <button
+                            key={k.id}
+                            onClick={() => setRoomKind(k.id)}
+                            className={`rounded-lg border p-2.5 text-left transition-colors ${
+                              roomKind === k.id
+                                ? 'border-amber-500/70 bg-amber-500/[0.07]'
+                                : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                            }`}
+                          >
+                            <div className={`text-[11px] font-bold tracking-wider ${roomKind === k.id ? 'text-white' : 'text-stone-300'}`}>
+                              {k.title}
+                            </div>
+                            <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{k.desc}</div>
+                          </button>
                         ))}
                       </div>
                     </div>
+                    {roomKind === '1v1' ? (
+                      <div>
+                        <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 uppercase">BOTS DE RELLENO (POR BANDO)</p>
+                        <div className="grid grid-cols-4 gap-2">
+                          {[0, 1, 2, 3].map(n => (
+                            <Chip key={n} active={fillBots === n} onClick={() => setFillBots(n)}>
+                              {n === 0 ? 'PURO 1v1' : `${n} vs ${n}`}
+                            </Chip>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setFillEmpty(f => !f)}
+                        className={`w-full flex items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors ${
+                          fillEmpty
+                            ? 'border-amber-500/70 bg-amber-500/[0.07]'
+                            : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                        }`}
+                      >
+                        <div>
+                          <div className={`text-[11px] font-bold tracking-wider ${fillEmpty ? 'text-white' : 'text-stone-300'}`}>
+                            RELLENAR HUECOS CON BOTS
+                          </div>
+                          <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                            Los operadores que falten al iniciar se cubren con IA — la 2v2 nunca queda desequilibrada
+                          </div>
+                        </div>
+                        <span className={`w-10 h-6 rounded-full border flex items-center px-0.5 transition-colors shrink-0 ${
+                          fillEmpty ? 'bg-amber-500/80 border-amber-400' : 'bg-stone-800 border-stone-600'
+                        }`}>
+                          <span className={`w-[18px] h-[18px] rounded-full bg-stone-100 transition-transform ${fillEmpty ? 'translate-x-[16px]' : ''}`} />
+                        </span>
+                      </button>
+                    )}
                     <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LOS BOTS" />
                   </div>
                 )}
@@ -672,16 +739,16 @@ export function MainMenu() {
                 </div>
                 <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
                   <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[10px] mb-2 uppercase flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5" /> Novedades v6.1
+                    <Clock className="w-3.5 h-3.5" /> Novedades v6.2
                   </h4>
                   <ul className="space-y-1.5">
                     {[
+                      'Nuevo: salas 2 vs 2 ONLINE — hasta 4 operadores por código (con lobby)',
+                      'Nuevo: modo gráfico ULTRA opcional — reflejo real del agua, sol con destello, luces y sombras vivas',
+                      'ULTRA no viene activado y se ajusta solo para no dar lag',
                       'Armería con huecos: compra, EQUIPA y elige el hueco de cada arma',
-                      'Dinero sincronizado al instante: cada baja se ve en la tienda',
-                      'Gráficos mejorados también en el modo normal: aves, charcos animados y calles con brillo',
-                      'Audio real: disparos y música en MP3, con volumen ajustable',
                       'OPERACIÓN CENIZA: 6 capítulos (25-30 min) en el VALLE SERENO con cinemáticas',
-                      'Multijugador P2P reforzado (reintentos y reconexión)',
+                      'Audio real: disparos y música en MP3, con volumen ajustable',
                     ].map(t => (
                       <li key={t} className="text-stone-400 text-[11px] leading-snug flex gap-2">
                         <span className="text-amber-400/70 mt-0.5">·</span> {t}
@@ -859,13 +926,40 @@ function DifficultyPicker({ difficulty, setDifficulty, label }: {
 
 // ============================================================
 // Pantalla de conexión (contextual por modo, con sala visible)
+// v6.2: en 2v2 muestra el LOBBY con los 4 huecos; el anfitrión
+// inicia la partida (o arranca sola al llenarse 4/4)
 // ============================================================
+function LobbySlotCard({ name, team, you }: { name: string | null; team: 'A' | 'B'; you?: boolean }) {
+  const amber = team === 'A'
+  return (
+    <div className={`rounded-md border px-3 py-2.5 flex items-center gap-2.5 ${
+      name
+        ? amber ? 'border-amber-500/50 bg-amber-500/[0.08]' : 'border-emerald-600/50 bg-emerald-600/[0.08]'
+        : 'border-stone-800 bg-stone-950/60'
+    }`}>
+      <span className={`w-2 h-2 rounded-full shrink-0 ${name ? (amber ? 'bg-amber-400' : 'bg-emerald-400') : 'bg-stone-700'}`} />
+      <div className="min-w-0">
+        <div className={`text-xs font-bold tracking-wider truncate ${name ? 'text-stone-100' : 'text-stone-600'}`}>
+          {name ?? 'HUECO LIBRE'}
+          {you && <span className="text-amber-300/80 ml-1.5 text-[9px] tracking-[0.2em]">(TÚ)</span>}
+        </div>
+        <div className={`text-[9px] font-bold tracking-[0.25em] ${amber ? 'text-amber-300/60' : 'text-emerald-300/60'}`}>
+          {amber ? 'EQUIPO ÁMBAR' : 'EQUIPO VERDE'}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ConnectingScreen() {
   const phase = useGame(s => s.phase)
   const mode = useGame(s => s.mode)
   const roomCode = useGame(s => s.roomCode)
   const netStatus = useGame(s => s.netStatus)
   const netError = useGame(s => s.netError)
+  const roomKind = useGame(s => s.roomKind)
+  const lobby = useGame(s => s.lobby)
+  const playerName = useGame(s => s.playerName)
   const [copied, setCopied] = useState(false)
   if (phase !== 'connecting') return null
 
@@ -875,6 +969,15 @@ export function ConnectingScreen() {
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)
   }
+
+  // v6.2: lobby de la sala 2v2 (anfitrión esperando / invitado dentro)
+  const inDuoLobby = roomKind === '2v2' && netStatus === 'waiting' && lobby
+  const duoPlayers = lobby?.players ?? []
+  const slotFor = (id: string, team: 'A' | 'B') => {
+    const p = duoPlayers.find(x => x.id === id)
+    return <LobbySlotCard key={id} name={p?.name ?? null} team={team} you={p?.name === playerName} />
+  }
+  const humans = duoPlayers.length
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 px-4">
@@ -890,6 +993,63 @@ export function ConnectingScreen() {
           >
             Volver al menú
           </Button>
+        </div>
+      ) : inDuoLobby ? (
+        <div className="relative w-[min(560px,94vw)] space-y-5">
+          <div className="text-center space-y-2">
+            {mode === 'host' ? (
+              <>
+                <p className="text-white text-lg font-bold tracking-[0.25em] uppercase">Sala 2v2 táctica</p>
+                <button
+                  onClick={copyCode}
+                  className="inline-flex items-center gap-3 px-6 py-2.5 rounded-md border border-amber-500/50 bg-amber-500/[0.07] hover:bg-amber-500/[0.14] transition-colors group"
+                  title="Copiar código"
+                >
+                  <span className="text-amber-200 text-3xl font-bold tracking-[0.3em]">{roomCode}</span>
+                  {copied
+                    ? <Check className="w-5 h-5 text-emerald-400" />
+                    : <Copy className="w-5 h-5 text-stone-500 group-hover:text-amber-300" />}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-white text-lg font-bold tracking-[0.25em] uppercase">En la sala 2v2</p>
+                <p className="text-amber-200 text-2xl font-bold tracking-[0.3em]">{roomCode}</p>
+              </>
+            )}
+            <p className="text-stone-500 text-[11px]">
+              OPERADORES {humans}/4 — los huecos libres se cubren con bots{mode === 'host' ? ' al iniciar' : ''}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            {slotFor('p1', 'A')}
+            {slotFor('p2', 'A')}
+            {slotFor('p3', 'B')}
+            {slotFor('p4', 'B')}
+          </div>
+
+          {mode === 'host' ? (
+            <button
+              onClick={() => getGame()?.net.startDuoMatch()}
+              className="group w-full py-3.5 rounded-md font-bold text-base tracking-[0.28em] uppercase transition-all
+                bg-stone-100 text-stone-900 hover:bg-amber-200 active:scale-[0.99]
+                flex items-center justify-center gap-3"
+            >
+              <Play className="w-5 h-5" />
+              {humans >= 4 ? 'Iniciar partida 2v2' : `Iniciar 2v2 (${humans}/4) con bots`}
+            </button>
+          ) : (
+            <div className="flex items-center justify-center gap-3 text-stone-400">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <p className="text-sm">Esperando a que el anfitrión inicie la partida…</p>
+            </div>
+          )}
+          <p className="text-stone-600 text-[10px] text-center leading-relaxed">
+            {mode === 'host'
+              ? 'Comparte el código: hasta 3 operadores más. La sala arranca sola al llegar a 4/4.'
+              : 'ÁMBAR = tu anfitrión va contigo · VERDE = el equipo rival.'}
+          </p>
         </div>
       ) : (
         <div className="relative text-center space-y-6">
@@ -936,7 +1096,7 @@ export function ConnectingScreen() {
               </p>
             </div>
           )}
-          <div className="text-stone-700 text-[10px] font-bold tracking-[0.3em] uppercase">Emergency Strike · v6.1</div>
+          <div className="text-stone-700 text-[10px] font-bold tracking-[0.3em] uppercase">Emergency Strike · v6.2</div>
         </div>
       )}
     </div>

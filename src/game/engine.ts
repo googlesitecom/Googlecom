@@ -7,6 +7,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js'
+import { Reflector } from 'three/addons/objects/Reflector.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
@@ -34,6 +36,9 @@ interface Ping { x: number; z: number; t: number }
 interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
 
 interface WeaponRuntime { mag: number; reserve: number }
+
+/** niveles de calidad gráfica (v6.2: ULTRA opcional, desactivado por defecto) */
+type Quality = 'baja' | 'media' | 'alta' | 'ultra'
 
 interface BarrelView {
   mesh: THREE.Mesh
@@ -214,6 +219,15 @@ export class Game {
   private birdPhase: number[] = []
   private skyUniforms: { uSunDir: { value: THREE.Vector3 } } | null = null
 
+  // ---- v6.2: modo ULTRA (luces/sol/sombras/reflejos realistas) ----
+  private waterMeshes: THREE.Mesh[] = []      // superficies de agua (para elegir la mayor)
+  private ultraReflector: Reflector | null = null
+  private ultraReflectorBase: THREE.Mesh | null = null // agua original (se restaura si ULTRA se degrada)
+  private muzzleLight: THREE.PointLight | null = null  // luz real del fogonazo
+  private ultraScaled = false                 // el guardia de FPS ya redujo ULTRA
+  private lowFpsMs = 0
+  private ultraBloom: UnrealBloomPass | null = null
+
   // pociones visibles
   private pickupViews = new Map<string, PickupView>()
 
@@ -292,11 +306,12 @@ export class Game {
       antialias: quality !== 'baja',
       powerPreference: 'high-performance',
     })
-    this.renderer.setPixelRatio(quality === 'alta' ? Math.min(devicePixelRatio, 2) : quality === 'media' ? Math.min(devicePixelRatio, 1.5) : 1)
+    this.renderer.setPixelRatio(quality === 'ultra' || quality === 'alta' ? Math.min(devicePixelRatio, 2) : quality === 'media' ? Math.min(devicePixelRatio, 1.5) : 1)
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.12
+    // ULTRA: exposición apenas más cálida (más presencia de las luces)
+    this.renderer.toneMappingExposure = quality === 'ultra' ? 1.17 : 1.12
     this.renderer.shadowMap.enabled = quality !== 'baja'
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
@@ -311,9 +326,12 @@ export class Game {
     this.buildLights(quality)
     this.buildMap(quality)
     this.buildAmbience(quality)
-    if (this.mapId === 'ciudad') this.buildStreets()
+    if (this.mapId === 'ciudad') this.buildStreets(quality)
     if (this.mapId !== 'instalacion') this.buildObjectives()
     this.buildMinimapStatic()
+    // v6.2: extras de ULTRA (destello de sol, reflejo real del agua, luz de
+    // fogonazo) — OPCIONAL, solo si el jugador lo activó en AJUSTES
+    if (quality === 'ultra') this.buildUltraFX()
 
     // assets del usuario (GLB de armas + texturas; árboles solo en la ciudad
     // → carga perezosa según el modo): se cargan en segundo plano y se
@@ -347,12 +365,13 @@ export class Game {
     this.camera.add(this.vmHolder)
     this.setWeapon('p9', true)
 
-    // post-proceso: bloom de neones y fogonazos (solo en calidad alta)
-    if (quality === 'alta') {
+    // post-proceso: bloom de neones y fogonazos (calidad alta y ULTRA)
+    if (quality === 'alta' || quality === 'ultra') {
       this.composer = new EffectComposer(this.renderer)
       this.composer.addPass(new RenderPass(this.scene, this.camera))
-      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.42, 0.7, 0.88)
+      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), quality === 'ultra' ? 0.55 : 0.42, 0.7, 0.88)
       this.composer.addPass(bloom)
+      this.ultraBloom = quality === 'ultra' ? bloom : null
       this.composer.addPass(new OutputPass())
     }
 
@@ -521,27 +540,33 @@ export class Game {
     pmrem.dispose()
   }
 
-  private buildLights(quality: 'baja' | 'media' | 'alta'): void {
+  private buildLights(quality: Quality): void {
     const sun = new THREE.DirectionalLight(0xffdcae, 2.6)
     sun.position.set(52, 58, -40)
     if (quality !== 'baja') {
       sun.castShadow = true
-      sun.shadow.mapSize.set(quality === 'alta' ? 4096 : 2048, quality === 'alta' ? 4096 : 2048)
+      sun.shadow.mapSize.set(quality === 'alta' || quality === 'ultra' ? 4096 : 2048, quality === 'alta' || quality === 'ultra' ? 4096 : 2048)
       // la cámara de sombras sigue al jugador → sombras detalladas donde importa
-      sun.shadow.camera.left = -48
-      sun.shadow.camera.right = 48
-      sun.shadow.camera.top = 48
-      sun.shadow.camera.bottom = -48
+      // ULTRA: caja 20 % más estrecha → sombras más nítidas a la misma 4K
+      const box = quality === 'ultra' ? 40 : 48
+      sun.shadow.camera.left = -box
+      sun.shadow.camera.right = box
+      sun.shadow.camera.top = box
+      sun.shadow.camera.bottom = -box
       sun.shadow.camera.near = 4
       sun.shadow.camera.far = 260
       sun.shadow.bias = -0.00035
-      sun.shadow.normalBias = 0.035
+      sun.shadow.normalBias = quality === 'ultra' ? 0.028 : 0.035
+      // ULTRA: radios del filtro PCF suave más finos (contactos marcados)
+      if (quality === 'ultra') {
+        sun.shadow.radius = 2.2
+      }
     }
     this.scene.add(sun)
     this.scene.add(sun.target)
     this.sunLight = sun
 
-    const hemi = new THREE.HemisphereLight(0x9db4d0, 0x8a6a4a, 0.5)
+    const hemi = new THREE.HemisphereLight(0x9db4d0, 0x8a6a4a, quality === 'ultra' ? 0.62 : 0.5)
     this.scene.add(hemi)
 
     // relleno cálido del atardecer desde el oeste
@@ -619,7 +644,196 @@ export class Game {
     return this.waterMat
   }
 
-  private buildAmbience(quality: 'baja' | 'media' | 'alta'): void {
+  // ----------------------------------------------------------
+  // v6.2 — MODO ULTRA (OPCIONAL, desactivado por defecto)
+  // Luces · sol · sombras · reflejos realistas. Todo se construye solo
+  // si el jugador activó ULTRA, y un guardia de FPS lo degrada solo si
+  // hace falta (por eso ULTRA no causa lag sostenido).
+  // ----------------------------------------------------------
+  private buildUltraFX(): void {
+    // ---- 1) SOL REALISTA: destello de lente (lens flare) dinámico —
+    // parpadea al asomarse entre edificios, como una cámara real ----
+    const sunDir = new THREE.Vector3(0.62, 0.47, -0.48).normalize()
+    const anchor = new THREE.Object3D()
+    anchor.position.copy(sunDir).multiplyScalar(299)
+    const flare = new Lensflare()
+    const haloTex = this.makeFlareTexture(0, 'rgba(255,255,255,1)', 0.55)
+    const hexTexA = this.makeFlareTexture(6, 'rgba(255,190,120,0.9)', 0.35)
+    const hexTexB = this.makeFlareTexture(6, 'rgba(140,190,255,0.55)', 0.3)
+    const dotTex = this.makeFlareTexture(0, 'rgba(255,220,170,0.9)', 0.5)
+    flare.addElement(new LensflareElement(haloTex, 340, 0, new THREE.Color(0xffe0b0)))
+    flare.addElement(new LensflareElement(hexTexA, 70, 0.28))
+    flare.addElement(new LensflareElement(dotTex, 46, 0.46))
+    flare.addElement(new LensflareElement(hexTexB, 110, 0.62))
+    flare.addElement(new LensflareElement(dotTex, 28, 0.8))
+    flare.addElement(new LensflareElement(hexTexA, 160, 1.0, new THREE.Color(0xffd9a6)))
+    anchor.add(flare)
+    this.scene.add(anchor)
+
+    // ---- 2) REFLEXIÓN REALISTA: el lago (mayor lámina de agua) pasa de
+    // «cielo pintado por fresnel» a un REFLECTOR de verdad: la escena se
+    // renderiza reflejada (montañas, cielo, edificios) y se mezcla con
+    // las olas del shader de agua. 1024 px: coste contenido. ----
+    if (this.waterMeshes.length && this.md.water.length) {
+      let best = 0
+      let bestArea = -1
+      for (let i = 0; i < this.md.water.length; i++) {
+        const w = this.md.water[i]
+        const area = w.w * w.d
+        if (area > bestArea) { bestArea = area; best = i }
+      }
+      const w = this.md.water[best]
+      if (w.w * w.d >= 180) { // solo en láminas grandes se aprecia
+        const noiseTex = makeWaterNoiseTexture()
+        noiseTex.repeat.set(3, 3)
+        const shader = {
+          name: 'UltraWater',
+          uniforms: {
+            color: { value: null },
+            tDiffuse: { value: null },
+            textureMatrix: { value: null },
+            uTime: { value: 0 },
+            uNoise: { value: noiseTex },
+            uSunDir: { value: sunDir.clone() },
+          },
+          vertexShader: /* glsl */`
+            uniform mat4 textureMatrix;
+            varying vec4 vUvR;
+            varying vec2 vUv;
+            varying vec3 vWorldPos;
+            void main() {
+              vUv = uv;
+              vUvR = textureMatrix * vec4(position, 1.0);
+              vec4 wp = modelMatrix * vec4(position, 1.0);
+              vWorldPos = wp.xyz;
+              gl_Position = projectionMatrix * viewMatrix * wp;
+            }
+          `,
+          fragmentShader: /* glsl */`
+            uniform sampler2D tDiffuse;
+            uniform float uTime;
+            uniform sampler2D uNoise;
+            uniform vec3 uSunDir;
+            varying vec4 vUvR;
+            varying vec2 vUv;
+            varying vec3 vWorldPos;
+            const vec3 DEEP = vec3(0.045, 0.110, 0.135);
+            const vec3 SHALLOW = vec3(0.130, 0.310, 0.330);
+            void main() {
+              vec3 viewDir = normalize(cameraPosition - vWorldPos);
+              vec2 uv1 = vUv * 2.2 + vec2(uTime * 0.014, uTime * 0.009);
+              vec2 uv2 = vUv * 3.6 - vec2(uTime * 0.011, uTime * 0.017);
+              float n1 = texture2D(uNoise, uv1).r;
+              float n2 = texture2D(uNoise, uv2).r;
+              vec3 n = normalize(vec3((n1 - 0.5) * 0.55, 1.0, (n2 - 0.5) * 0.55));
+              // reflejo REAL (render target del Reflector) perturbado por olas
+              vec2 perturb = (vec2(n1, n2) - 0.5) * 0.07 * vUvR.w;
+              vec4 refl = texture2DProj(tDiffuse, vUvR + vec4(perturb, 0.0, 0.0));
+              // base del agua + fresnel (rasante refleja MUCHO: espejo)
+              vec3 base = mix(DEEP, SHALLOW, 0.25 + 0.65 * n1);
+              float fres = pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
+              float rf = clamp(0.18 + fres * 1.7, 0.0, 0.92);
+              vec3 col = mix(base, refl.rgb, rf);
+              // destello solar sobre la ola
+              vec3 reflDir = reflect(-viewDir, n);
+              float spec = pow(max(dot(reflDir, uSunDir), 0.0), 160.0);
+              col += vec3(1.0, 0.72, 0.45) * spec * 2.2;
+              col += vec3(1.0, 0.72, 0.45) * 0.12 * smoothstep(0.60, 0.82, n1 * (0.75 + 0.25 * n2));
+              gl_FragColor = vec4(col, 0.94);
+            }
+          `,
+        }
+        const reflector = new Reflector(new THREE.PlaneGeometry(w.w, w.d), {
+          textureWidth: 1024,
+          textureHeight: 1024,
+          clipBias: 0.003,
+          shader: shader as unknown as { uniforms: Record<string, THREE.IUniform>; vertexShader: string; fragmentShader: string },
+        })
+        reflector.rotation.x = -Math.PI / 2
+        reflector.position.set(w.x, 0.055, w.z)
+        ;(reflector.material as THREE.ShaderMaterial).transparent = true
+        ;(reflector.material as THREE.ShaderMaterial).uniforms.uTime.value = 0
+        ;(reflector.material as THREE.ShaderMaterial).uniforms.uNoise.value = noiseTex
+        ;(reflector.material as THREE.ShaderMaterial).uniforms.uSunDir.value = sunDir
+        this.scene.add(reflector)
+        this.ultraReflector = reflector
+        // ocultar la lámina de agua original (queda como respaldo si ULTRA se degrada)
+        this.ultraReflectorBase = this.waterMeshes[best] ?? null
+        if (this.ultraReflectorBase) this.ultraReflectorBase.visible = false
+      }
+    }
+
+    // ---- 3) LUCES REALISTAS: fogonazos que ILUMINAN de verdad —
+    // un PointLight reutilizable que salta a cada disparo y se apaga
+    // solo (los disparos del jugador iluminan muros y compañeros) ----
+    this.muzzleLight = new THREE.PointLight(0xffb46a, 0, 15, 2)
+    this.scene.add(this.muzzleLight)
+  }
+
+  /** textura de un elemento del lens flare: halo suave o hexágono de diafragma */
+  private makeFlareTexture(sides: number, core: string, alpha: number): THREE.Texture {
+    const c = document.createElement('canvas')
+    c.width = c.height = 128
+    const ctx = c.getContext('2d')!
+    const cx = 64, cy = 64
+    if (sides >= 3) {
+      // hexágono de diafragma con núcleo brillante
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 60)
+      g.addColorStop(0, core.replace(/[\d.]+\)$/, `${alpha})`))
+      g.addColorStop(1, 'rgba(255,255,255,0)')
+      ctx.fillStyle = g
+      ctx.beginPath()
+      for (let i = 0; i < sides; i++) {
+        const a = (i / sides) * Math.PI * 2 - Math.PI / 2
+        const r = i === 0 ? 62 : 56
+        if (i === 0) ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r)
+        else ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r)
+      }
+      ctx.closePath()
+      ctx.fill()
+      ctx.strokeStyle = core.replace(/[\d.]+\)$/, `${Math.min(1, alpha + 0.25)})`)
+      ctx.lineWidth = 3
+      ctx.stroke()
+    } else {
+      // halo radial suave
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 62)
+      g.addColorStop(0, core.replace(/[\d.]+\)$/, `${Math.min(1, alpha + 0.3)})`))
+      g.addColorStop(0.45, core.replace(/[\d.]+\)$/, `${alpha * 0.6})`))
+      g.addColorStop(1, 'rgba(255,255,255,0)')
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, 128, 128)
+    }
+    const tex = new THREE.CanvasTexture(c)
+    tex.colorSpace = THREE.SRGBColorSpace
+    return tex
+  }
+
+  // ----------------------------------------------------------
+  // v6.2: guardia de FPS del modo ULTRA — si el equipo no da abasto,
+  // se quitan las piezas caras (reflejo del lago, bloom fuerte, luces
+  // extra) para mantener la fluidez. Solo actúa UNA vez.
+  // ----------------------------------------------------------
+  private updateUltraGuard(dt: number, fps: number): void {
+    if (this.ultraScaled || !this.muzzleLight && !this.ultraReflector && !this.ultraBloom) return
+    if (fps > 0 && fps < 38) this.lowFpsMs += dt * 1000
+    else if (this.lowFpsMs > 0) this.lowFpsMs = Math.max(0, this.lowFpsMs - dt * 400)
+    if (this.lowFpsMs < 3500) return
+    this.ultraScaled = true
+    // 1) reflejo del lago fuera → vuelve el agua animada (coste ~0)
+    if (this.ultraReflector) {
+      this.scene.remove(this.ultraReflector)
+      this.ultraReflector.dispose?.()
+      this.ultraReflector = null
+      if (this.ultraReflectorBase) this.ultraReflectorBase.visible = true
+    }
+    // 2) bloom de vuelta al nivel de ALTA
+    if (this.ultraBloom) this.ultraBloom.strength = 0.4
+    // 3) menos fogonazos con luz
+    if (this.muzzleLight) this.muzzleLight.distance = 9
+    useGame.getState().addAnnouncement('Gráficos ULTRA ajustados automáticamente para mantener los FPS', 'info')
+  }
+
+  private buildAmbience(quality: Quality): void {
     // --- nubes: billboards altos a la deriva (12 sprites) ---
     const cloudTex = makeCloudTexture()
     for (let i = 0; i < 12; i++) {
@@ -640,6 +854,7 @@ export class Game {
     // --- agua animada (río/lago/fuente del valle) ---
     if (this.md.water.length) {
       this.ensureWaterMaterial()
+      this.waterMeshes = []
       for (const w of this.md.water) {
         const segs = Math.max(2, Math.round(w.w / 6))
         const segsZ = Math.max(2, Math.round(w.d / 6))
@@ -649,6 +864,7 @@ export class Game {
         mesh.position.set(w.x, 0.052, w.z)
         this.scene.add(mesh)
         this.mapMeshes.push(mesh)
+        this.waterMeshes.push(mesh)
       }
     }
 
@@ -694,7 +910,7 @@ export class Game {
     }
   }
 
-  private buildMap(quality: 'baja' | 'media' | 'alta'): void {
+  private buildMap(quality: Quality): void {
     const texs = makeWorldTextures()
     const map = this.md
 
@@ -784,7 +1000,7 @@ export class Game {
     this.buildContactShadows()
 
     // ---- decoración: árboles, farolas, neones, charcos, neumáticos ----
-    this.buildDecor(texs)
+    this.buildDecor(texs, quality)
 
     // ---- mecánicas del mapa: tirolinas y plataformas ----
     // (v5: el pasto, arbustos y flores del suelo se ELIMINARON a petición
@@ -876,7 +1092,7 @@ export class Game {
   }
 
   /** Decoración sin colisión: árboles, farolas con luz, neones, charcos reflectantes */
-  private buildDecor(texs: Record<MatKey, THREE.Texture>): void {
+  private buildDecor(texs: Record<MatKey, THREE.Texture>, quality: Quality): void {
     // --- árboles (tronco con colisión ya está en el mapa) ---
     // (se agrupan para poder sustituirlos por el Arbol.glb al cargar)
     this.procTrees = new THREE.Group()
@@ -923,9 +1139,9 @@ export class Game {
       glow.scale.setScalar(1.6)
       this.scene.add(glow)
     }
-    const nLampLights = Math.min(6, this.md.lamps.length)
+    const nLampLights = Math.min(quality === 'ultra' ? 10 : 6, this.md.lamps.length)
     for (let i = 0; i < nLampLights; i++) {
-      const light = new THREE.PointLight(0xffc477, 26, 16, 1.9)
+      const light = new THREE.PointLight(0xffc477, quality === 'ultra' ? 30 : 26, quality === 'ultra' ? 18 : 16, 1.9)
       light.position.set(this.md.lamps[i][0], 4.85, this.md.lamps[i][1])
       this.scene.add(light)
       this.lampLights.push(light)
@@ -1067,11 +1283,14 @@ export class Game {
   // ----------------------------------------------------------
   // CALLES URBANAS (asfalto + líneas + aceras) — look Warzone
   // ----------------------------------------------------------
-  private buildStreets(): void {
+  private buildStreets(quality: Quality): void {
     // v6.1: asfalto y aceras menos mates (brillo húmedo del atardecer por
     // el mapa de entorno PBR — coste 0, solo parámetros del material)
-    const asphalt = new THREE.MeshStandardMaterial({ color: 0x2b2e32, roughness: 0.7, metalness: 0.08, envMapIntensity: 0.85 })
-    const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: 0.78, envMapIntensity: 0.55 })
+    // v6.2 ULTRA: asfalto aún más pulido — las calles reflejan el atardecer
+    // como después de la lluvia (solo cambia roughness/envMap del material)
+    const ultra = quality === 'ultra'
+    const asphalt = new THREE.MeshStandardMaterial({ color: 0x2b2e32, roughness: ultra ? 0.52 : 0.7, metalness: ultra ? 0.14 : 0.08, envMapIntensity: ultra ? 1.4 : 0.85 })
+    const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: ultra ? 0.62 : 0.78, envMapIntensity: ultra ? 0.9 : 0.55 })
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8d8c8 })
     // alturas escalonadas para evitar z-fighting con el terreno (mm → cm)
     const Y_ASPHALT = 0.03
@@ -1299,9 +1518,9 @@ export class Game {
       const mat = this.skyMesh.material as THREE.MeshBasicMaterial
       mat.map = cielo
       mat.needsUpdate = true
-      // re-generar el entorno PBR con el cielo nuevo (solo en calidad alta:
+      // re-generar el entorno PBR con el cielo nuevo (solo en calidad alta/ULTRA:
       // el PMREM en rendering por software puede tardar muchísimo)
-      if (quality === 'alta') {
+      if (quality === 'alta' || quality === 'ultra') {
         try {
           const pmrem = new THREE.PMREMGenerator(this.renderer)
           const envScene = new THREE.Scene()
@@ -1357,7 +1576,7 @@ export class Game {
         this.procTrees.remove(c)
       }
       // número de árboles según calidad (el modelo es detallado: ~12k tris)
-      const count = quality === 'alta' ? this.md.trees.length : quality === 'media' ? Math.min(this.md.trees.length, 28) : Math.min(this.md.trees.length, 16)
+      const count = quality === 'ultra' || quality === 'alta' ? this.md.trees.length : quality === 'media' ? Math.min(this.md.trees.length, 28) : Math.min(this.md.trees.length, 16)
       const s = 9.5 / tree.rawHeight
       // hornear las transformaciones de todos los árboles en UNA geometría por
       // material (4 draw calls, sin instancing: el combo instancing+alphaTest
@@ -1384,7 +1603,7 @@ export class Game {
         const merged = mergeGeometries(geos, false)
         if (!merged) continue
         const mesh = new THREE.Mesh(merged, part.mat)
-        mesh.castShadow = quality === 'alta'
+        mesh.castShadow = quality === 'ultra' || quality === 'alta'
         mesh.receiveShadow = false
         mesh.frustumCulled = false   // geometría gigante: no dejar que el frustum la descarte entera
         this.scene.add(mesh)
@@ -1764,8 +1983,11 @@ export class Game {
       c.position.x += this.cloudSpeeds[i] * dt
       if (c.position.x > 170) c.position.x = -170
     }
-    // agua: reloj del shader
+    // agua: reloj del shader (y del reflejo ULTRA del lago)
     if (this.waterMat) this.waterMat.uniforms.uTime.value = t
+    if (this.ultraReflector) {
+      ;(this.ultraReflector.material as THREE.ShaderMaterial).uniforms.uTime.value = t
+    }
     // polvo: deriva lenta + envolvimiento alrededor de la cámara
     if (this.dust && this.dustVel) {
       const pos = this.dust.geometry.attributes.position as THREE.BufferAttribute
@@ -1883,6 +2105,13 @@ export class Game {
       useGame.getState().setHud({ fps: fpsNow })
       this.fpsFrames = 0
       this.fpsT = t
+      // v6.2: guardia del modo ULTRA (se degrada UNA vez si hace falta)
+      this.updateUltraGuard(1, fpsNow)
+    }
+
+    // v6.2: luz del fogonazo (ULTRA) — se apaga sola en ~80 ms
+    if (this.muzzleLight && this.muzzleLight.intensity > 0) {
+      this.muzzleLight.intensity = Math.max(0, this.muzzleLight.intensity - dt * 900)
     }
 
     if (this.composer) this.composer.render()
@@ -2510,6 +2739,11 @@ export class Game {
     this.audio.gunshot(w.sound, 0)
     const mzl = this.muzzleWorld()
     this.effects.muzzleFlash(mzl, this.weapon === 'awp338' ? 1.6 : this.weapon === 'breacher' ? 1.3 : 1)
+    // v6.2 ULTRA: el disparo ILUMINA de verdad (luz puntual que se apaga sola)
+    if (this.muzzleLight) {
+      this.muzzleLight.position.copy(mzl)
+      this.muzzleLight.intensity = 42 + Math.random() * 14
+    }
     // casquillo
     if (this.vmMuzzle) {
       const ejectPos = mzl.clone().addScaledVector(forward, -0.25)

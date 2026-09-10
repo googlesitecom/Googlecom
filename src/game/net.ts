@@ -1,7 +1,9 @@
 // ============================================================
 // EMERGENCY STRIKE — Cliente de red
 // - solo:  simulación local con bots (sin servidor)
-// - host:  simulación local + sala 1v1 por PeerJS (P2P)
+// - host:  simulación local + sala P2P por PeerJS
+//          · 1v1: un invitado, entra directo a la partida
+//          · 2v2: hasta 3 invitados + lobby + inicio del anfitrión
 // - guest: se conecta a la sala del anfitrión por PeerJS
 // ============================================================
 import { Peer, type DataConnection } from 'peerjs'
@@ -9,10 +11,12 @@ import type { Game } from './engine'
 import { useGame } from './store'
 import {
   GAME, generateRoomCode, peerIdForRoom,
-  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId,
+  type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId, type Team,
 } from './shared'
 
 export type NetMode = 'solo' | 'host' | 'guest'
+/** v6.2: formato de sala online */
+export type RoomKind = '1v1' | '2v2'
 
 export interface ConnectOpts {
   mode: NetMode
@@ -20,6 +24,19 @@ export interface ConnectOpts {
   fillBots?: number
   difficulty?: BotDifficulty
   gameMode?: GameMode
+  /** v6.2 */
+  roomKind?: RoomKind
+  fillEmpty?: boolean
+}
+
+/** hueco de invitado en la sala 2v2 (identidad + canal + cola de salida) */
+interface GuestSlot {
+  id: string              // 'p2' | 'p3' | 'p4'
+  team: Team              // p2→A (aliado del anfitrión), p3/p4→B
+  conn: DataConnection | null
+  name: string
+  joined: boolean         // recibió el 'join'
+  outbox: PeerMsg[]
 }
 
 /** servidores STUN públicos para atravesar NAT (fiabilidad P2P) */
@@ -63,6 +80,10 @@ export class NetClient {
 
   connect(name: string, opts: ConnectOpts): void {
     this.mode = opts.mode
+    this.roomKind = opts.roomKind ?? '1v1'
+    this.fillEmpty = opts.fillEmpty ?? true
+    this.duoDifficulty = opts.difficulty ?? 'normal'
+    this.duoGameMode = opts.gameMode ?? 'escaramuza'
     const s = useGame.getState()
     s.setPhase('connecting')
     s.setHud({ netStatus: 'connecting', netError: '', ping: 0 })
@@ -72,7 +93,7 @@ export class NetClient {
     if (opts.mode === 'solo') {
       this.connectSolo(name, opts.difficulty ?? 'normal', gameMode)
     } else if (opts.mode === 'host') {
-      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0, gameMode)
+      this.connectHost(name, opts.roomCode || generateRoomCode(), opts.fillBots ?? 0, opts.difficulty ?? 'normal', 0, gameMode, opts.roomKind ?? '1v1', opts.fillEmpty ?? true)
     } else {
       this.connectGuest(name, opts.roomCode ?? '')
     }
@@ -83,7 +104,7 @@ export class NetClient {
   // ------------------------------------------------------------
   // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
   // ------------------------------------------------------------
-  private startSimWorker(difficulty: BotDifficulty, bots: number, gameMode: GameMode): void {
+  private startSimWorker(difficulty: BotDifficulty, bots: number, gameMode: GameMode, botsA?: number, botsB?: number): void {
     const worker = new Worker(new URL('./sim-worker.ts', import.meta.url))
     this.worker = worker
     worker.onmessage = (ev: MessageEvent) => {
@@ -92,10 +113,25 @@ export class NetClient {
       if (!msg || typeof msg.e !== 'string') return
       // entregar localmente (broadcast o dirigido al anfitrión)
       if (!msg.to || msg.to === HOST_ID) this.dispatchLocal(msg.e, msg.d)
-      // reenviar al invitado P2P (broadcast o dirigido a él)
-      if (!msg.to || msg.to === GUEST_ID) this.forwardToGuest({ e: msg.e, d: msg.d })
+      // reenviar a los invitados P2P:
+      // 1v1 → un solo canal; 2v2 → broadcast o dirigido por id de jugador
+      if (this.roomKind === '2v2') {
+        if (!msg.to) {
+          for (const g of this.duoSlots) this.sendToSlot(g, { e: msg.e, d: msg.d })
+        } else if (msg.to !== HOST_ID) {
+          const g = this.duoSlots.find(s => s.id === msg.to)
+          if (g) this.sendToSlot(g, { e: msg.e, d: msg.d })
+        }
+      } else {
+        if (!msg.to || msg.to === GUEST_ID) this.forwardToGuest({ e: msg.e, d: msg.d })
+      }
     }
-    this.sendToSim({ e: 'init', d: { difficulty, bots, mode: gameMode, mapId: this.mapId } })
+    this.sendToSim({
+      e: 'init',
+      d: botsA !== undefined || botsB !== undefined
+        ? { difficulty, bots, mode: gameMode, mapId: this.mapId, botsA, botsB }
+        : { difficulty, bots, mode: gameMode, mapId: this.mapId },
+    })
   }
 
   private sendToSim(msg: unknown): void {
@@ -127,22 +163,45 @@ export class NetClient {
   }
 
   // ------------------------------------------------------------
-  // MODO ANFITRIÓN — sala 1v1 por PeerJS + worker
+  // MODO ANFITRIÓN — sala P2P por PeerJS + worker
+  // · 1v1: un solo invitado, entra directo (comportamiento clásico)
+  // · 2v2: hasta 3 invitados con LOBBY; el anfitrión inicia la partida
+  //   (los huecos vacíos se rellenan con bots si así se configura)
   // ------------------------------------------------------------
-  private connectHost(name: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode): void {
+  private connectHost(name: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode, kind: RoomKind, fillEmpty: boolean): void {
     this.id = HOST_ID
+    this.roomKind = kind
+    this.fillEmpty = fillEmpty
+    this.duoDifficulty = difficulty
+    this.duoGameMode = gameMode
+    this.hostName = name
     // sincronizar el código de sala con el store (puede haberse regenerado)
     if (useGame.getState().roomCode !== code) useGame.getState().setHud({ roomCode: code })
-    this.startSimWorker(difficulty, fill, gameMode)
-    this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
-    useGame.getState().setHud({ netStatus: 'waiting' })
+
+    if (kind === '2v2') {
+      // ---- 2v2: NO arrancar la simulación todavía — primero el lobby ----
+      this.duoSlots = [
+        { id: 'p2', team: 'A', conn: null, name: '', joined: false, outbox: [] },
+        { id: 'p3', team: 'B', conn: null, name: '', joined: false, outbox: [] },
+        { id: 'p4', team: 'B', conn: null, name: '', joined: false, outbox: [] },
+      ]
+      this.pushLobby() // lobby con solo el anfitrión
+      useGame.getState().setHud({ netStatus: 'waiting' })
+    } else {
+      this.startSimWorker(difficulty, fill, gameMode)
+      this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
+      useGame.getState().setHud({ netStatus: 'waiting' })
+    }
 
     const peer = new Peer(peerIdForRoom(code), PEER_OPTS)
     this.peer = peer
 
     peer.on('open', () => {
       if (this.disposed) return
-      useGame.getState().addAnnouncement(`SALA ${code} CREADA — comparte el código`, 'info')
+      useGame.getState().addAnnouncement(
+        kind === '2v2' ? `SALA 2v2 ${code} CREADA — comparte el código (hasta 3 operadores)` : `SALA ${code} CREADA — comparte el código`,
+        'info',
+      )
     })
 
     // si el servidor de señalización se cae, reconectar para que la sala
@@ -155,6 +214,10 @@ export class NetClient {
 
     peer.on('connection', (conn: DataConnection) => {
       if (this.disposed) { conn.close(); return }
+      if (this.roomKind === '2v2') {
+        this.acceptDuoGuest(conn, name, code, fill, difficulty, attempt, gameMode, fillEmpty)
+        return
+      }
       if (this.guestConn) { conn.close(); return } // 1v1: un solo invitado
 
       // asignar inmediatamente (el open puede llegar después de datos)
@@ -211,7 +274,7 @@ export class NetClient {
         this.peer = null
         const newCode = generateRoomCode()
         useGame.getState().setHud({ roomCode: newCode })
-        this.connectHost(name, newCode, fill, difficulty, attempt + 1, gameMode)
+        this.connectHost(name, newCode, fill, difficulty, attempt + 1, gameMode, kind, fillEmpty)
       } else if (type === 'unavailable-id') {
         useGame.getState().addAnnouncement('No se pudo crear la sala, inténtalo de nuevo', 'info')
       } else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
@@ -223,7 +286,7 @@ export class NetClient {
           this.peer = null
           setTimeout(() => {
             if (this.disposed) return
-            this.connectHost(name, code, fill, difficulty, attempt + 1, gameMode)
+            this.connectHost(name, code, fill, difficulty, attempt + 1, gameMode, kind, fillEmpty)
           }, 2500)
         } else {
           useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS) — juega contra bots', 'info')
@@ -236,8 +299,150 @@ export class NetClient {
     })
   }
 
+  // ------------------------------------------------------------
+  // 2v2 — aceptar invitados, lobby e inicio de la partida
+  // ------------------------------------------------------------
+  /** invitado 2v2 conectado: asignar hueco libre y gestionar su ciclo */
+  private acceptDuoGuest(conn: DataConnection, hostName: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode, fillEmpty: boolean): void {
+    const slot = this.duoSlots.find(s => s.conn === null)
+    if (!slot) {
+      // sala completa (4/4): rechazar con aviso
+      try { conn.send({ e: 'roomFull', d: { code } }) } catch { /* canal cerrado */ }
+      setTimeout(() => { try { conn.close() } catch { /* ok */ } }, 400)
+      return
+    }
+    slot.conn = conn
+    slot.joined = false
+    slot.name = ''
+    slot.outbox = []
+
+    conn.on('open', () => {
+      // vaciar cola encolada mientras se abría el canal
+      for (const m of slot.outbox) this.sendToPeer(conn, m)
+      slot.outbox.length = 0
+    })
+
+    conn.on('data', (raw: unknown) => {
+      if (this.disposed) return
+      if (slot.conn !== conn) return // hueco reasignado
+      const msg = raw as PeerMsg
+      if (!msg || typeof msg.e !== 'string') return
+
+      if (msg.e === 'join') {
+        if (slot.joined) return
+        slot.joined = true
+        slot.name = String((msg.d as { name?: string })?.name ?? 'Operador').slice(0, 16).trim() || 'Operador'
+        // confirmación inmediata al invitado (cancela su tiempo de espera)
+        this.sendToPeer(conn, { e: 'lobbyAck', d: { id: slot.id, kind: '2v2', players: this.lobbyPlayers() } })
+        this.pushLobby()
+        useGame.getState().addAnnouncement(`${slot.name} entró en la sala (equipo ${slot.team === 'A' ? 'ÁMBAR' : 'VERDE'})`, 'info')
+        // sala llena (4/4) → inicio automático con cuenta atrás breve
+        if (this.duoSlots.every(s => s.conn && s.joined) && !this.worker) {
+          useGame.getState().addAnnouncement('SALA COMPLETA — la partida 2v2 inicia…', 'info')
+          setTimeout(() => {
+            if (this.disposed || this.worker) return
+            if (!this.duoSlots.every(s => s.conn && s.joined)) return // alguien salió
+            this.startDuoMatch()
+          }, 2600)
+        }
+        return
+      }
+      if (msg.e === 'ping') {
+        this.sendToPeer(conn, { e: 'pong', d: msg.d })
+        return
+      }
+      // entrada de juego → worker (solo si la partida ya empezó)
+      if (!this.worker) return
+      this.sendToSim({ e: msg.e, d: { id: slot.id, data: msg.d } })
+    })
+
+    conn.on('close', () => {
+      if (slot.conn !== conn) return
+      const wasJoined = slot.joined
+      slot.conn = null
+      slot.joined = false
+      slot.name = ''
+      slot.outbox = []
+      if (!this.worker) {
+        // antes de iniciar: simplemente sale del lobby
+        this.pushLobby()
+        return
+      }
+      if (wasJoined) {
+        // durante la partida: baja + bot de reemplazo (2v2 siempre equilibrado)
+        this.sendToSim({ e: 'leave', d: { id: slot.id } })
+        if (this.fillEmpty) this.sendToSim({ e: 'fillBot', d: { team: slot.team } })
+        useGame.getState().addAnnouncement('Un operador abandonó — un bot cubre su hueco', 'info')
+      }
+    })
+    conn.on('error', () => { /* silencioso: close() lo gestiona */ })
+    void hostName; void fill; void difficulty; void attempt; void gameMode; void fillEmpty; void code
+  }
+
+  /** lista del lobby: anfitrión + invitados con hueco ocupado */
+  private lobbyPlayers(): { id: string; name: string; team: Team }[] {
+    const list: { id: string; name: string; team: Team }[] = [{ id: HOST_ID, name: this.hostName, team: 'A' }]
+    for (const s of this.duoSlots) {
+      if (s.conn && s.joined) list.push({ id: s.id, name: s.name, team: s.team })
+    }
+    return list
+  }
+
+  /** refleja el lobby en el store local y lo difunde a todos los invitados */
+  private pushLobby(): void {
+    const players = this.lobbyPlayers()
+    useGame.getState().setHud({ lobby: { kind: '2v2', players } })
+    for (const s of this.duoSlots) {
+      if (s.conn) this.sendToSlot(s, { e: 'lobby', d: { kind: '2v2', players } })
+    }
+  }
+
+  /** enviar a un hueco (encolando si el canal aún no abre) */
+  private sendToSlot(slot: GuestSlot, msg: PeerMsg): void {
+    const c = slot.conn
+    if (!c) return
+    if (c.open) {
+      this.sendToPeer(c, msg)
+    } else {
+      slot.outbox.push(msg)
+      if (slot.outbox.length > 200) slot.outbox.splice(0, 100)
+    }
+  }
+
+  /** v6.2: el anfitrión inicia la partida 2v2 (botón o 4/4 jugadores) */
+  startDuoMatch(): void {
+    if (this.disposed) return
+    if (this.roomKind !== '2v2' || this.worker) return // ya iniciada / no es 2v2
+    const players = this.lobbyPlayers()
+    const humansA = players.filter(p => p.team === 'A').length
+    const humansB = players.filter(p => p.team === 'B').length
+    const botsA = this.fillEmpty ? Math.max(0, 2 - humansA) : 0
+    const botsB = this.fillEmpty ? Math.max(0, 2 - humansB) : 0
+    this.startSimWorker(this.duoDifficulty, 0, this.duoGameMode, botsA, botsB)
+    // unir a la simulación al anfitrión y a cada invitado presente
+    this.sendToSim({ e: 'join', d: { id: HOST_ID, name: this.hostName, team: 'A', announce: false } })
+    for (const s of this.duoSlots) {
+      if (s.conn && s.joined) {
+        this.sendToSim({ e: 'join', d: { id: s.id, name: s.name, team: s.team, announce: true } })
+      }
+    }
+    useGame.getState().setHud({ netStatus: 'connected' })
+    // aviso a los invitados: la partida arranca (el welcome llega por el worker)
+    for (const s of this.duoSlots) {
+      if (s.conn) this.sendToSlot(s, { e: 'lobbyStart', d: { players } })
+    }
+    useGame.getState().addAnnouncement(`PARTIDA 2v2 INICIADA — ÁMBAR ${humansA + botsA} · VERDE ${humansB + botsB}`, 'info')
+  }
+
   private guestJoined = false
   private guestOutbox: PeerMsg[] = []
+  // v6.2: estado de la sala 2v2
+  private roomKind: RoomKind = '1v1'
+  private fillEmpty = true
+  private duoSlots: GuestSlot[] = []
+  private hostName = ''
+  private duoDifficulty: BotDifficulty = 'normal'
+  private duoGameMode: GameMode = 'escaramuza'
 
   // ------------------------------------------------------------
   // MODO INVITADO — se une a la sala del anfitrión
@@ -297,6 +502,29 @@ export class NetClient {
           useGame.getState().setConnected(true)
           this.dispatchLocal('welcome', msg.d)
           this.startPing()
+          return
+        }
+        if (msg.e === 'lobbyAck' || msg.e === 'lobby') {
+          // v6.2: sala 2v2 — el anfitrión confirmó la entrada / actualiza la
+          // lista del lobby. Cancela el tiempo de espera del enlace (el
+          // invitado ya está DENTRO; falta que el anfitrión inicie)
+          if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
+          const d = msg.d as { id?: string; kind?: '1v1' | '2v2'; players?: { id: string; name: string; team: Team }[] }
+          if (d.id) this.id = d.id
+          useGame.getState().setHud({
+            netStatus: 'waiting',
+            lobby: { kind: '2v2', players: d.players ?? [] },
+          })
+          return
+        }
+        if (msg.e === 'lobbyStart') {
+          // v6.2: el anfitrión arrancó la partida — el welcome/snapshot
+          // llegan enseguida por el worker
+          useGame.getState().setHud({ netStatus: 'connecting', netError: '' })
+          return
+        }
+        if (msg.e === 'roomFull') {
+          this.fail('La sala está completa (4/4). Pide otro código.')
           return
         }
         if (msg.e === 'pong') {
@@ -450,8 +678,14 @@ export class NetClient {
     if (this.worker) { this.worker.terminate(); this.worker = null }
     try { this.guestConn?.close() } catch { /* ok */ }
     try { this.hostConn?.close() } catch { /* ok */ }
+    for (const s of this.duoSlots) {
+      try { s.conn?.close() } catch { /* ok */ }
+      s.conn = null
+      s.outbox.length = 0
+    }
     this.guestConn = null
     this.hostConn = null
+    this.duoSlots = []
     try { this.peer?.destroy() } catch { /* ok */ }
     this.peer = null
   }
