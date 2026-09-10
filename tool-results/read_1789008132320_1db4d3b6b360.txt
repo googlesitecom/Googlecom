@@ -1,0 +1,702 @@
+     1→// ============================================================
+     2→// FRONTERA CERO — Configuración compartida cliente/servidor
+     3→// Mapa 140×140 (v4: ciudad ordenada), modos de juego,
+     4→// pociones de escudo (estilo Fortnite), armas y controles
+     5→// ============================================================
+     6→
+     7→/**
+     8→ * Prefijo de ruta para los assets estáticos (public/).
+     9→ * Vacío en desarrollo; en el despliegue de GitHub Pages el sitio
+    10→ * se sirve bajo /Googlecom/, así que el build de Pages define
+    11→ * NEXT_PUBLIC_BASE_PATH=/Googlecom y aquí se usa como prefijo.
+    12→ */
+    13→export const ASSET_BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
+    14→
+    15→export const GAME = {
+    16→  TICK: 33,              // ms por tick de simulación (30 Hz)
+    17→  SNAPSHOT_EVERY: 2,     // snapshot cada 2 ticks (15 Hz)
+    18→  INPUT_RATE: 50,        // cliente envía input cada 50 ms (20 Hz)
+    19→  INTERP_DELAY: 120,     // ms de interpolación de jugadores remotos
+    20→  ROUND_TIME: 240,       // segundos por ronda (combate de equipos)
+    21→  ROUND_KILLS: 30,       // kills de equipo para ganar la ronda
+    22→  ROUNDS_TO_WIN: 5,      // rondas para ganar la partida
+    23→  RESPAWN_TIME: 3.0,     // segundos hasta reaparecer
+    24→  SPAWN_PROTECT: 2.5,    // segundos de protección al aparecer
+    25→  BUY_RADIUS: 8,         // metros de la zona de compra
+    26→  START_MONEY: 1000,
+    27→  MAX_MONEY: 16000,
+    28→  KILL_REWARD: 300,
+    29→  HS_REWARD: 100,
+    30→  WIN_REWARD: 2500,
+    31→  LOSE_REWARD: 1900,
+    32→  BOT_COUNT: 8,
+    33→  GRAVITY: 14.0,
+    34→  MAP_HALF: 70,
+    35→  // sistema de vida estilo Fortnite
+    36→  PICKUP_RADIUS: 1.7,    // metros para recoger un objeto
+    37→  PICKUP_RESPAWN: 32,    // segundos hasta reaparecer una poción
+    38→  REGEN_DELAY: 8,        // segundos sin recibir daño para regenerar vida
+    39→  REGEN_HP: 1.2,         // HP por segundo regenerado
+    40→  // capturar la bandera
+    41→  FLAG_RETURN_TIME: 6,   // segundos hasta que la bandera caída vuelva a su base
+    42→  FLAG_CAPTURES: 3,      // capturas para ganar la ronda
+    43→  // dominación
+    44→  DOM_ZONE_RADIUS: 6,    // radio de captura de una zona
+    45→  DOM_CAP_TIME: 7,       // segundos para capturar una zona
+    46→  DOM_TICK_POINTS: 5,    // puntos por zona cada 5 s
+    47→  DOM_TARGET: 150,       // puntos para ganar la ronda
+    48→  // todos contra todos
+    49→  FFA_KILLS: 15,         // bajas individuales para ganar la ronda
+    50→} as const
+    51→
+    52→// ------------------------------------------------------------
+    53→// MODOS DE JUEGO
+    54→// ------------------------------------------------------------
+    55→export type GameMode = 'escaramuza' | 'ffa' | 'bandera' | 'dominacion' | 'historia'
+    56→
+    57→export interface ModeInfo {
+    58→  id: GameMode
+    59→  name: string
+    60→  short: string
+    61→  desc: string
+    62→  target: number
+    63→  time: number
+    64→  teams: boolean
+    65→}
+    66→
+    67→export const MODES: Record<GameMode, ModeInfo> = {
+    68→  escaramuza: {
+    69→    id: 'escaramuza', name: 'COMBATE DE EQUIPOS', short: 'EQUIPOS',
+    70→    desc: '4 vs 4 · la primera escuadra en llegar al objetivo gana la ronda',
+    71→    target: GAME.ROUND_KILLS, time: GAME.ROUND_TIME, teams: true,
+    72→  },
+    73→  ffa: {
+    74→    id: 'ffa', name: 'TODOS CONTRA TODOS', short: 'LIBRE',
+    75→    desc: 'Operador contra operador · la primera racha individual gana',
+    76→    target: GAME.FFA_KILLS, time: GAME.ROUND_TIME, teams: false,
+    77→  },
+    78→  bandera: {
+    79→    id: 'bandera', name: 'CAPTURAR LA BANDERA', short: 'BANDERA',
+    80→    desc: 'Roba la bandera rival y llévala a tu base · primero a 3 capturas',
+    81→    target: GAME.FLAG_CAPTURES, time: 300, teams: true,
+    82→  },
+    83→  dominacion: {
+    84→    id: 'dominacion', name: 'DOMINACIÓN', short: 'DOMINACIÓN',
+    85→    desc: 'Toma y conserva las 3 zonas del mapa · primero a 150 puntos',
+    86→    target: GAME.DOM_TARGET, time: 300, teams: true,
+    87→  },
+    88→  historia: {
+    89→    id: 'historia', name: 'OPERACIÓN CENIZA', short: 'HISTORIA',
+    90→    desc: 'Misión de 4 capítulos contra la instalación militar · 15-20 min',
+    91→    target: 0, time: 1260, teams: true,
+    92→  },
+    93→}
+    94→
+    95→export const MODE_LIST: GameMode[] = ['escaramuza', 'ffa', 'bandera', 'dominacion']
+    96→
+    97→// Dificultad de los bots (escala reacción, puntería y daño)
+    98→export type BotDifficulty = 'facil' | 'normal' | 'dificil' | 'experto'
+    99→export const BOT_SKILL: Record<BotDifficulty, {
+   100→  react: [number, number]
+   101→  aimSpeed: number
+   102→  hitBase: number
+   103→  aimErr: number
+   104→  burstPause: [number, number]
+   105→  seeDist: number
+   106→  dmg: number             // multiplicador de daño que infligen los bots
+   107→  settle: number           // ms que tarda en "asentar" la puntería tras reaccionar
+   108→}> = {
+   109→  // Rebalanceo: en FÁCIL los bots fallan mucho (hitBase bajo, error de apuntado
+   110→  // grande, reacción lenta y tardan ~2.6 s en asentar la mira)
+   111→  facil:   { react: [900, 1600], aimSpeed: 3.2, hitBase: 0.24, aimErr: 0.40, burstPause: [750, 1400], seeDist: 38, dmg: 0.38, settle: 2600 },
+   112→  normal:  { react: [550, 950],  aimSpeed: 6.0, hitBase: 0.42, aimErr: 0.24, burstPause: [420, 850],  seeDist: 50, dmg: 0.48, settle: 1500 },
+   113→  dificil: { react: [300, 520],  aimSpeed: 9.0, hitBase: 0.58, aimErr: 0.12, burstPause: [240, 450],  seeDist: 62, dmg: 0.56, settle: 850 },
+   114→  experto: { react: [190, 330],  aimSpeed: 12.0, hitBase: 0.72, aimErr: 0.06, burstPause: [160, 310],  seeDist: 70, dmg: 0.64, settle: 500 },
+   115→}
+   116→
+   117→export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
+   118→  facil: 'FÁCIL', normal: 'NORMAL', dificil: 'DIFÍCIL', experto: 'EXPERTO',
+   119→}
+   120→
+   121→export type Team = 'A' | 'B'
+   122→export type WeaponId =
+   123→  | 'knife' | 'p9' | 'aguila' | 'mp9' | 'breacher' | 'ar47' | 'cr4' | 'awp338'
+   124→export type BodyPart = 'head' | 'body' | 'legs'
+   125→export type HitPart = BodyPart
+   126→
+   127→export const TEAM_INFO: Record<Team, { name: string; color: string; accent: string }> = {
+   128→  A: { name: 'ESCUADRÓN ÁMBAR', color: '#f59e0b', accent: '#fbbf24' },
+   129→  B: { name: 'ESCUADRÓN VERDE', color: '#22c55e', accent: '#4ade80' },
+   130→}
+   131→
+   132→// ------------------------------------------------------------
+   133→// ARMAS
+   134→// ------------------------------------------------------------
+   135→export interface WeaponConfig {
+   136→  id: WeaponId
+   137→  name: string
+   138→  slot: 'primary' | 'secondary' | 'melee' | 'grenade'
+   139→  price: number
+   140→  damage: number          // daño base por bala (cuerpo, sin escudo, cerca)
+   141→  headMult: number
+   142→  legMult: number
+   143→  rpm: number             // disparos por minuto
+   144→  auto: boolean
+   145→  pellets: number         // perdigones (escopeta = 8)
+   146→  mag: number
+   147→  reserve: number
+   148→  reloadTime: number      // segundos
+   149→  spreadBase: number      // grados de dispersión base
+   150→  spreadMove: number      // dispersión extra al moverse (grados a máx velocidad)
+   151→  spreadAir: number       // dispersión extra en el aire
+   152→  recoilV: number         // kick vertical por disparo (grados)
+   153→  recoilH: number         // deriva horizontal por disparo (grados)
+   154→  recoilRecover: number   // velocidad de recuperación (0..1)
+   155→  sprayInacc: number      // dispersión extra por bala sostenida (grados/bala)
+   156→  zoomFov: number         // FOV al apuntar (0 = sin ADS especial)
+   157→  sniper: boolean         // mira telescópica con overlay
+   158→  moveMult: number        // multiplicador de velocidad al portarla
+   159→  falloffStart: number    // inicio de caída de daño (m)
+   160→  falloffEnd: number      // fin de caída (m)
+   161→  falloffMin: number      // multiplicador mínimo de daño a distancia
+   162→  sound: 'pistol' | 'deagle' | 'smg' | 'shotgun' | 'rifle' | 'sniper'
+   163→}
+   164→
+   165→// NOTA de rebalanceo (v4): retroceso y dispersión REDUCIDOS ~40-45 % —
+   166→// la mira ya no "se va mucho" al disparar y la retícula apenas se abre.
+   167→export const WEAPONS: Record<WeaponId, WeaponConfig> = {
+   168→  knife: {
+   169→    id: 'knife', name: 'Cuchillo Táctico', slot: 'melee', price: 0,
+   170→    damage: 55, headMult: 2.0, legMult: 1.0,
+   171→    rpm: 120, auto: false, pellets: 1, mag: 0, reserve: 0, reloadTime: 0,
+   172→    spreadBase: 0, spreadMove: 0, spreadAir: 0,
+   173→    recoilV: 0.5, recoilH: 0.15, recoilRecover: 0.92, sprayInacc: 0,
+   174→    zoomFov: 0, sniper: false, moveMult: 1.08,
+   175→    falloffStart: 100, falloffEnd: 100, falloffMin: 1, sound: 'pistol',
+   176→  },
+   177→  p9: {
+   178→    id: 'p9', name: 'P9 Compacto', slot: 'secondary', price: 0,
+   179→    damage: 33, headMult: 4.0, legMult: 0.75,
+   180→    rpm: 400, auto: false, pellets: 1, mag: 15, reserve: 90, reloadTime: 2.2,
+   181→    spreadBase: 0.3, spreadMove: 1.0, spreadAir: 2.6,
+   182→    recoilV: 0.62, recoilH: 0.22, recoilRecover: 0.9, sprayInacc: 0.05,
+   183→    zoomFov: 62, sniper: false, moveMult: 1.02,
+   184→    falloffStart: 18, falloffEnd: 55, falloffMin: 0.68, sound: 'pistol',
+   185→  },
+   186→  aguila: {
+   187→    id: 'aguila', name: 'Águila .50', slot: 'secondary', price: 700,
+   188→    damage: 58, headMult: 4.0, legMult: 0.80,
+   189→    rpm: 267, auto: false, pellets: 1, mag: 7, reserve: 35, reloadTime: 2.2,
+   190→    spreadBase: 0.45, spreadMove: 1.5, spreadAir: 3.6,
+   191→    recoilV: 1.8, recoilH: 0.4, recoilRecover: 0.82, sprayInacc: 0.12,
+   192→    zoomFov: 60, sniper: false, moveMult: 1.0,
+   193→    falloffStart: 20, falloffEnd: 60, falloffMin: 0.7, sound: 'deagle',
+   194→  },
+   195→  mp9: {
+   196→    id: 'mp9', name: 'MP-9 Vecto', slot: 'primary', price: 1250,
+   197→    damage: 26, headMult: 3.0, legMult: 0.75,
+   198→    rpm: 750, auto: true, pellets: 1, mag: 30, reserve: 120, reloadTime: 2.3,
+   199→    spreadBase: 0.4, spreadMove: 0.6, spreadAir: 3.2,
+   200→    recoilV: 0.4, recoilH: 0.26, recoilRecover: 0.92, sprayInacc: 0.04,
+   201→    zoomFov: 60, sniper: false, moveMult: 1.04,
+   202→    falloffStart: 14, falloffEnd: 45, falloffMin: 0.6, sound: 'smg',
+   203→  },
+   204→  breacher: {
+   205→    id: 'breacher', name: 'Breacher-12', slot: 'primary', price: 1800,
+   206→    damage: 12, headMult: 2.0, legMult: 0.9,
+   207→    rpm: 68, auto: false, pellets: 8, mag: 6, reserve: 32, reloadTime: 3.0,
+   208→    spreadBase: 2.6, spreadMove: 1.0, spreadAir: 3.4,
+   209→    recoilV: 2.6, recoilH: 0.55, recoilRecover: 0.78, sprayInacc: 0.1,
+   210→    zoomFov: 66, sniper: false, moveMult: 0.97,
+   211→    falloffStart: 8, falloffEnd: 22, falloffMin: 0.28, sound: 'shotgun',
+   212→  },
+   213→  ar47: {
+   214→    id: 'ar47', name: "AR-47 «Cóndor»", slot: 'primary', price: 2700,
+   215→    damage: 36, headMult: 4.0, legMult: 0.75,
+   216→    rpm: 600, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 2.5,
+   217→    spreadBase: 0.28, spreadMove: 1.7, spreadAir: 4.4,
+   218→    recoilV: 0.78, recoilH: 0.38, recoilRecover: 0.85, sprayInacc: 0.07,
+   219→    zoomFov: 55, sniper: false, moveMult: 0.94,
+   220→    falloffStart: 25, falloffEnd: 70, falloffMin: 0.75, sound: 'rifle',
+   221→  },
+   222→  cr4: {
+   223→    id: 'cr4', name: 'Carabina CR-4', slot: 'primary', price: 2900,
+   224→    damage: 33, headMult: 4.0, legMult: 0.75,
+   225→    rpm: 666, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 3.1,
+   226→    spreadBase: 0.24, spreadMove: 1.4, spreadAir: 3.8,
+   227→    recoilV: 0.6, recoilH: 0.26, recoilRecover: 0.88, sprayInacc: 0.05,
+   228→    zoomFov: 55, sniper: false, moveMult: 0.95,
+   229→    falloffStart: 28, falloffEnd: 75, falloffMin: 0.78, sound: 'rifle',
+   230→  },
+   231→  awp338: {
+   232→    id: 'awp338', name: 'FR-338 Tirador', slot: 'primary', price: 4750,
+   233→    damage: 115, headMult: 2.5, legMult: 0.85,
+   234→    rpm: 41, auto: false, pellets: 1, mag: 5, reserve: 30, reloadTime: 3.7,
+   235→    spreadBase: 0.15, spreadMove: 3.4, spreadAir: 6,
+   236→    recoilV: 2.8, recoilH: 0.6, recoilRecover: 0.75, sprayInacc: 0,
+   237→    zoomFov: 9, sniper: true, moveMult: 0.85,
+   238→    falloffStart: 200, falloffEnd: 300, falloffMin: 1, sound: 'sniper',
+   239→  },
+   240→}
+   241→
+   242→export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke'; name: string; price: number; desc: string; cat: string }[] = [
+   243→  { id: 'w:aguila', weapon: 'aguila', name: 'Águila .50', price: 700, desc: 'Pistola de alto calibre', cat: 'Pistolas' },
+   244→  { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'SMG rápida y ágil', cat: 'SMG' },
+   245→  { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Escopeta de caño corto', cat: 'Escopetas' },
+   246→  { id: 'w:ar47', weapon: 'ar47', name: 'AR-47 «Cóndor»', price: 2700, desc: 'Rifle de asalto 7.62', cat: 'Rifles' },
+   247→  { id: 'w:cr4', weapon: 'cr4', name: 'Carabina CR-4', price: 2900, desc: 'Rifle de asalto 5.56', cat: 'Rifles' },
+   248→  { id: 'w:awp338', weapon: 'awp338', name: 'FR-338 Tirador', price: 4750, desc: 'Francotirador letal', cat: 'Francotirador' },
+   249→  { id: 'e:shield', equip: 'shield', name: 'Escudo Completo', price: 1000, desc: 'Sube el escudo a 100', cat: 'Equipamiento' },
+   250→  { id: 'e:frag', equip: 'frag', name: 'Granada MOLO', price: 300, desc: 'Máx. 2 unidades', cat: 'Equipamiento' },
+   251→  { id: 'e:smoke', equip: 'smoke', name: 'Granada de Humo', price: 200, desc: 'Cortina de humo 12 s · máx. 2', cat: 'Equipamiento' },
+   252→]
+   253→
+   254→// ------------------------------------------------------------
+   255→// CONTROLES CONFIGURABLES (teclado + RATÓN + mando)
+   256→// ------------------------------------------------------------
+   257→export type ActionId =
+   258→  | 'fwd' | 'back' | 'left' | 'right'
+   259→  | 'sprint' | 'crouch' | 'jump'
+   260→  | 'reload' | 'grenadeFrag' | 'grenadeSmoke'
+   261→  | 'buy' | 'lastWeapon' | 'zipline'
+   262→  | 'slot1' | 'slot2' | 'slot3'
+   263→  | 'shoot' | 'aim'
+   264→
+   265→/** Los binds de DISPARAR y APUNTAR aceptan botones del ratón (Mouse0..4)
+   266→ *  o cualquier tecla — por fin se pueden reasignar. */
+   267→export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
+   268→  fwd: 'KeyW',
+   269→  back: 'KeyS',
+   270→  left: 'KeyA',
+   271→  right: 'KeyD',
+   272→  sprint: 'ShiftLeft',
+   273→  crouch: 'ControlLeft',
+   274→  jump: 'Space',
+   275→  reload: 'KeyR',
+   276→  grenadeFrag: 'KeyG',
+   277→  grenadeSmoke: 'KeyH',
+   278→  buy: 'KeyB',
+   279→  lastWeapon: 'KeyQ',
+   280→  zipline: 'KeyE',
+   281→  slot1: 'Digit1',
+   282→  slot2: 'Digit2',
+   283→  slot3: 'Digit3',
+   284→  shoot: 'Mouse0',
+   285→  aim: 'Mouse2',
+   286→}
+   287→
+   288→export const ACTION_LABELS: Record<ActionId, string> = {
+   289→  fwd: 'Avanzar',
+   290→  back: 'Retroceder',
+   291→  left: 'Izquierda',
+   292→  right: 'Derecha',
+   293→  sprint: 'Esprintar',
+   294→  crouch: 'Agacharse',
+   295→  jump: 'Saltar',
+   296→  reload: 'Recargar',
+   297→  grenadeFrag: 'Granada MOLO',
+   298→  grenadeSmoke: 'Granada de humo',
+   299→  buy: 'Tienda',
+   300→  lastWeapon: 'Arma anterior',
+   301→  zipline: 'Interactuar / Tirolina',
+   302→  slot1: 'Arma principal',
+   303→  slot2: 'Arma secundaria',
+   304→  slot3: 'Cuchillo',
+   305→  shoot: 'Disparar',
+   306→  aim: 'Apuntar (ADS)',
+   307→}
+   308→
+   309→/** ¿El código corresponde a un botón del ratón? */
+   310→export function isMouseButton(code: string): boolean {
+   311→  return code.startsWith('Mouse')
+   312→}
+   313→
+   314→/** Índice del botón del ratón (Mouse2 → 2), o null */
+   315→export function mouseButtonIndex(code: string): number | null {
+   316→  if (!code.startsWith('Mouse')) return null
+   317→  const n = Number(code.slice(5))
+   318→  return Number.isFinite(n) ? n : null
+   319→}
+   320→
+   321→/** Convierte un KeyboardEvent.code o botón a etiqueta legible */
+   322→export function keyLabel(code: string): string {
+   323→  if (!code) return '—'
+   324→  if (code.startsWith('Mouse')) {
+   325→    const names = ['CLIC IZQ', 'CLIC MED', 'CLIC DER', 'CLIC 4', 'CLIC 5', 'CLIC 6']
+   326→    const n = Number(code.slice(5))
+   327→    return names[n] ?? `CLIC ${n + 1}`
+   328→  }
+   329→  if (code.startsWith('Key')) return code.slice(3)
+   330→  if (code.startsWith('Digit')) return code.slice(5)
+   331→  if (code.startsWith('Numpad')) return 'NUM ' + code.slice(6)
+   332→  if (code.startsWith('Arrow')) {
+   333→    const names: Record<string, string> = { Up: '↑', Down: '↓', Left: '←', Right: '→' }
+   334→    return names[code.slice(5)] ?? code
+   335→  }
+   336→  const names: Record<string, string> = {
+   337→    Space: 'ESPACIO', ShiftLeft: 'MAYÚS IZQ', ShiftRight: 'MAYÚS DER',
+   338→    ControlLeft: 'CTRL IZQ', ControlRight: 'CTRL DER',
+   339→    AltLeft: 'ALT', AltRight: 'ALT GR', Enter: 'ENTER', Tab: 'TAB',
+   340→    CapsLock: 'BLOQ MAYÚS', Backquote: '`', Minus: '-', Equal: '=',
+   341→    BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+   342→    Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+   343→  }
+   344→  return names[code] ?? code.toUpperCase()
+   345→}
+   346→
+   347→// ------------------------------------------------------------
+   348→// MANDO — botones reasignables
+   349→// ------------------------------------------------------------
+   350→export type PadAction =
+   351→  | 'shoot' | 'aim' | 'sprint' | 'jump' | 'crouch' | 'reload'
+   352→  | 'weaponNext' | 'grenadeFrag' | 'grenadeSmoke' | 'buy' | 'scoreboard' | 'pause'
+   353→
+   354→export const DEFAULT_PAD_BINDS: Record<PadAction, number> = {
+   355→  shoot: 7,          // RT
+   356→  aim: 6,            // LT
+   357→  sprint: 10,        // L3 (pulsar stick izquierdo)
+   358→  jump: 0,           // A / Cruz
+   359→  crouch: 1,         // B / Círculo
+   360→  reload: 2,         // X / Cuadrado
+   361→  weaponNext: 3,     // Y / Triángulo
+   362→  grenadeFrag: 4,    // LB
+   363→  grenadeSmoke: 13,  // cruceta abajo
+   364→  buy: 5,            // RB
+   365→  scoreboard: 8,     // Back / View
+   366→  pause: 9,          // Start
+   367→}
+   368→
+   369→export const PAD_ACTION_LABELS: Record<PadAction, string> = {
+   370→  shoot: 'Disparar',
+   371→  aim: 'Apuntar (ADS)',
+   372→  sprint: 'Esprintar (L3)',
+   373→  jump: 'Saltar',
+   374→  crouch: 'Agacharse',
+   375→  reload: 'Recargar',
+   376→  weaponNext: 'Cambiar arma',
+   377→  grenadeFrag: 'Granada MOLO',
+   378→  grenadeSmoke: 'Granada de humo',
+   379→  buy: 'Tienda',
+   380→  scoreboard: 'Marcador (mantener)',
+   381→  pause: 'Pausa',
+   382→}
+   383→
+   384→/** Etiqueta de botón estándar Xbox (PS: A=Cruz, B=Círculo…) */
+   385→export function padButtonLabel(i: number): string {
+   386→  const names: Record<number, string> = {
+   387→    0: 'A', 1: 'B', 2: 'X', 3: 'Y',
+   388→    4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT',
+   389→    8: 'VIEW', 9: 'MENU', 10: 'L3', 11: 'R3',
+   390→    12: '↑', 13: '↓', 14: '←', 15: '→',
+   391→    16: 'CENTRO', 17: 'GUIA',
+   392→  }
+   393→  return names[i] ?? `B${i}`
+   394→}
+   395→
+   396→export const WEAPON_LIST = Object.values(WEAPONS)
+   397→
+   398→export function weaponIndex(id: WeaponId): number {
+   399→  return WEAPON_LIST.findIndex(w => w.id === id)
+   400→}
+   401→export function weaponByIndex(i: number): WeaponId {
+   402→  return WEAPON_LIST[i]?.id ?? 'p9'
+   403→}
+   404→
+   405→/** Daño efectivo de un arma (sin escudo: la absorción la aplica la simulación) */
+   406→export function computeDamage(w: WeaponConfig, part: BodyPart, distance: number): number {
+   407→  let dmg = w.damage
+   408→  if (part === 'head') dmg *= w.headMult
+   409→  else if (part === 'legs') dmg *= w.legMult
+   410→  if (distance > w.falloffStart) {
+   411→    const t = Math.min(1, (distance - w.falloffStart) / Math.max(1, w.falloffEnd - w.falloffStart))
+   412→    dmg *= 1 - (1 - w.falloffMin) * t
+   413→  }
+   414→  return Math.round(dmg)
+   415→}
+   416→
+   417→// ------------------------------------------------------------
+   418→// OBJETOS DE CURACIÓN (estilo Fortnite)
+   419→// ------------------------------------------------------------
+   420→export type PickupKind = 'medkit' | 'bandage' | 'shieldSmall' | 'shieldBig'
+   421→
+   422→export const PICKUP_INFO: Record<PickupKind, { name: string; hp: number; shield: number; color: number }> = {
+   423→  medkit:      { name: 'Botiquín',            hp: 50, shield: 0,  color: 0xef4444 },
+   424→  bandage:     { name: 'Vendaje',             hp: 15, shield: 0,  color: 0xfca5a5 },
+   425→  shieldSmall: { name: 'Poción de Escudo S',  hp: 0,  shield: 25, color: 0x38bdf8 },
+   426→  shieldBig:   { name: 'Poción de Escudo G',  hp: 0,  shield: 50, color: 0x0ea5e9 },
+   427→}
+   428→
+   429→export interface PickupSpot { kind: PickupKind; x: number; z: number }
+   430→
+   431→// ------------------------------------------------------------
+   432→// MAPA v4 — "SECTOR MERIDIANO": ciudad ordenada tipo Warzone
+   433→// Mismo tamaño (140×140), cuadrícula de calles, distritos variados
+   434→// y edificios grandes con interior: hotel de 3 plantas, torre de
+   435→// oficinas de 4, mercado, almacenes, tiendas, casas y gasolinera.
+   436→// ------------------------------------------------------------
+   437→
+   438→/** Posiciones de pociones/botiquines (dentro de edificios y zonas clave) */
+   439→export const PICKUP_SPOTS: PickupSpot[] = [
+   440→  // pociones del hotel y almacén reposicionadas (fuera de columnas/estanterías)
+   441→  { kind: 'bandage', x: 18, z: -21 },
+   442→  { kind: 'shieldSmall', x: 17, z: -17 },
+   443→  // torre de oficinas
+   444→  { kind: 'shieldBig', x: 50, z: -22 },
+   445→  { kind: 'medkit', x: 50, z: -17 },
+   446→  // mercado central
+   447→  { kind: 'bandage', x: 15, z: -52 },
+   448→  { kind: 'shieldSmall', x: 24, z: -52 },
+   449→  // almacén norte / nave oeste
+   450→  { kind: 'shieldBig', x: -22, z: -16 },
+   451→  { kind: 'medkit', x: -19.5, z: -23 },
+   452→  { kind: 'bandage', x: -51, z: -21 },
+   453→  // colonia residencial SE
+   454→  { kind: 'bandage', x: 16, z: 18 },
+   455→  { kind: 'shieldSmall', x: 44.8, z: 16 },
+   456→  { kind: 'shieldBig', x: 16, z: 52 },
+   457→  // barracón del radar
+   458→  { kind: 'medkit', x: -50, z: 56 },
+   459→  // parque SE
+   460→  { kind: 'shieldSmall', x: 46, z: 58 },
+   461→]
+   462→
+   463→export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
+   464→
+   465→export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive'
+   466→
+   467→export interface MapBox {
+   468→  x: number; y: number; z: number
+   469→  w: number; h: number; d: number
+   470→  mat: MatKey
+   471→}
+   472→
+   473→function box(x: number, y: number, z: number, w: number, h: number, d: number, mat: MatKey): MapBox {
+   474→  return { x, y, z, w, h, d, mat }
+   475→}
+   476→
+   477→const MAP: MapBox[] = []
+   478→function B(...a: Parameters<typeof box>) { MAP.push(box(...a)) }
+   479→
+   480→// --- Perímetro 140×140 (muros de 6.5 m) ---
+   481→B(0, 3.25, -70.5, 142, 6.5, 1.5, 'sand')
+   482→B(0, 3.25, 70.5, 142, 6.5, 1.5, 'sand')
+   483→B(-70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
+   484→B(70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
+   485→for (const v of [-64, -48, -32, -16, 0, 16, 32, 48, 64]) {
+   486→  B(v, 3.6, -70.5, 2.4, 7.2, 2.4, 'concrete')
+   487→  B(v, 3.6, 70.5, 2.4, 7.2, 2.4, 'concrete')
+   488→  B(-70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+   489→  B(70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+   490→}
+   491→
+   492→// --- Muros con puerta central ---
+   493→function gatedWall(ax: 'x' | 'z', at: number, from: number, to: number, H: number, T: number, mat: MatKey, gateHalf = 1.6, doorH = 0): void {
+   494→  const lo = Math.min(from, to), hi = Math.max(from, to)
+   495→  const mid = (lo + hi) / 2
+   496→  const mk = (c: number, len: number) => {
+   497→    if (len <= 0.05) return
+   498→    if (ax === 'x') B(c, H / 2, at, len, H, T, mat)
+   499→    else B(at, H / 2, c, T, H, len, mat)
+   500→  }
+   501→  mk((lo + (mid - gateHalf)) / 2, (mid - gateHalf) - lo)
+   502→  mk((hi + (mid + gateHalf)) / 2, hi - (mid + gateHalf))
+   503→  if (gateHalf > 0 && H > doorH + 0.6) {
+   504→    const lintelH = H - Math.max(doorH, 0.01)
+   505→    if (lintelH > 0.15) {
+   506→      if (ax === 'x') B(mid, H - lintelH / 2, at, gateHalf * 2, lintelH, T, mat)
+   507→      else B(at, H - lintelH / 2, mid, T, lintelH, gateHalf * 2, mat)
+   508→    }
+   509→  }
+   510→}
+   511→
+   512→// ------------------------------------------------------------
+   513→// Edificios con interior: muros con puerta + banda de ventanas
+   514→// ------------------------------------------------------------
+   515→const ROT = { N: 0, E: Math.PI / 2, S: Math.PI, W: Math.PI * 1.5 } as const
+   516→type Facing = keyof typeof ROT
+   517→
+   518→/** Caja en coordenadas locales del edificio, girada según `f` */
+   519→function BR(cx: number, cz: number, f: Facing, lx: number, ly: number, lz: number, w: number, h: number, d: number, mat: MatKey): void {
+   520→  const ang = ROT[f]
+   521→  const c = Math.cos(ang), s = Math.sin(ang)
+   522→  const rx = lx * c - lz * s
+   523→  const rz = lx * s + lz * c
+   524→  const swap = Math.abs(s) > 0.5
+   525→  B(cx + rx, ly, cz + rz, swap ? d : w, h, swap ? w : d, mat)
+   526→}
+   527→
+   528→interface WallOpts {
+   529→  H?: number; T?: number; y0?: number
+   530→  door?: number; doorHalf?: number; doorH?: number
+   531→  wins?: number[]; winW?: number; bandLo?: number; bandHi?: number
+   532→}
+   533→
+   534→/**
+   535→ * Muro de edificio en coords. locales. `axis 'z'`: corre a lo largo de x en z=at;
+   536→ * `axis 'x'`: corre a lo largo de z en x=at. Puerta = hueco a toda altura con dintel;
+   537→ * ventanas = banda practiable (se puede disparar a través) entre zócalo y franja superior.
+   538→ */
+   539→function wallL(cx: number, cz: number, f: Facing, axis: 'x' | 'z', at: number, from: number, to: number, mat: MatKey, opts: WallOpts): void {
+   540→  const H = opts.H ?? 3.3
+   541→  const T = opts.T ?? 0.35
+   542→  const y0 = opts.y0 ?? 0
+   543→  const bandLo = y0 + (opts.bandLo ?? 1.45)
+   544→  const bandHi = y0 + (opts.bandHi ?? 2.25)
+   545→  const winW = opts.winW ?? 1.3
+   546→  const lo = Math.min(from, to), hi = Math.max(from, to)
+   547→  const put = (c: number, len: number, ya: number, yb: number) => {
+   548→    if (len <= 0.06 || yb - ya <= 0.06) return
+   549→    const cy = (ya + yb) / 2
+   550→    if (axis === 'z') BR(cx, cz, f, c, cy, at, len, yb - ya, T, mat)
+   551→    else BR(cx, cz, f, at, cy, c, T, yb - ya, len, mat)
+   552→  }
+   553→  let solids: [number, number][] = [[lo, hi]]
+   554→  if (opts.door !== undefined) {
+   555→    const dh = opts.doorHalf ?? 1.05
+   556→    const doorH = y0 + (opts.doorH ?? 2.15)
+   557→    const dLo = opts.door - dh, dHi = opts.door + dh
+   558→    solids = []
+   559→    if (dLo - lo > 0.05) solids.push([lo, dLo])
+   560→    if (hi - dHi > 0.05) solids.push([dHi, hi])
+   561→    put(opts.door, dh * 2, doorH, y0 + H)
+   562→  }
+   563→  for (const [a, b] of solids) {
+   564→    put((a + b) / 2, b - a, y0, bandLo)
+   565→    put((a + b) / 2, b - a, bandHi, y0 + H)
+   566→    const gaps: [number, number][] = []
+   567→    for (const w of opts.wins ?? []) {
+   568→      const g0 = w - winW / 2, g1 = w + winW / 2
+   569→      if (g0 > a + 0.3 && g1 < b - 0.3) gaps.push([g0, g1])
+   570→    }
+   571→    gaps.sort((p, q) => p[0] - q[0])
+   572→    let cur = a
+   573→    for (const [g0, g1] of gaps) { put((cur + g0) / 2, g0 - cur, bandLo, bandHi); cur = g1 }
+   574→    put((cur + b) / 2, b - cur, bandLo, bandHi)
+   575→  }
+   576→}
+   577→
+   578→const WP_EXTRA: [number, number][] = []
+   579→function wpTransform(cx: number, cz: number, f: Facing, lx: number, lz: number): [number, number] {
+   580→  const ang = ROT[f], c = Math.cos(ang), s = Math.sin(ang)
+   581→  return [cx + lx * c - lz * s, cz + lx * s + lz * c]
+   582→}
+   583→
+   584→/** Escalera recta de peldaños crecientes con altura inicial y0.
+   585→ *  (xAt, zAt) = posición local del PRIMER peldaño; (dx, dz) = dirección de subida. */
+   586→function stairsBR(cx: number, cz: number, f: Facing, xAt: number, zAt: number, dx: number, dz: number, steps: number, riseStep: number, runStep: number, wStair: number, y0 = 0, mat: MatKey = 'concrete'): void {
+   587→  for (let i = 0; i < steps; i++) {
+   588→    const rise = riseStep * (i + 1)
+   589→    const sx = xAt + dx * runStep * i
+   590→    const sz = zAt + dz * runStep * i
+   591→    // si sube a lo largo de x, el largo del peldaño va en x
+   592→    BR(cx, cz, f, sx, y0 + rise / 2, sz, dx !== 0 ? runStep + 0.04 : wStair, rise, dz !== 0 ? runStep + 0.04 : wStair, mat)
+   593→  }
+   594→}
+   595→
+   596→// ------------------------------------------------------------
+   597→// HOTEL MERIDIANO — 18×14, 3 plantas + azotea (escaleras interiores
+   598→// de dos tramos apilados + escalera exterior de incendios)
+   599→// ------------------------------------------------------------
+   600→function hotel(cx: number, cz: number, f: Facing): void {
+   601→  const HW = 9, HD = 7, H1 = 3.0, H2 = 2.8, T = 0.4
+   602→  const F2 = 3.3, F3 = 6.6, ROOF = 9.55
+   603→  // ---- planta baja: lobby ----
+   604→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H1, T, door: 0, doorHalf: 1.7, doorH: 2.4, wins: [-6, 6] })
+   605→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H1, T, wins: [-5, 0, 5] })
+   606→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
+   607→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
+   608→  // columnas del lobby
+   609→  BR(cx, cz, f, 0, 1.5, -3, 0.7, 3.0, 0.7, 'concrete')
+   610→  BR(cx, cz, f, 0, 1.5, 2, 0.7, 3.0, 0.7, 'concrete')
+   611→  // recepción + mobiliario
+   612→  BR(cx, cz, f, -4.5, 0.55, -4.5, 3.4, 1.1, 0.9, 'wood')        // mostrador
+   613→  BR(cx, cz, f, -6, 0.4, 1.5, 2.0, 0.8, 0.9, 'sandbag')          // sofá
+   614→  BR(cx, cz, f, -3.2, 0.45, 1.5, 1.2, 0.9, 0.9, 'wood')         // mesa baja
+   615→  BR(cx, cz, f, -7.6, 0.9, -1, 0.7, 1.8, 1.6, 'wood')           // estante
+   616→  // ---- escalera interior: 2 tramos apilados (lado este, suben hacia -z) ----
+   617→  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, 0)      // tramo A: planta baja → P1
+   618→  stairsBR(cx, cz, f, 6.9, 6.4, 0, -1, 10, 0.3, 0.55, 2.8, F2)    // tramo B: P1 → P2 (apilado)
+   619→  // ---- forjado P1 con hueco sobre la escalera (x 5..9, z 0.4..7) ----
+   620→  BR(cx, cz, f, -2.1, 3.15, 0, 14.2, 0.3, 14, 'concrete')       // franja oeste
+   621→  BR(cx, cz, f, 7, 3.15, -3.85, 4, 0.3, 6.3, 'concrete')        // rincón este-sur
+   622→  BR(cx, cz, f, 6.9, 3.15, -0.15, 2.8, 0.3, 1.1, 'concrete')    // rellano del tramo A
+   623→  // ---- muros P1 ----
+   624→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-6, 0, 6] })
+   625→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-5, 0, 5] })
+   626→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
+   627→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
+   628→  // tabique de habitaciones en P1
+   629→  wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.7, 'sand', { H: H2, T: 0.3, y0: F2, door: -2, doorHalf: 0.8, doorH: 2.05 })
+   630→  BR(cx, cz, f, -6, F2 + 0.4, -4, 1.8, 0.8, 0.9, 'sandbag')     // cama (hab.)
+   631→  BR(cx, cz, f, -6, F2 + 0.45, 0, 1.2, 0.9, 0.9, 'wood')
+   632→  // ---- forjado P2 + muros P2 ----
+   633→  BR(cx, cz, f, -2.1, F3 + 0.15 - 0.3, 0, 14.2, 0.3, 14, 'concrete')
+   634→  BR(cx, cz, f, 7, F3 - 0.15, -3.85, 4, 0.3, 6.3, 'concrete')
+   635→  BR(cx, cz, f, 6.9, F3 - 0.15, -0.15, 2.8, 0.3, 1.1, 'concrete')
+   636→  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-6, 0, 6] })
+   637→  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
+   638→  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
+   639→  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
+   640→  BR(cx, cz, f, -6, F3 + 0.7, 4, 1.2, 1.2, 1.2, 'crate')
+   641→  // ---- azotea: forjado + pretil (hueco al este donde llega la escalera) ----
+   642→  BR(cx, cz, f, 0, ROOF, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
+   643→  const py = ROOF + 0.475
+   644→  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+   645→  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+   646→  BR(cx, cz, f, +HW + 0.12, py, -6.5, 0.22, 0.35, 1.1, 'concrete')   // pretil este, tramo norte
+   647→  BR(cx, cz, f, +HW + 0.12, py, 4.5, 0.22, 0.35, 5.1, 'concrete')     // pretil este, tramo sur
+   648→  BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
+   649→  BR(cx, cz, f, -4, ROOF + 0.75, -4, 1.6, 1.1, 1.3, 'metalGrey')  // climatizador
+   650→  BR(cx, cz, f, -6.5, ROOF + 0.6, 3, 1.1, 0.8, 1.1, 'metalGrey')
+   651→  // ---- escalera exterior de incendios (fachada este, sube hacia -z) ----
+   652→  stairsBR(cx, cz, f, 10.1, 7.2, 0, -1, 19, 0.5, 0.62, 1.4)
+   653→  // waypoints: entrada, lobby, pasillo P1 (solo planta baja para bots)
+   654→  WP_EXTRA.push(
+   655→    wpTransform(cx, cz, f, 0, -8.6),
+   656→    wpTransform(cx, cz, f, 0, -1),
+   657→    wpTransform(cx, cz, f, -4, 3),
+   658→    wpTransform(cx, cz, f, 3, -2),
+   659→  )
+   660→}
+   661→
+   662→// ------------------------------------------------------------
+   663→// TORRE ÁMBAR (oficinas) — 14×14, 4 plantas + azotea con mirador.
+   664→// Escalera interior de 4 tramos apilados (núcleo este); el último
+   665→// tramo desemboca en la azotea a través de un hueco.
+   666→// ------------------------------------------------------------
+   667→function torreOficina(cx: number, cz: number, f: Facing): void {
+   668→  const HW = 7, HD = 7, HF = 2.8, T = 0.4
+   669→  const F = [0, 3.1, 6.2, 9.3]
+   670→  const ROOF = 12.25
+   671→  for (let p = 0; p < 4; p++) {
+   672→    const y0 = F[p]
+   673→    // fachada sur: con puerta en planta baja
+   674→    if (p === 0) {
+   675→      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, door: 0, doorHalf: 1.3, doorH: 2.3, wins: [-4.5, 4.5] })
+   676→    } else {
+   677→      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+   678→    }
+   679→    wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+   680→    wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+   681→    wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+   682→  }
+   683→  // tabiques de oficinas (plantas 1..3)
+   684→  for (let p = 1; p < 4; p++) {
+   685→    wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.2, 'sand', { H: HF, T: 0.25, y0: F[p], door: -1, doorHalf: 0.8, doorH: 2.05 })
+   686→  }
+   687→  // escritorios
+   688→  BR(cx, cz, f, -4.5, 0.45, -4.5, 1.6, 0.9, 0.9, 'wood')
+   689→  BR(cx, cz, f, -4.5, 3.55, 3.5, 1.6, 0.9, 0.9, 'wood')
+   690→  BR(cx, cz, f, -4.5, 6.65, -3.5, 1.6, 0.9, 0.9, 'wood')
+   691→  BR(cx, cz, f, 3, 0.45, 5, 1.3, 0.9, 0.9, 'wood')
+   692→  // ---- escalera interior: 4 tramos apilados (núcleo este) ----
+   693→  for (let p = 0; p < 4; p++) {
+   694→    stairsBR(cx, cz, f, 5.6, 6.4, 0, -1, 10, 0.28, 0.55, 2.4, F[p])
+   695→  }
+   696→  // ---- forjados (hueco del núcleo x 4.2..7, z 0.4..7 + rellano) ----
+   697→  for (let p = 1; p < 4; p++) {
+   698→    BR(cx, cz, f, -1.6, F[p] - 0.15, 0, 11.2, 0.3, 14, 'concrete')   // franja oeste
+   699→    BR(cx, cz, f, 6.2, F[p] - 0.15, -3.85, 2.6, 0.3, 6.3, 'concrete')
+   700→    BR(cx, cz, f, 5.6, F[p] - 0.15, -0.15, 2.4, 0.3, 1.1, 'concrete')
+
+[showing lines 1-700 of 1743; use offset=701 with limit to continue reading]
