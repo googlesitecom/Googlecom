@@ -11,7 +11,10 @@ import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { getGame } from '@/game/game-instance'
 import { getAudio } from '@/game/audio'
-import { ASSET_BASE } from '@/game/shared'
+import { ASSET_BASE, GAME } from '@/game/shared'
+import { useAuth, getProfile, fmtKD, type CareerProfile } from '@/game/auth'
+import { useBr } from '@/game/br-store'
+import { teamSlotsFor, roomCapacity, type RoomKind } from '@/game/net'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -21,6 +24,7 @@ import {
   Heart, Plane,
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
+  User, Skull, Medal, Crown, Activity, Rocket, X,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
@@ -284,6 +288,8 @@ export function KeybindsPanel() {
 export function SettingsPanel() {
   const settings = useGame(s => s.settings)
   const setSettings = useGame(s => s.setSettings)
+  // v9: dentro del Battle Royale los gráficos se limitan a BAJA/MEDIA
+  const brActive = useBr(s => s.active)
   return (
     <div className="space-y-7 max-w-xl">
       {/* ---- AUDIO ---- */}
@@ -361,31 +367,45 @@ export function SettingsPanel() {
           <Gauge className="w-4 h-4" /> Graphics
         </h4>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {(['baja', 'media', 'alta', 'ultra'] as const).map(q => (
-            <button
-              key={q}
-              onClick={() => setSettings({ quality: q })}
-              className={`rounded-md py-2.5 font-tac-md text-[11px] border uppercase transition-colors relative ${
-                settings.quality === q
-                  ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
-                  : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
-              }`}
-            >
-              {q === 'baja' ? 'LOW' : q === 'media' ? 'MEDIUM' : q === 'alta' ? 'HIGH' : 'ULTRA'}
-              {q === 'ultra' && (
-                <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-amber-500 text-stone-900 rounded-sm px-1 py-px">
-                  OPTIONAL
-                </span>
-              )}
-            </button>
-          ))}
+          {(['baja', 'media', 'alta', 'ultra'] as const).map(q => {
+            // v9: dentro del Battle Royale solo BAJA/MEDIA (estabilidad)
+            const locked = brActive && (q === 'alta' || q === 'ultra')
+            return (
+              <button
+                key={q}
+                onClick={() => !locked && setSettings({ quality: q })}
+                disabled={locked}
+                className={`rounded-md py-2.5 font-tac-md text-[11px] border uppercase transition-colors relative ${
+                  settings.quality === q && !locked
+                    ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
+                    : locked
+                      ? 'bg-stone-900/40 border-stone-800 text-stone-700 cursor-not-allowed'
+                      : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                {q === 'baja' ? 'LOW' : q === 'media' ? 'MEDIUM' : q === 'alta' ? 'HIGH' : 'ULTRA'}
+                {q === 'ultra' && !locked && (
+                  <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-amber-500 text-stone-900 rounded-sm px-1 py-px">
+                    OPTIONAL
+                  </span>
+                )}
+                {locked && (
+                  <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-stone-700 text-stone-300 rounded-sm px-1 py-px">
+                    BR LOCKED
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </div>
         <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-          <b className="text-stone-300">Applies INSTANTLY</b>, even mid-match (you will notice it in the FPS counter).
-          <b className="text-stone-300"> Low</b>: no shadows, no bloom, tight fog and 30 % less resolution → max FPS.
-          <b className="text-stone-300"> Medium</b>: 1K shadows, 2 lamps. <b className="text-stone-300"> High</b>: 2K shadows, bloom, dust & birds (recommended).
-          <b className="text-amber-200/70"> ULTRA</b>: real lights (muzzle flashes that light up the scene), sun with lens flare,
-          crisp 4K shadows, wet streets and <b className="text-amber-200/70">real-time water reflection</b>. Off by default — and if your rig struggles, it auto-scales so it never lags.
+          {brActive
+            ? <><b className="text-amber-200/80">Battle Royale:</b> only <b className="text-stone-300">LOW</b> and <b className="text-stone-300">MEDIUM</b> are available in this mode — the map is huge and we cap the quality so the frame rate never collapses.</>
+            : <><b className="text-stone-300">Applies INSTANTLY</b>, even mid-match (you will notice it in the FPS counter).
+            <b className="text-stone-300"> Low</b>: no shadows, no bloom, tight fog and 30 % less resolution → max FPS.
+            <b className="text-stone-300"> Medium</b>: 1K shadows, 2 lamps. <b className="text-stone-300"> High</b>: 2K shadows, bloom, dust &amp; birds (recommended).
+            <b className="text-amber-200/70"> ULTRA</b>: real lights (muzzle flashes that light up the scene), sun with lens flare,
+            crisp 4K shadows, wet streets and <b className="text-amber-200/70">real-time water reflection</b>. Off by default — and if your rig struggles, it auto-scales so it never lags.</>}
         </p>
       </section>
     </div>
@@ -452,16 +472,146 @@ export function InfoPanel() {
 }
 
 // ============================================================
+// v9 — USER WIDGET (top-right) + career profile modal
+// ============================================================
+function rankOf(p: CareerProfile): { label: string; color: string } {
+  if (p.brWins >= 5 || p.wins >= 30) return { label: 'LEGEND', color: '#fbbf24' }
+  if (p.brWins >= 2 || p.wins >= 15) return { label: 'VETERAN', color: '#f59e0b' }
+  if (p.wins >= 5) return { label: 'OPERATOR', color: '#d99a2b' }
+  if (p.matches >= 3) return { label: 'SOLDIER', color: '#a8a29e' }
+  return { label: 'RECRUIT', color: '#78716c' }
+}
+
+function UserWidget({ onOpen }: { onOpen: () => void }) {
+  const user = useAuth(s => s.user)
+  if (!user) return null
+  const p = getProfile()
+  const rank = rankOf(p)
+  const initials = user.slice(0, 2).toUpperCase()
+  return (
+    <button
+      onClick={onOpen}
+      className="relative flex items-center gap-3 bg-[#0b0e11]/92 border border-stone-700/70 rounded-lg pl-2 pr-4 py-2 shadow-xl hover:border-amber-500/60 transition-colors tac-corner group"
+      title="Career profile"
+    >
+      <span
+        className="w-9 h-9 rounded-md flex items-center justify-center font-tac text-sm border shrink-0"
+        style={{
+          background: 'linear-gradient(160deg, #20262b, #0e1114)',
+          borderColor: `${rank.color}55`,
+          color: rank.color,
+        }}
+      >
+        {initials}
+      </span>
+      <span className="text-left leading-tight">
+        <span className="font-tac-md text-[12px] text-stone-100 block truncate max-w-[110px]">{user}</span>
+        <span className="font-tac-md text-[9px] tracking-widest" style={{ color: rank.color }}>
+          {rank.label} · K/D {fmtKD(p)}
+        </span>
+      </span>
+      <Trophy className="w-3.5 h-3.5 text-stone-600 group-hover:text-amber-300/80 transition-colors" />
+    </button>
+  )
+}
+
+function StatCell({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="bg-stone-950/70 border border-stone-800 rounded-md p-3 tac-corner">
+      <div className="flex items-center gap-2 text-stone-500 text-[10px] font-tac-md mb-1.5">{icon} {label}</div>
+      <div className="font-tac text-lg text-stone-100 tabular-nums leading-none">{value}</div>
+    </div>
+  )
+}
+
+function ProfileModal({ onClose }: { onClose: () => void }) {
+  const user = useAuth(s => s.user)
+  const logout = useAuth(s => s.logout)
+  if (!user) return null
+  const p = getProfile()
+  const rank = rankOf(p)
+  const initials = user.slice(0, 2).toUpperCase()
+  const time = p.timePlayed
+  const hours = Math.floor(time / 3600)
+  const mins = Math.floor((time % 3600) / 60)
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-[min(560px,94vw)] max-h-[88vh] overflow-y-auto bg-[#0b0e11]/97 border border-stone-700 shadow-2xl rounded-xl p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        <button onClick={onClose} className="absolute top-4 right-4 text-stone-500 hover:text-stone-200 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+
+        <div className="flex items-center gap-4 mb-5">
+          <span
+            className="w-14 h-14 rounded-md flex items-center justify-center font-tac text-xl border shrink-0"
+            style={{
+              background: 'linear-gradient(160deg, #20262b, #0e1114)',
+              borderColor: `${rank.color}55`,
+              color: rank.color,
+            }}
+          >
+            {initials}
+          </span>
+          <div>
+            <h3 className="font-tac text-xl tracking-[0.12em] text-stone-100 uppercase leading-none">{user}</h3>
+            <p className="font-tac-md text-[10px] mt-1.5 tracking-widest" style={{ color: rank.color }}>
+              {rank.label} · CAREER RECORD
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+          <StatCell icon={<Skull className="w-3.5 h-3.5" />} label="TOTAL KILLS" value={String(p.kills)} />
+          <StatCell icon={<Crown className="w-3.5 h-3.5" />} label="TOTAL WINS" value={String(p.wins)} />
+          <StatCell icon={<Activity className="w-3.5 h-3.5" />} label="BEST WIN STREAK" value={String(p.bestWinStreak)} />
+          <StatCell icon={<Swords className="w-3.5 h-3.5" />} label="K/D RATIO" value={fmtKD(p)} />
+          <StatCell icon={<Crosshair className="w-3.5 h-3.5" />} label="DEATHS" value={String(p.deaths)} />
+          <StatCell icon={<Target className="w-3.5 h-3.5" />} label="HEADSHOTS" value={String(p.headshots)} />
+          <StatCell icon={<Package className="w-3.5 h-3.5" />} label="MATCHES" value={String(p.matches)} />
+          <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="CURRENT STREAK" value={String(p.winStreak)} />
+          <StatCell icon={<Clock className="w-3.5 h-3.5" />} label="TIME PLAYED" value={hours > 0 ? `${hours}h ${mins}m` : `${mins}m`} />
+          <StatCell icon={<Rocket className="w-3.5 h-3.5" />} label="BR MATCHES" value={String(p.brPlays)} />
+          <StatCell icon={<Medal className="w-3.5 h-3.5" />} label="BR VICTORIES" value={String(p.brWins)} />
+          <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST BR PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
+        </div>
+
+        <div className="mt-5 flex items-center justify-between gap-3 border-t border-stone-800 pt-4">
+          <p className="text-stone-600 text-[10px] leading-relaxed max-w-[300px]">
+            Stats persist on this device and are recorded after every match — PvP,
+            campaign and Battle Royale.
+          </p>
+          <Button
+            variant="secondary"
+            className="h-9 font-tac-md text-[11px] bg-stone-800 border border-stone-600 hover:bg-red-950/60 hover:border-red-800/70 hover:text-red-200"
+            onClick={() => { onClose(); logout() }}
+          >
+            <LogOut className="w-3.5 h-3.5 mr-1.5" /> LOG OUT
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
 // Main menu — tactical tabs
 // ============================================================
-type MenuTab = 'deploy' | 'story' | 'controls' | 'settings' | 'info'
+type MenuTab = 'deploy' | 'story' | 'br' | 'controls' | 'settings' | 'info'
 type PlayMode = 'solo' | 'host' | 'guest'
-type RoomKind = '1v1' | '2v2'
 
 export function MainMenu() {
   const phase = useGame(s => s.phase)
   const setPlayerName = useGame(s => s.setPlayerName)
   const setHud = useGame(s => s.setHud)
+  const authUser = useAuth(s => s.user)
+  const brSet = useBr(s => s.set)
+  const [profileOpen, setProfileOpen] = useState(false)
   const [tab, setTab] = useState<MenuTab>('deploy')
   const [name, setName] = useState('')
   const [mode, setMode] = useState<PlayMode>('solo')
@@ -473,27 +623,33 @@ export function MainMenu() {
   // online room format + slot filling
   const [roomKind, setRoomKind] = useState<RoomKind>('1v1')
   const [fillEmpty, setFillEmpty] = useState(true)
+  // co-op campaign (join code)
+  const [coopCode, setCoopCode] = useState('')
 
   if (phase !== 'menu') return null
 
-  const launch = (m: PlayMode, roomCode = '', forceMode?: GameMode) => {
-    const n = name.trim() || 'Operator'
+  // v9: el nombre del operador por defecto es el de la cuenta
+  const effectiveName = name.trim() || authUser || ''
+
+  const launch = (m: PlayMode, roomCode = '', forceMode?: GameMode, forceKind?: RoomKind) => {
+    const n = effectiveName.trim() || 'Operator'
     if (n.length < 2) { setError('Name must be at least 2 characters'); return }
     setPlayerName(n)
     setError('')
+    const kind = forceKind ?? roomKind
     setHud({
       mode: m,
       roomCode,
       botDifficulty: difficulty,
       fillBots,
       gameMode: forceMode ?? gameMode,
-      roomKind,
-      fillEmptyWithBots: fillEmpty,
+      roomKind: kind,
+      fillEmptyWithBots: kind === 'coop' ? false : fillEmpty,
       lobby: null,
       netStatus: 'connecting',
       netError: '',
       story: {
-        active: forceMode === 'historia',
+        active: (forceMode ?? gameMode) === 'historia',
         chapter: 0,
         chapterTitle: '',
         objective: '',
@@ -513,9 +669,9 @@ export function MainMenu() {
       <MenuBackdrop />
 
       <div className="relative min-h-screen flex flex-col items-center px-4 py-6 sm:py-8">
-        {/* hero header */}
+        {/* hero header + v9 user widget (top-right) */}
         <div className="w-full max-w-5xl mb-5">
-          <div className="flex items-end justify-between">
+          <div className="flex items-end justify-between gap-4">
             <div className="select-none">
               <h1 className="font-tac text-4xl sm:text-[52px] tracking-[0.22em] text-stone-100 leading-none uppercase"
                 style={{ textShadow: '0 2px 28px rgba(0,0,0,0.8), 0 0 60px rgba(217,160,91,0.18)' }}>
@@ -528,14 +684,16 @@ export function MainMenu() {
                 </p>
               </div>
             </div>
-            <div className="hidden sm:flex flex-col items-end gap-1">
-              <span className="font-tac-md text-[10px] text-amber-300/70">v7</span>
-              <span className="font-tac-md text-[10px] text-stone-600">
-                Three.js · WebRTC · 5 modes
+            <div className="flex flex-col items-end gap-2 shrink-0">
+              <UserWidget onOpen={() => setProfileOpen(true)} />
+              <span className="font-tac-md text-[10px] text-stone-600 hidden sm:block">
+                Three.js · WebRTC · 5 modes + Battle Royale
               </span>
             </div>
           </div>
         </div>
+
+        {profileOpen && <ProfileModal onClose={() => setProfileOpen(false)} />}
 
         <StatusStrip />
 
@@ -543,6 +701,7 @@ export function MainMenu() {
         <div className="w-full max-w-5xl flex items-stretch gap-1 mb-0 border-b border-stone-800">
           <TabButton icon={Play} label="Deploy" active={tab === 'deploy'} onClick={() => setTab('deploy')} />
           <TabButton icon={Radio} label="Campaign" active={tab === 'story'} onClick={() => setTab('story')} />
+          <TabButton icon={Rocket} label="Battle Royale" active={tab === 'br'} onClick={() => setTab('br')} />
           <TabButton icon={Keyboard} label="Controls" active={tab === 'controls'} onClick={() => setTab('controls')} />
           <TabButton icon={Settings} label="Settings" active={tab === 'settings'} onClick={() => setTab('settings')} />
           <TabButton icon={Info} label="Info" active={tab === 'info'} onClick={() => setTab('info')} />
@@ -562,7 +721,7 @@ export function MainMenu() {
                   <Input
                     value={name}
                     onChange={e => { setName(e.target.value); setError('') }}
-                    placeholder="Enter your callsign"
+                    placeholder={authUser || 'Enter your callsign'}
                     maxLength={16}
                     className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
                   />
@@ -573,7 +732,7 @@ export function MainMenu() {
                 <div className="grid grid-cols-3 gap-2.5">
                   {([
                     { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Team deathmatch 4v4 vs AI', meta: 'offline' },
-                    { icon: Users, id: 'host', title: 'CREATE ROOM', desc: '1v1 or 2v2 with a P2P code', meta: 'online' },
+                    { icon: Users, id: 'host', title: 'CREATE ROOM', desc: '1v1 to 5v5 with a P2P code', meta: 'online' },
                     { icon: Link2, id: 'guest', title: 'JOIN', desc: 'Enter with a code', meta: 'online' },
                   ] as const).map(m => (
                     <button
@@ -636,29 +795,28 @@ export function MainMenu() {
                 )}
                 {mode === 'host' && (
                   <div className="space-y-4">
-                    {/* online room format */}
+                    {/* v9: online room format — 1v1 · 2v2 · 3v3 · 4v4 · 5v5 */}
                     <div>
                       <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
                         <Users className="w-3.5 h-3.5" /> Room format
                       </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {([
-                          { id: '1v1', title: '1 vs 1', desc: 'Classic duel · jump straight in' },
-                          { id: '2v2', title: '2 vs 2', desc: 'Teams of 2 · lobby + filler bots' },
-                        ] as const).map(k => (
+                      <div className="grid grid-cols-5 gap-2">
+                        {(['1v1', '2v2', '3v3', '4v4', '5v5'] as const).map(k => (
                           <button
-                            key={k.id}
-                            onClick={() => setRoomKind(k.id)}
-                            className={`rounded-lg border p-2.5 text-left transition-colors tac-corner ${
-                              roomKind === k.id
+                            key={k}
+                            onClick={() => setRoomKind(k)}
+                            className={`rounded-lg border p-2 text-center transition-colors tac-corner ${
+                              roomKind === k
                                 ? 'border-amber-500/70 bg-amber-500/[0.07]'
                                 : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
                             }`}
                           >
-                            <div className={`font-tac-md text-[11px] ${roomKind === k.id ? 'text-white' : 'text-stone-300'}`}>
-                              {k.title}
+                            <div className={`font-tac-md text-[11px] ${roomKind === k ? 'text-white' : 'text-stone-300'}`}>
+                              {k.toUpperCase()}
                             </div>
-                            <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{k.desc}</div>
+                            <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                              {k === '1v1' ? 'duel' : `${roomCapacity(k)} players`}
+                            </div>
                           </button>
                         ))}
                       </div>
@@ -829,6 +987,45 @@ export function MainMenu() {
                   Begin operation
                   <ChevronRight className="w-5 h-5 opacity-60 group-hover:translate-x-0.5 transition-transform" />
                 </button>
+
+                {/* v9 — CO-OP ONLINE (hasta 5, SIN bots de relleno) */}
+                <div className="rounded-lg border border-emerald-700/40 bg-emerald-900/[0.08] p-4 space-y-3.5 tac-corner">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-md border border-emerald-700/50 bg-emerald-950/40 flex items-center justify-center shrink-0">
+                      <Users className="w-5 h-5 text-emerald-300" />
+                    </div>
+                    <div>
+                      <h4 className="font-tac text-sm tracking-[0.16em] text-stone-100 uppercase">Co-op squad · online</h4>
+                      <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">
+                        Up to 5 operators · empty slots are NEVER filled with bots
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => launch('host', '', 'historia', 'coop')}
+                    className="w-full py-3 rounded-md font-tac text-sm tracking-[0.22em] uppercase transition-all
+                      bg-emerald-500/90 text-stone-950 hover:bg-emerald-400 active:scale-[0.99]
+                      flex items-center justify-center gap-2.5"
+                  >
+                    <Users className="w-4 h-4" /> Create co-op squad
+                  </button>
+                  <div className="flex gap-2">
+                    <Input
+                      value={coopCode}
+                      onChange={e => setCoopCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                      onKeyDown={e => { if (e.key === 'Enter' && coopCode.length >= 4) launch('guest', coopCode, 'historia', 'coop') }}
+                      placeholder="SQUAD CODE"
+                      className="bg-stone-950/80 border-stone-600 text-white text-lg h-11 font-bold tracking-[0.25em] text-center"
+                    />
+                    <button
+                      onClick={() => launch('guest', coopCode, 'historia', 'coop')}
+                      disabled={coopCode.length < 4}
+                      className="px-5 rounded-md font-tac text-xs tracking-[0.2em] uppercase bg-stone-100 text-stone-900 hover:bg-emerald-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Join
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* chapters */}
@@ -860,6 +1057,112 @@ export function MainMenu() {
                 <p className="text-stone-600 text-[10px] leading-relaxed pt-1">
                   If you fall, the current chapter restarts from its checkpoint — your
                   inventory is kept. Mission weapons are delivered as you go.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {tab === 'br' && (
+            <div className="p-5 sm:p-7 grid lg:grid-cols-[1.05fr_0.95fr] gap-6">
+              {/* left: what BR is + play */}
+              <div className="space-y-5">
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/[0.05] p-4 tac-corner">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-md border border-amber-700/50 bg-amber-950/40 flex items-center justify-center shrink-0">
+                      <Rocket className="w-6 h-6 text-amber-300" />
+                    </div>
+                    <div>
+                      <h3 className="font-tac text-white text-lg tracking-[0.14em] uppercase">Battle Royale</h3>
+                      <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">
+                        20 operators · last one standing · NEW standalone mode
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-stone-400 text-xs leading-relaxed mt-3">
+                    Drop from a plane onto an island twice the size of Meridian City: cities,
+                    mountains and lakes, drivable vehicles, weapon loot and supply crates.
+                    A progressive storm closes in — outlive 19 rivals and become the
+                    <b className="text-amber-200"> LAST OPERATOR STANDING</b>.
+                  </p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3 font-tac-md text-[10px] text-stone-500">
+                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 20 players (bots fill)</span>
+                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 60 s matchmaking</span>
+                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> 280×280 m island</span>
+                    <span className="flex items-center gap-1.5"><Wind className="w-3.5 h-3.5 text-amber-300/70" /> Storm damage</span>
+                  </div>
+                </div>
+
+                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
+                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-2.5 flex items-center gap-2">
+                    <Plane className="w-3.5 h-3.5" /> How a match flows
+                  </h4>
+                  <ol className="space-y-2 text-stone-400 text-xs leading-relaxed">
+                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">01</span> Matchmaking on the lobby island — the countdown starts once 4 players are connected.</li>
+                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">02</span> Board the plane, pick your drop with <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">SPACE</kbd> and glide down.</li>
+                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">03</span> Loot weapons, drive vehicles, fight inside the shrinking storm circle.</li>
+                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">04</span> Survive everyone — the storm does not forgive. #1 or nothing.</li>
+                  </ol>
+                </div>
+
+                <div className="bg-stone-900/50 border border-amber-900/40 rounded-md p-3.5 flex gap-3">
+                  <Gauge className="w-4 h-4 text-amber-400/70 shrink-0 mt-0.5" />
+                  <p className="text-stone-400 text-[11px] leading-relaxed">
+                    <b className="text-stone-200">Stability first:</b> Battle Royale runs on a fully isolated module
+                    loaded only while you play it, and its graphics are capped to the
+                    <b className="text-amber-200"> LOW and MEDIUM</b> profiles to keep the frames steady.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => {
+                    getAudio().uiClick()
+                    brSet({
+                      active: true,
+                      phase: 'queue',
+                      queuePlayers: [],
+                      countdown: 0,
+                      countdownActive: false,
+                      alive: 0,
+                      kills: 0,
+                      placement: 0,
+                      hp: 100,
+                      qualityNote: '',
+                      loadingMap: true,
+                    })
+                  }}
+                  className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
+                    bg-amber-400 text-stone-950 hover:bg-amber-300 active:scale-[0.99]
+                    flex items-center justify-center gap-3"
+                >
+                  <Rocket className="w-5 h-5" />
+                  Find match
+                  <ChevronRight className="w-5 h-5 opacity-60 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              </div>
+
+              {/* right: player's BR record */}
+              <div className="border-t lg:border-t-0 lg:border-l border-stone-800/80 pt-5 lg:pt-0 lg:pl-6 space-y-4">
+                <h3 className="font-tac-md text-stone-200 text-[11px] mb-2 flex items-center gap-2">
+                  <Trophy className="w-4 h-4 text-amber-300/80" /> Your BR record
+                </h3>
+                <BrRecordGrid />
+                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4 space-y-2">
+                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-1">Drop zones</h4>
+                  {[ 
+                    ['RIVERSIDE', 'SW city · rooftops, markets, garages'],
+                    ['NORTHGATE', 'NE industrial docks and warehouses'],
+                    ['SERENE LAKE', 'center lakeside loot and cabins'],
+                    ['THE RIDGE', 'mountain compounds — long sightlines'],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex gap-3 items-baseline">
+                      <span className="font-tac-md text-stone-600 text-[10px] w-24 shrink-0">{k}</span>
+                      <span className="text-stone-400 text-[11px]">{v}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-stone-600 text-[10px] leading-relaxed">
+                  Vehicles spawn near the cities — press <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-[10px]">E</kbd> to
+                  drive. Supply crates glow amber. The red wall is the storm: crossing it hurts more every phase.
                 </p>
               </div>
             </div>
@@ -920,6 +1223,21 @@ function Chip({ active, onClick, children }: {
   )
 }
 
+/** v9: récord de Battle Royale del perfil (pestaña BR) */
+function BrRecordGrid() {
+  const user = useAuth(s => s.user)
+  const p = getProfile()
+  if (!user) return null
+  return (
+    <div className="grid grid-cols-2 gap-2.5">
+      <StatCell icon={<Rocket className="w-3.5 h-3.5" />} label="BR MATCHES" value={String(p.brPlays)} />
+      <StatCell icon={<Crown className="w-3.5 h-3.5" />} label="BR VICTORIES" value={String(p.brWins)} />
+      <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
+      <StatCell icon={<Skull className="w-3.5 h-3.5" />} label="BR ELIMINATIONS" value={String(p.brKills)} />
+    </div>
+  )
+}
+
 function DifficultyPicker({ difficulty, setDifficulty, label }: {
   difficulty: BotDifficulty
   setDifficulty: (d: BotDifficulty) => void
@@ -946,7 +1264,7 @@ function DifficultyPicker({ difficulty, setDifficulty, label }: {
 // 2v2 shows the LOBBY with 4 slots; the host starts the match
 // (or it auto-starts when 4/4 fill up)
 // ============================================================
-function LobbySlotCard({ name, team, you }: { name: string | null; team: 'A' | 'B'; you?: boolean }) {
+function LobbySlotCard({ name, team, you, coop }: { name: string | null; team: 'A' | 'B'; you?: boolean; coop?: boolean }) {
   const amber = team === 'A'
   return (
     <div className={`rounded-md border px-3 py-2.5 flex items-center gap-2.5 ${
@@ -960,8 +1278,8 @@ function LobbySlotCard({ name, team, you }: { name: string | null; team: 'A' | '
           {name ?? 'FREE SLOT'}
           {you && <span className="font-tac-md text-amber-300/80 ml-1.5 text-[9px]">(YOU)</span>}
         </div>
-        <div className={`font-tac-md text-[9px] ${amber ? 'text-amber-300/60' : 'text-emerald-300/60'}`}>
-          {amber ? 'AMBER TEAM' : 'GREEN TEAM'}
+        <div className={`font-tac-md text-[9px] ${coop ? 'text-amber-300/60' : amber ? 'text-amber-300/60' : 'text-emerald-300/60'}`}>
+          {coop ? 'CO-OP SQUAD' : amber ? 'AMBER TEAM' : 'GREEN TEAM'}
         </div>
       </div>
     </div>
@@ -976,6 +1294,7 @@ export function ConnectingScreen() {
   const netError = useGame(s => s.netError)
   const roomKind = useGame(s => s.roomKind)
   const lobby = useGame(s => s.lobby)
+  const gameMode = useGame(s => s.gameMode)
   const playerName = useGame(s => s.playerName)
   const [copied, setCopied] = useState(false)
   if (phase !== 'connecting') return null
@@ -987,14 +1306,35 @@ export function ConnectingScreen() {
     setTimeout(() => setCopied(false), 1600)
   }
 
-  // 2v2 lobby (host waiting / guest inside)
-  const inDuoLobby = roomKind === '2v2' && netStatus === 'waiting' && lobby
-  const duoPlayers = lobby?.players ?? []
-  const slotFor = (id: string, team: 'A' | 'B') => {
-    const p = duoPlayers.find(x => x.id === id)
-    return <LobbySlotCard key={id} name={p?.name ?? null} team={team} you={p?.name === playerName} />
+  // v9: lobby generalizado — 1v1..5v5 por equipos o CO-OP (5 en ÁMBAR)
+  const isCoop = roomKind === 'coop'
+  const inRoomLobby = roomKind !== '1v1' && netStatus === 'waiting' && lobby
+  const roomPlayers = lobby?.players ?? []
+  const capacity = roomCapacity(roomKind)
+  const humans = roomPlayers.length
+  // huecos a mostrar: en coop 5 (anfitrión + p2..p5, todos ÁMBAR);
+  // en NvN, el anfitrión + huecos por equipo
+  const slotIds = isCoop
+    ? ['p1', 'p2', 'p3', 'p4', 'p5']
+    : ['p1', ...teamSlotsFor(roomKind).map(s => s.id)]
+  const slotTeam = (id: string): 'A' | 'B' => {
+    if (isCoop) return 'A'
+    if (id === 'p1') return 'A'
+    return teamSlotsFor(roomKind).find(s => s.id === id)?.team ?? 'B'
   }
-  const humans = duoPlayers.length
+  const slotFor = (id: string) => {
+    const p = roomPlayers.find(x => x.id === id)
+    const team = slotTeam(id)
+    return (
+      <LobbySlotCard
+        key={id}
+        name={p?.name ?? null}
+        team={team}
+        you={p?.name === playerName}
+        coop={isCoop}
+      />
+    )
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 px-4" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
@@ -1011,12 +1351,14 @@ export function ConnectingScreen() {
             Back to menu
           </Button>
         </div>
-      ) : inDuoLobby ? (
+      ) : inRoomLobby ? (
         <div className="relative w-[min(560px,94vw)] space-y-5">
           <div className="text-center space-y-2">
             {mode === 'host' ? (
               <>
-                <p className="font-tac text-white text-lg tracking-[0.25em] uppercase">Tactical 2v2 room</p>
+                <p className="font-tac text-white text-lg tracking-[0.25em] uppercase">
+                  {isCoop ? 'Co-op squad room' : `Tactical ${roomKind.toUpperCase()} room`}
+                </p>
                 <button
                   onClick={copyCode}
                   className="inline-flex items-center gap-3 px-6 py-2.5 rounded-md border border-amber-500/50 bg-amber-500/[0.07] hover:bg-amber-500/[0.14] transition-colors group"
@@ -1030,31 +1372,34 @@ export function ConnectingScreen() {
               </>
             ) : (
               <>
-                <p className="font-tac text-white text-lg tracking-[0.25em] uppercase">Inside the 2v2 room</p>
+                <p className="font-tac text-white text-lg tracking-[0.25em] uppercase">
+                  {isCoop ? 'Inside the co-op squad' : `Inside the ${roomKind.toUpperCase()} room`}
+                </p>
                 <p className="font-tac text-amber-200 text-2xl tracking-[0.3em]">{roomCode}</p>
               </>
             )}
             <p className="font-tac-md text-stone-500 text-[11px]">
-              OPERATORS {humans}/4 — free slots will be filled with bots{mode === 'host' ? ' at start' : ''}
+              {isCoop
+                ? `OPERATORS ${humans}/${capacity} — empty slots are NEVER filled with bots`
+                : `OPERATORS ${humans}/${capacity} — free slots will be filled with bots${mode === 'host' ? ' at start' : ''}`}
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5">
-            {slotFor('p1', 'A')}
-            {slotFor('p2', 'A')}
-            {slotFor('p3', 'B')}
-            {slotFor('p4', 'B')}
+          <div className={`grid gap-2.5 ${isCoop ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2'}`}>
+            {slotIds.map(id => slotFor(id))}
           </div>
 
           {mode === 'host' ? (
             <button
-              onClick={() => getGame()?.net.startDuoMatch()}
+              onClick={() => getGame()?.net.startTeamMatch()}
               className="group w-full py-3.5 rounded-md font-tac text-base tracking-[0.28em] uppercase transition-all
                 bg-stone-100 text-stone-900 hover:bg-amber-200 active:scale-[0.99]
                 flex items-center justify-center gap-3"
             >
               <Play className="w-5 h-5" />
-              {humans >= 4 ? 'Start 2v2 match' : `Start 2v2 (${humans}/4) with bots`}
+              {isCoop
+                ? (humans >= 5 ? 'Start co-op operation' : `Start co-op (${humans}/${capacity}) — no bots`)
+                : (humans >= capacity ? `Start ${roomKind.toUpperCase()} match` : `Start ${roomKind.toUpperCase()} (${humans}/${capacity}) with bots`)}
             </button>
           ) : (
             <div className="flex items-center justify-center gap-3 text-stone-400">
@@ -1063,9 +1408,13 @@ export function ConnectingScreen() {
             </div>
           )}
           <p className="text-stone-600 text-[10px] text-center leading-relaxed">
-            {mode === 'host'
-              ? 'Share the code: up to 3 more operators. The room auto-starts at 4/4.'
-              : 'AMBER = you and the host · GREEN = the rival team.'}
+            {isCoop
+              ? (mode === 'host'
+                  ? 'Share the code: up to 4 more operators join the CAMPAIGN as a squad. Slots that stay empty stay EMPTY.'
+                  : 'AMBER = the whole squad. The host runs the mission.')
+              : (mode === 'host'
+                  ? `Share the code: up to ${capacity - 1} more operators. The room auto-starts when full.`
+                  : gameMode === 'historia' ? 'AMBER = you and the host.' : 'AMBER = you and the host · GREEN = the rival team.')}
           </p>
         </div>
       ) : (

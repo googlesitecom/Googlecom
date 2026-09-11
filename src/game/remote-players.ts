@@ -61,6 +61,8 @@ export interface RemotePlayer {
   breathPhase: number
   /** baliza de bandera (CTF) */
   flagMesh: THREE.Mesh | null
+  /** v9: indicador flotante SOBRE el portador (visible a través de muros) */
+  flagMarker: THREE.Mesh | null
 }
 
 const TEAM_COLORS: Record<Team, number> = { A: 0xd99a2b, B: 0x35b04a }
@@ -471,6 +473,7 @@ export class RemotePlayers {
         aimPose: 0, fireKick: 0, walkSwing: 0,
         crouchAmt: 0, sprintAmt: 0, breathPhase: Math.random() * Math.PI * 2,
         flagMesh: null,
+        flagMarker: null,
       }
       const { tex } = makeNameTag(state.name, state.team, state.team === 'A' ? '#f59e0b' : '#22c55e')
       ;(rp.tag.material as THREE.SpriteMaterial).map = tex
@@ -752,14 +755,38 @@ export class RemotePlayers {
         flag.position.set(0, 1.85, -0.28)
         rp.bodyGroup.add(flag)
         rp.flagMesh = flag
+        // v9: rombo flotante SOBRE la cabeza — depthTest OFF para verlo a
+        // través de muros y a cualquier distancia (requisito del CTF)
+        const marker = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.34),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false }),
+        )
+        marker.renderOrder = 999
+        marker.position.set(0, 2.75, 0)
+        rp.bodyGroup.add(marker)
+        rp.flagMarker = marker
       } else if (!state.flag && rp.flagMesh) {
         rp.bodyGroup.remove(rp.flagMesh)
         rp.flagMesh.geometry.dispose()
         ;(rp.flagMesh.material as THREE.Material).dispose()
         rp.flagMesh = null
+        if (rp.flagMarker) {
+          rp.bodyGroup.remove(rp.flagMarker)
+          rp.flagMarker.geometry.dispose()
+          ;(rp.flagMarker.material as THREE.Material).dispose()
+          rp.flagMarker = null
+        }
       }
       if (rp.flagMesh) {
         rp.flagMesh.rotation.y = Math.sin(renderT / 300) * 0.25
+      }
+      if (rp.flagMarker) {
+        // v9: el rombo sube/baja y gira — imposible no verlo
+        rp.flagMarker.rotation.y = renderT / 500
+        rp.flagMarker.position.y = 2.75 + Math.sin(renderT / 380) * 0.16
+        const s = 1 + 0.14 * Math.sin(renderT / 380)
+        rp.flagMarker.scale.setScalar(s)
+        rp.flagMarker.visible = !rp.root.visible ? false : true
       }
     }
     return result

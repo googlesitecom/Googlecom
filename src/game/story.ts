@@ -16,6 +16,7 @@
 import * as THREE from 'three'
 import type { Game } from './engine'
 import { useGame } from './store'
+import { liveTally, recordMatch } from './auth'
 import {
   STORY_INTEL, STORY_UPLINK, STORY_ANTENNAS, STORY_PRISONER, STORY_EXTRACTION,
   type StoryObjective, type NetSnapshot,
@@ -224,6 +225,25 @@ const CINE_BATTLES: CineBattleSpec[][] = [
   ],
 ]
 
+export interface StorySyncData {
+  chapter: number
+  chapterLive: boolean
+  cine: boolean
+  objective: string
+  progress: string
+  timer: number
+  hint: string
+  dialogue: { who: string; text: string } | null
+  status: 'playing' | 'victory'
+  doneLabels: string[]
+}
+
+export interface StoryRemoteMsg {
+  chapter: number
+  label: string
+  kind: 'intel' | 'plant' | 'rescue' | 'extraction'
+}
+
 export class StoryDirector {
   private game: Game
   private scene: THREE.Scene
@@ -248,6 +268,12 @@ export class StoryDirector {
   private finished = false
   private beaconMat!: THREE.MeshBasicMaterial
 
+  /** v9 COOP: true en los INVITADOS — el anfitrión manda en la misión */
+  private remote = false
+  /** interacciones ya reenviadas (evita duplicar mientras llega el sync) */
+  private remoteSent = new Set<string>()
+  private victoryRecorded = false
+
   constructor(game: Game) {
     this.game = game
     this.scene = game.getStoryScene()
@@ -255,9 +281,198 @@ export class StoryDirector {
 
   /** access to scene/state — the engine calls this at start */
   begin(): void {
+    // v9: en la campaña cooperativa el director del ANFITRIÓN es la
+    // autoridad; los invitados reciben su estado por 'storySync'
+    this.remote = this.game.net.mode === 'guest'
     useGame.getState().setStory({ active: true, chapter: 1, status: 'playing' })
     this.startedAt = performance.now()
+    liveTally.reset()
     this.setChapter(0, true)
+  }
+
+  // ----------------------------------------------------------
+  // v9 COOP — sincronización de la misión
+  // ----------------------------------------------------------
+  /** ANFITRIÓN: estado completo para difundir a los invitados */
+  syncPayload(): StorySyncData {
+    const st = useGame.getState().story
+    return {
+      chapter: this.chapter,
+      chapterLive: this.chapterLive,
+      cine: useGame.getState().cineActive,
+      objective: st.objective,
+      progress: st.progress,
+      timer: st.timer,
+      hint: st.hint,
+      dialogue: st.dialogue,
+      status: st.status,
+      doneLabels: this.markers.filter(m => m.done).map(m => m.obj.label),
+    }
+  }
+
+  /** INVITADO: aplica el estado del anfitrión (capítulos, cinemáticas,
+   *  objetivos completados, diálogos y cronómetros) */
+  remoteSync(d: StorySyncData): void {
+    if (!this.remote) return
+    if (d.status === 'victory') {
+      this.recordVictory()
+      useGame.getState().setStory({ status: 'victory', dialogue: null, hint: '' })
+      return
+    }
+    // cambio de capítulo: reproducir la misma cinemática del anfitrión
+    if (d.chapter !== this.chapter) {
+      this.remoteSent.clear()
+      this.setChapter(d.chapter, d.cine)
+    }
+    // el anfitrión ya está en juego y el invitado sigue en cine → activar
+    if (d.chapterLive && !this.chapterLive && !useGame.getState().cineActive) {
+      this.activateChapter()
+    }
+    // marcadores ya completados (por el anfitrión u otro invitado)
+    for (const m of this.markers) {
+      if (!m.done && d.doneLabels.includes(m.obj.label)) {
+        m.done = true
+        this.scene.remove(m.group)
+        this.game.audio.pickup(false)
+      }
+    }
+    useGame.getState().setStory({
+      objective: d.objective,
+      progress: d.progress,
+      timer: d.timer,
+      hint: this.remoteHoldHint(d.hint),
+      dialogue: d.dialogue,
+    })
+  }
+
+  /** el invitado muestra su propio hint de interacción, no el del anfitrión */
+  private remoteHoldHint(hostHint: string): string {
+    return this.holdHint || hostHint
+  }
+  private holdHint = ''
+
+  /** INVITADO: reenviar una interacción al anfitrión (una sola vez) */
+  private forwardRemote(kind: StoryRemoteMsg['kind'], label: string): void {
+    const key = `${this.chapter}:${kind}:${label}`
+    if (this.remoteSent.has(key)) return
+    this.remoteSent.add(key)
+    this.game.net.sendStoryRemote({ chapter: this.chapter, label, kind })
+  }
+
+  /** ANFITRIÓN: un invitado completó una interacción — resolverla aquí */
+  remoteComplete(d: StoryRemoteMsg): void {
+    if (this.remote || this.finished) return
+    if (d.chapter !== this.chapter) return
+    if (d.kind === 'intel' || d.kind === 'plant') {
+      this.completeMarkerLabel(d.label)
+    } else if (d.kind === 'rescue') {
+      if (!this.rescueFreed) this.freePrisoner()
+    } else if (d.kind === 'extraction') {
+      this.finishExtraction()
+    }
+  }
+
+  /** completar un marcador por su etiqueta (intels/antenas) */
+  private completeMarkerLabel(label: string): void {
+    const m = this.markers.find(x => !x.done && x.obj.label === label)
+    if (!m) return
+    if (this.chapter === 0) this.completeIntelMarker(m)
+    else if (this.chapter === 2) this.completeAntennaMarker(m)
+  }
+
+  private completeIntelMarker(m: Marker): void {
+    m.done = true
+    this.scene.remove(m.group)
+    this.game.audio.pickup(false)
+    this.game.audio.announceDing()
+    const done = this.markers.filter(x => x.done).length
+    this.progress = `${done} / 3`
+    useGame.getState().setStory({ progress: this.progress })
+    this.nextDialogue()
+    if (done === 1) this.game.net.sendStoryCmd({ cmd: 'give', weapon: 'mp9' })
+    if (done === 3) this.schedule(1.4, () => this.completeChapter())
+  }
+
+  private completeAntennaMarker(m: Marker): void {
+    m.done = true
+    this.scene.remove(m.group)
+    this.game.audio.reload('pump')
+    this.game.audio.announceDing()
+    this.nextDialogue()
+    const done = this.markers.filter(x => x.done).length
+    useGame.getState().setStory({ progress: `${done} / 3` })
+    if (done === 3) {
+      this.timer = 45
+      this.objective = 'GET CLEAR! Charges armed'
+      useGame.getState().setStory({ objective: this.objective })
+    }
+  }
+
+  private freePrisoner(): void {
+    const m = this.markers[0]
+    if (m && !m.done) {
+      m.done = true
+      this.scene.remove(m.group)
+    }
+    this.rescueFreed = true
+    this.holdT = 0
+    this.timer = 75
+    this.nextDialogue()
+    this.objective = 'SURVIVE the alarm while Rivera escapes'
+    useGame.getState().setStory({ objective: this.objective, progress: 'MAX ALERT', timer: 75 })
+    this.game.audio.announceDing()
+    this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 2 })
+  }
+
+  private finishExtraction(): void {
+    if (this.finished) return
+    this.finished = true
+    this.nextDialogue()
+    const time = Math.round((performance.now() - this.startedAt) / 1000)
+    useGame.getState().setStory({
+      hint: '',
+      timer: 0,
+      stats: { time, kills: this.countKills() },
+    })
+    this.game.audio.roundEnd()
+    this.game.net.sendStoryCmd({ cmd: 'protect', count: 30 })
+    this.game.playStoryCine({
+      points: CHAPTER_CINES[5].points.map(p => new THREE.Vector3(...p)),
+      looks: CHAPTER_CINES[5].looks.map(p => new THREE.Vector3(...p)),
+      dur: 22,
+      title: 'OPERATION ASHFALL',
+      subtitle: 'MISSION COMPLETE · HERO OF THE VALLEY',
+      dialogues: [
+        { at: 1.2, who: 'PILOT', text: 'Vulture 2-1 lifting! Operator aboard — get us out of here!' },
+        { at: 5.4, who: 'RED', text: 'The whole complex is burning. Six hours ago it was just a quiet valley.' },
+        { at: 9.6, who: 'RIVERA', text: 'The valley owes you one, Operator. The resistance does not forget.' },
+        { at: 13.8, who: 'VEGA', text: 'This… changes nothing. There are a hundred valleys like this one.' },
+        { at: 17.4, who: 'COMMAND', text: 'Operation Ashfall complete. Shake off the dust, hero. You earned it.' },
+      ],
+      battles: [
+        { cx: 0, cz: -44, yaw: 0, count: 4 },
+        { cx: 22, cz: -58, yaw: Math.PI / 2, count: 3 },
+      ],
+      onDone: () => {
+        this.recordVictory()
+        useGame.getState().setStory({ status: 'victory', dialogue: null })
+      },
+    })
+  }
+
+  private recordVictory(): void {
+    if (this.victoryRecorded) return
+    this.victoryRecorded = true
+    const t = liveTally.snapshot()
+    recordMatch({
+      mode: 'historia',
+      kills: this.countKills(),
+      deaths: t.deaths,
+      headshots: t.headshots,
+      win: true,
+      story: true,
+      duration: Math.max(0, (performance.now() - this.startedAt) / 1000),
+    })
   }
 
   // ----------------------------------------------------------
@@ -528,19 +743,10 @@ export class StoryDirector {
       if (this.game.dead) break
       const d = Math.hypot(this.game.pos.x - m.obj.x, this.game.pos.z - m.obj.z)
       if (d < 2.6) {
-        m.done = true
-        this.scene.remove(m.group)
-        this.game.audio.pickup(false)
-        this.game.audio.announceDing()
+        // v9 COOP: el invitado lo reenvía — el anfitrión lo completa
+        if (this.remote) { this.forwardRemote('intel', m.obj.label); continue }
+        this.completeIntelMarker(m)
         done++
-        this.progress = `${done} / 3`
-        useGame.getState().setStory({ progress: this.progress })
-        this.nextDialogue()
-        // chapter 1: deliver an MP-9 for the siege
-        if (done === 1) this.game.net.sendStoryCmd({ cmd: 'give', weapon: 'mp9' })
-        if (done === 3) {
-          this.schedule(1.4, () => this.completeChapter())
-        }
       }
     }
   }
@@ -601,36 +807,33 @@ export class StoryDirector {
         this.holdT += dt
         this.holdTarget = near
         if (this.holdT >= 2.5) {
-          near.done = true
-          this.scene.remove(near.group)
-          this.holdT = 0
-          this.holdTarget = null
-          done++
-          this.game.audio.reload('pump')
-          this.game.audio.announceDing()
-          this.nextDialogue()
-          useGame.getState().setStory({ progress: `${done} / 3` })
-          if (done === 3) {
-            // explosion countdown
-            this.timer = 45
-            this.objective = 'GET CLEAR! Charges armed'
-            useGame.getState().setStory({ objective: this.objective })
+          // v9 COOP: el invitado planta la carga → lo resuelve el anfitrión
+          if (this.remote) {
+            this.forwardRemote('plant', near.obj.label)
+            this.holdT = 0
+            this.holdTarget = null
+          } else {
+            this.completeAntennaMarker(near)
+            this.holdT = 0
+            this.holdTarget = null
+            done++
           }
         }
       } else if (this.holdTarget === near) {
         this.holdT = Math.max(0, this.holdT - dt * 3)
       }
       const pct = Math.round((this.holdT / 2.5) * 100)
-      useGame.getState().setStory({
-        hint: this.holdT > 0.05 ? `PLANTING CHARGE… ${pct}%` : 'HOLD [E] TO PLANT THE CHARGE',
-      })
+      this.holdHint = this.holdT > 0.05 ? `PLANTING CHARGE… ${pct}%` : 'HOLD [E] TO PLANT THE CHARGE'
+      useGame.getState().setStory({ hint: this.holdHint })
     } else {
       this.holdT = 0
       this.holdTarget = null
-      useGame.getState().setStory({ hint: '' })
+      this.holdHint = ''
+      if (!this.remote) useGame.getState().setStory({ hint: '' })
     }
-    // explosion phase: countdown and BOOM (once)
-    if (this.timer > 0 && !this.boomDone) {
+    // explosión: solo la resuelve el anfitrión (los invitados ven el
+    // cronómetro y la explosión llegan por el sync + eventos de red)
+    if (!this.remote && this.timer > 0 && !this.boomDone) {
       this.timer = Math.max(0, this.timer - dt)
       useGame.getState().setStory({ timer: Math.ceil(this.timer) })
       if (this.timer <= 0) {
@@ -661,49 +864,46 @@ export class StoryDirector {
         if (held && !this.game.dead) {
           this.holdT += dt
           if (this.holdT >= 3.0) {
-            this.rescueFreed = true
-            m.done = true
-            this.scene.remove(m.group)
-            this.holdT = 0
-            this.timer = 75          // alarm: survive while Rivera runs
-            this.nextDialogue()
-            this.objective = 'SURVIVE the alarm while Rivera escapes'
-            useGame.getState().setStory({ objective: this.objective, progress: 'MAX ALERT', timer: 75 })
-            this.game.audio.announceDing()
-            // v7: 2 guards answer the alarm (before: 4 — too many)
-            this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 2 })
+            // v9 COOP: el invitado abre la celda → lo resuelve el anfitrión
+            if (this.remote) {
+              this.forwardRemote('rescue', m.obj.label)
+              this.holdT = 0
+            } else {
+              this.freePrisoner()
+            }
           }
         } else {
           this.holdT = Math.max(0, this.holdT - dt * 3)
         }
         const pct = Math.round((this.holdT / 3.0) * 100)
-        useGame.getState().setStory({
-          hint: this.holdT > 0.05 ? `OPENING THE CELL… ${pct}%` : 'HOLD [E] TO FREE THE PRISONER',
-        })
+        this.holdHint = this.holdT > 0.05 ? `OPENING THE CELL… ${pct}%` : 'HOLD [E] TO FREE THE PRISONER'
+        useGame.getState().setStory({ hint: this.holdHint })
       } else {
         this.holdT = 0
-        useGame.getState().setStory({
-          hint: `PRISONER AT ${Math.round(d)} m · reach the cell and hold [E]`,
-        })
+        this.holdHint = `PRISONER AT ${Math.round(d)} m · reach the cell and hold [E]`
+        useGame.getState().setStory({ hint: this.holdHint })
       }
       return
     }
 
     // alarm phase: clock with one final push and constant pressure
-    this.timer = Math.max(0, this.timer - dt)
-    useGame.getState().setStory({ timer: Math.ceil(this.timer) })
-    if (t1000() - this.rescueWaveAt > 30000) {
-      this.rescueWaveAt = t1000()
-      this.game.net.sendStoryCmd({ cmd: 'attack', x: STORY_PRISONER.x, z: STORY_PRISONER.z })
-    }
-    if (this.timer < 30 && !this.rescueReinforced) {
-      this.rescueReinforced = true
-      this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 1 })
-    }
-    if (this.timer <= 0 && !this.rescueDone) {
-      this.rescueDone = true
-      useGame.getState().setStory({ hint: '', progress: '' })
-      this.schedule(1.2, () => this.completeChapter())
+    // (el anfitrión gobierna el cronómetro; los invitados lo ven por el sync)
+    if (!this.remote) {
+      this.timer = Math.max(0, this.timer - dt)
+      useGame.getState().setStory({ timer: Math.ceil(this.timer) })
+      if (t1000() - this.rescueWaveAt > 30000) {
+        this.rescueWaveAt = t1000()
+        this.game.net.sendStoryCmd({ cmd: 'attack', x: STORY_PRISONER.x, z: STORY_PRISONER.z })
+      }
+      if (this.timer < 30 && !this.rescueReinforced) {
+        this.rescueReinforced = true
+        this.game.net.sendStoryCmd({ cmd: 'reinforce', count: 1 })
+      }
+      if (this.timer <= 0 && !this.rescueDone) {
+        this.rescueDone = true
+        useGame.getState().setStory({ hint: '', progress: '' })
+        this.schedule(1.2, () => this.completeChapter())
+      }
     }
   }
 
@@ -744,53 +944,28 @@ export class StoryDirector {
 
   /** Ch 6: timed extraction */
   private updateExtraction(dt: number): void {
-    this.timer = Math.max(0, this.timer - dt)
-    const d = Math.hypot(this.game.pos.x - STORY_EXTRACTION.x, this.game.pos.z - STORY_EXTRACTION.z)
-    useGame.getState().setStory({
-      timer: Math.ceil(this.timer),
-      hint: `EXTRACTION AT ${Math.round(d)} m`,
-    })
-    if (d < 4.5 && !this.finished) {
-      this.finished = true
-      this.nextDialogue()
-      const time = Math.round((performance.now() - this.startedAt) / 1000)
+    if (!this.remote) {
+      this.timer = Math.max(0, this.timer - dt)
+      const d = Math.hypot(this.game.pos.x - STORY_EXTRACTION.x, this.game.pos.z - STORY_EXTRACTION.z)
       useGame.getState().setStory({
-        hint: '',
-        timer: 0,
-        stats: { time, kills: this.countKills() },
+        timer: Math.ceil(this.timer),
+        hint: `EXTRACTION AT ${Math.round(d)} m`,
       })
-      this.game.audio.roundEnd()
-      // final cinematic: orbit of the helipad → victory screen
-      this.game.net.sendStoryCmd({ cmd: 'protect', count: 30 })
-      this.game.playStoryCine({
-        points: CHAPTER_CINES[5].points.map(p => new THREE.Vector3(...p)),
-        looks: CHAPTER_CINES[5].looks.map(p => new THREE.Vector3(...p)),
-        dur: 22,
-        title: 'OPERATION ASHFALL',
-        subtitle: 'MISSION COMPLETE · HERO OF THE VALLEY',
-        dialogues: [
-          { at: 1.2, who: 'PILOT', text: 'Vulture 2-1 lifting! Operator aboard — get us out of here!' },
-          { at: 5.4, who: 'RED', text: 'The whole complex is burning. Six hours ago it was just a quiet valley.' },
-          { at: 9.6, who: 'RIVERA', text: 'The valley owes you one, Operator. The resistance does not forget.' },
-          { at: 13.8, who: 'VEGA', text: 'This… changes nothing. There are a hundred valleys like this one.' },
-          { at: 17.4, who: 'COMMAND', text: 'Operation Ashfall complete. Shake off the dust, hero. You earned it.' },
-        ],
-        battles: [
-          { cx: 0, cz: -44, yaw: 0, count: 4 },
-          { cx: 22, cz: -58, yaw: Math.PI / 2, count: 3 },
-        ],
-        onDone: () => {
-          useGame.getState().setStory({ status: 'victory', dialogue: null })
-        },
-      })
-      return
-    }
-    if (this.timer <= 0 && !this.finished) {
-      // the helicopter left: repeat chapter 6 (no cinematic)
-      this.finished = false
-      useGame.getState().addAnnouncement('The helicopter left without you… retrying extraction', 'info')
-      this.game.audio.announceDing()
-      this.setChapter(5, false)
+      if (d < 4.5 && !this.finished) {
+        this.finishExtraction()
+        return
+      }
+      if (this.timer <= 0 && !this.finished) {
+        // the helicopter left: repeat chapter 6 (no cinematic)
+        this.finished = false
+        useGame.getState().addAnnouncement('The helicopter left without you… retrying extraction', 'info')
+        this.game.audio.announceDing()
+        this.setChapter(5, false)
+      }
+    } else {
+      // v9 COOP: un invitado puede alcanzar la extracción y terminar la misión
+      const d = Math.hypot(this.game.pos.x - STORY_EXTRACTION.x, this.game.pos.z - STORY_EXTRACTION.z)
+      if (d < 4.5 && !this.finished) this.forwardRemote('extraction', 'EXTRACT')
     }
   }
 
@@ -801,9 +976,12 @@ export class StoryDirector {
     void snap
   }
 
-  /** the player died: the current chapter restarts without cinematic */
+  /** the player died: the current chapter restarts without cinematic.
+   *  v9: solo en partida SOLA — en cooperativa hay respawn normal (el
+   *  capítulo no se reinicia para todo el escuadrón por una muerte) */
   onPlayerDeath(): void {
     if (this.finished) return
+    if (this.game.net.mode !== 'solo') return
     this.game.audio.announceDing()
     // the server respawn takes 3 s → restart right after
     this.schedule(3.6, () => {
@@ -816,6 +994,7 @@ export class StoryDirector {
 
   dispose(): void {
     this.clearMarkers()
+    this.victoryRecorded = false
     useGame.getState().setStory({ active: false, dialogue: null, hint: '' })
   }
 

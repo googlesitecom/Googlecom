@@ -3,20 +3,48 @@
 // - solo:  simulación local con bots (sin servidor)
 // - host:  simulación local + sala P2P por PeerJS
 //          · 1v1: un invitado, entra directo a la partida
-//          · 2v2: hasta 3 invitados + lobby + inicio del anfitrión
+//          · 2v2/3v3/4v4/5v5 (v9): lobby + inicio del anfitrión,
+//            huecos rellenables con bots (opcional)
+//          · coop (v9): campaña cooperativa hasta 5 jugadores,
+//            SIN bots de relleno bajo ninguna circunstancia
 // - guest: se conecta a la sala del anfitrión por PeerJS
 // ============================================================
 import { Peer, type DataConnection } from 'peerjs'
 import type { Game } from './engine'
 import { useGame } from './store'
+import { liveTally, recordMatch } from './auth'
 import {
   GAME, generateRoomCode, peerIdForRoom,
   type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId, type Team,
 } from './shared'
 
 export type NetMode = 'solo' | 'host' | 'guest'
-/** v6.2: formato de sala online */
-export type RoomKind = '1v1' | '2v2'
+/** v9: formato de la sala online (1v1 clásico o equipos NxN + coop) */
+export type RoomKind = '1v1' | '2v2' | '3v3' | '4v4' | '5v5' | 'coop'
+
+/** v9: huecos de invitado por formato — el anfitrión ya ocupa A.
+ *  Intercalado A,B,A,B… con los B extra al final (2v2 = A,B,B como v6.2) */
+export function teamSlotsFor(kind: RoomKind): { id: string; team: Team }[] {
+  if (kind === 'coop') {
+    // campaña cooperativa: hasta 5 operadores, TODOS en el equipo ÁMBAR
+    return ['p2', 'p3', 'p4', 'p5'].map(id => ({ id, team: 'A' as Team }))
+  }
+  const n = Math.max(1, Number(kind[0]) || 1)
+  const needA = n - 1, needB = n
+  const slots: { id: string; team: Team }[] = []
+  let a = 0, b = 0, i = 2
+  while (a < needA || b < needB) {
+    if (a < needA && (b >= needB || a <= b)) { slots.push({ id: `p${i++}`, team: 'A' }); a++ }
+    else { slots.push({ id: `p${i++}`, team: 'B' }); b++ }
+  }
+  return slots
+}
+
+/** v9: capacidad humana total de la sala (incluye al anfitrión) */
+export function roomCapacity(kind: RoomKind): number {
+  if (kind === 'coop') return 5
+  return Math.max(1, Number(kind[0]) || 1) * 2
+}
 
 export interface ConnectOpts {
   mode: NetMode
@@ -101,6 +129,10 @@ export class NetClient {
 
   private mapId: MapId = 'ciudad'
 
+  // v9: registro de fin de partida (solo una vez por sesión)
+  private matchRecorded = false
+  private matchReturnTimer: ReturnType<typeof setTimeout> | null = null
+
   // ------------------------------------------------------------
   // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
   // ------------------------------------------------------------
@@ -178,14 +210,12 @@ export class NetClient {
     // sincronizar el código de sala con el store (puede haberse regenerado)
     if (useGame.getState().roomCode !== code) useGame.getState().setHud({ roomCode: code })
 
-    if (kind === '2v2') {
-      // ---- 2v2: NO arrancar la simulación todavía — primero el lobby ----
-      this.duoSlots = [
-        { id: 'p2', team: 'A', conn: null, name: '', joined: false, outbox: [] },
-        { id: 'p3', team: 'B', conn: null, name: '', joined: false, outbox: [] },
-        { id: 'p4', team: 'B', conn: null, name: '', joined: false, outbox: [] },
-      ]
+    if (kind !== '1v1') {
+      // ---- NvN / COOP: NO arrancar la simulación todavía — primero el lobby ----
+      this.duoSlots = teamSlotsFor(kind).map(s => ({ ...s, conn: null, name: '', joined: false, outbox: [] as PeerMsg[] }))
       this.pushLobby() // lobby con solo el anfitrión
+      // v9: la campaña cooperativa NO rellena huecos con bots NUNCA
+      if (kind === 'coop') this.fillEmpty = false
       useGame.getState().setHud({ netStatus: 'waiting' })
     } else {
       this.startSimWorker(difficulty, fill, gameMode)
@@ -199,7 +229,11 @@ export class NetClient {
     peer.on('open', () => {
       if (this.disposed) return
       useGame.getState().addAnnouncement(
-        kind === '2v2' ? `2v2 ROOM ${code} CREATED — share the code (up to 3 more operators)` : `ROOM ${code} CREATED — share the code`,
+        kind === 'coop'
+          ? `CO-OP SQUAD ${code} CREATED — share the code (up to 4 more operators, NO bots)`
+          : kind !== '1v1'
+            ? `${kind.toUpperCase()} ROOM ${code} CREATED — share the code (up to ${roomCapacity(kind) - 1} more operators)`
+            : `ROOM ${code} CREATED — share the code`,
         'info',
       )
     })
@@ -214,7 +248,7 @@ export class NetClient {
 
     peer.on('connection', (conn: DataConnection) => {
       if (this.disposed) { conn.close(); return }
-      if (this.roomKind === '2v2') {
+      if (this.roomKind !== '1v1') {
         this.acceptDuoGuest(conn, name, code, fill, difficulty, attempt, gameMode, fillEmpty)
         return
       }
@@ -300,9 +334,9 @@ export class NetClient {
   }
 
   // ------------------------------------------------------------
-  // 2v2 — aceptar invitados, lobby e inicio de la partida
+  // NvN / COOP — aceptar invitados, lobby e inicio de la partida
   // ------------------------------------------------------------
-  /** invitado 2v2 conectado: asignar hueco libre y gestionar su ciclo */
+  /** v9: invitado conectado a sala NvN/coop: asignar hueco libre y gestionar su ciclo */
   private acceptDuoGuest(conn: DataConnection, hostName: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode, fillEmpty: boolean): void {
     const slot = this.duoSlots.find(s => s.conn === null)
     if (!slot) {
@@ -333,18 +367,24 @@ export class NetClient {
         slot.joined = true
         slot.name = String((msg.d as { name?: string })?.name ?? 'Operador').slice(0, 16).trim() || 'Operador'
         // confirmación inmediata al invitado (cancela su tiempo de espera)
-        this.sendToPeer(conn, { e: 'lobbyAck', d: { id: slot.id, kind: '2v2', players: this.lobbyPlayers() } })
+        this.sendToPeer(conn, { e: 'lobbyAck', d: { id: slot.id, kind: this.roomKind, players: this.lobbyPlayers() } })
         this.pushLobby()
-        useGame.getState().addAnnouncement(`${slot.name} joined the room (team ${slot.team === 'A' ? 'AMBER' : 'GREEN'})`, 'info')
-        // sala llena (4/4) → inicio automático con cuenta atrás breve
+        useGame.getState().addAnnouncement(`${slot.name} joined the ${this.roomKind === 'coop' ? 'squad' : `room (team ${slot.team === 'A' ? 'AMBER' : 'GREEN'})`}`, 'info')
+        // sala llena → inicio automático con cuenta atrás breve
+        // (coop también arranca sola al llegar 5/5 operadores)
         if (this.duoSlots.every(s => s.conn && s.joined) && !this.worker) {
-          useGame.getState().addAnnouncement('SALA COMPLETA — la partida 2v2 inicia…', 'info')
+          useGame.getState().addAnnouncement('ROOM FULL — the match starts…', 'info')
           setTimeout(() => {
             if (this.disposed || this.worker) return
             if (!this.duoSlots.every(s => s.conn && s.joined)) return // alguien salió
-            this.startDuoMatch()
+            this.startTeamMatch()
           }, 2600)
         }
+        return
+      }
+      if (msg.e === 'storyRemote') {
+        // v9: interacción de campaña de un invitado → el anfitrión la resuelve
+        this.game.storyRemoteComplete(msg.d as { chapter: number; label: string; kind: 'intel' | 'plant' | 'rescue' | 'extraction' })
         return
       }
       if (msg.e === 'ping') {
@@ -369,10 +409,16 @@ export class NetClient {
         return
       }
       if (wasJoined) {
-        // durante la partida: baja + bot de reemplazo (2v2 siempre equilibrado)
+        // durante la partida: baja…
         this.sendToSim({ e: 'leave', d: { id: slot.id } })
-        if (this.fillEmpty) this.sendToSim({ e: 'fillBot', d: { team: slot.team } })
-        useGame.getState().addAnnouncement('An operator left — a bot fills their slot', 'info')
+        // v9: …bot de reemplazo SOLO en salas PvP con relleno activado.
+        // En la campaña cooperativa los huecos quedan VACÍOS (sin bots)
+        if (this.fillEmpty && this.roomKind !== 'coop' && this.roomKind !== '1v1') {
+          this.sendToSim({ e: 'fillBot', d: { team: slot.team } })
+          useGame.getState().addAnnouncement('An operator left — a bot fills their slot', 'info')
+        } else {
+          useGame.getState().addAnnouncement('An operator left the squad', 'info')
+        }
       }
     })
     conn.on('error', () => { /* silencioso: close() lo gestiona */ })
@@ -391,9 +437,9 @@ export class NetClient {
   /** refleja el lobby en el store local y lo difunde a todos los invitados */
   private pushLobby(): void {
     const players = this.lobbyPlayers()
-    useGame.getState().setHud({ lobby: { kind: '2v2', players } })
+    useGame.getState().setHud({ lobby: { kind: this.roomKind, players } })
     for (const s of this.duoSlots) {
-      if (s.conn) this.sendToSlot(s, { e: 'lobby', d: { kind: '2v2', players } })
+      if (s.conn) this.sendToSlot(s, { e: 'lobby', d: { kind: this.roomKind, players } })
     }
   }
 
@@ -409,16 +455,28 @@ export class NetClient {
     }
   }
 
-  /** v6.2: el anfitrión inicia la partida 2v2 (botón o 4/4 jugadores) */
-  startDuoMatch(): void {
+  /** v6.2 → v9: el anfitrión inicia la partida NvN / coop (botón o sala llena).
+   *  Los huecos vacíos se rellenan con bots SOLO en salas PvP con relleno
+   *  activado — la campaña cooperativa queda estrictamente sin bots. */
+  startDuoMatch(): void { this.startTeamMatch() }
+  startTeamMatch(): void {
     if (this.disposed) return
-    if (this.roomKind !== '2v2' || this.worker) return // ya iniciada / no es 2v2
+    if (this.roomKind === '1v1' || this.worker) return // ya iniciada / no es sala con lobby
+    const kind = this.roomKind
     const players = this.lobbyPlayers()
     const humansA = players.filter(p => p.team === 'A').length
     const humansB = players.filter(p => p.team === 'B').length
-    const botsA = this.fillEmpty ? Math.max(0, 2 - humansA) : 0
-    const botsB = this.fillEmpty ? Math.max(0, 2 - humansB) : 0
-    this.startSimWorker(this.duoDifficulty, 0, this.duoGameMode, botsA, botsB)
+    if (kind === 'coop') {
+      // campaña cooperativa: misión en el mapa instalación con sus
+      // enemigos (equipo B) — las plazas humanas vacías QUEDAN VACÍAS
+      this.mapId = 'instalacion'
+      this.startSimWorker(this.duoDifficulty, 5, 'historia')
+    } else {
+      const n = Math.max(1, Number(kind[0]) || 1)
+      const botsA = this.fillEmpty ? Math.max(0, n - humansA) : 0
+      const botsB = this.fillEmpty ? Math.max(0, n - humansB) : 0
+      this.startSimWorker(this.duoDifficulty, 0, this.duoGameMode, botsA, botsB)
+    }
     // unir a la simulación al anfitrión y a cada invitado presente
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name: this.hostName, team: 'A', announce: false } })
     for (const s of this.duoSlots) {
@@ -427,11 +485,43 @@ export class NetClient {
       }
     }
     useGame.getState().setHud({ netStatus: 'connected' })
+    this.matchRecorded = false
     // aviso a los invitados: la partida arranca (el welcome llega por el worker)
     for (const s of this.duoSlots) {
       if (s.conn) this.sendToSlot(s, { e: 'lobbyStart', d: { players } })
     }
-    useGame.getState().addAnnouncement(`2v2 MATCH STARTED — AMBER ${humansA + botsA} · GREEN ${humansB + botsB}`, 'info')
+    if (kind === 'coop') {
+      // v9: el director de campaña del ANFITRIÓN manda — sincroniza el
+      // estado de la misión con los invitados cada 400 ms
+      this.startStorySync()
+      useGame.getState().addAnnouncement(`CO-OP OPERATION STARTED — ${players.length} operator${players.length > 1 ? 's' : ''} (empty slots stay EMPTY)`, 'info')
+    } else {
+      const n = Math.max(1, Number(kind[0]) || 1)
+      useGame.getState().addAnnouncement(`${kind.toUpperCase()} MATCH STARTED — AMBER ${humansA + (this.fillEmpty ? Math.max(0, n - humansA) : 0)} · GREEN ${humansB + (this.fillEmpty ? Math.max(0, n - humansB) : 0)}`, 'info')
+    }
+  }
+
+  /** v9 COOP: difunde el estado del director de historia del anfitrión */
+  private storySyncTimer: ReturnType<typeof setInterval> | null = null
+  private startStorySync(): void {
+    this.stopStorySync()
+    this.storySyncTimer = setInterval(() => {
+      if (this.disposed || !this.worker) { this.stopStorySync(); return }
+      const payload = this.game.storySyncPayload()
+      if (!payload) return
+      for (const s of this.duoSlots) {
+        if (s.conn) this.sendToSlot(s, { e: 'storySync', d: payload })
+      }
+    }, 400)
+  }
+  private stopStorySync(): void {
+    if (this.storySyncTimer) { clearInterval(this.storySyncTimer); this.storySyncTimer = null }
+  }
+
+  /** v9 COOP: interacción de un invitado reenviada al anfitrión (guest side) */
+  sendStoryRemote(d: { chapter: number; label: string; kind: string }): void {
+    if (this.mode !== 'guest') return
+    if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'storyRemote', d })
   }
 
   private guestJoined = false
@@ -505,16 +595,20 @@ export class NetClient {
           return
         }
         if (msg.e === 'lobbyAck' || msg.e === 'lobby') {
-          // v6.2: sala 2v2 — el anfitrión confirmó la entrada / actualiza la
-          // lista del lobby. Cancela el tiempo de espera del enlace (el
-          // invitado ya está DENTRO; falta que el anfitrión inicie)
+          // v6.2 → v9: sala con lobby — el anfitrión confirmó la entrada /
+          // actualiza la lista. Cancela el tiempo de espera del enlace
           if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
-          const d = msg.d as { id?: string; kind?: '1v1' | '2v2'; players?: { id: string; name: string; team: Team }[] }
+          const d = msg.d as { id?: string; kind?: RoomKind; players?: { id: string; name: string; team: Team }[] }
           if (d.id) this.id = d.id
           useGame.getState().setHud({
             netStatus: 'waiting',
-            lobby: { kind: '2v2', players: d.players ?? [] },
+            lobby: { kind: d.kind ?? '2v2', players: d.players ?? [] },
           })
+          return
+        }
+        if (msg.e === 'storySync') {
+          // v9 COOP: estado de la misión desde el anfitrión
+          this.dispatchLocal('storySync', msg.d)
           return
         }
         if (msg.e === 'lobbyStart') {
@@ -524,7 +618,7 @@ export class NetClient {
           return
         }
         if (msg.e === 'roomFull') {
-          this.fail('The room is full (4/4). Ask for a new code.')
+          this.fail('The room is full. Ask for a new code.')
           return
         }
         if (msg.e === 'pong') {
@@ -695,6 +789,8 @@ export class NetClient {
   disconnect(): void {
     this.disposed = true
     if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
+    if (this.matchReturnTimer) { clearTimeout(this.matchReturnTimer); this.matchReturnTimer = null }
+    this.stopStorySync()
     this.stopPing()
     if (this.worker) { this.worker.terminate(); this.worker = null }
     try { this.guestConn?.close() } catch { /* ok */ }
@@ -725,6 +821,14 @@ export class NetClient {
         store.setConnected(true)
         store.setHud({ round: d.round, playerId: d.id, team: d.team })
         game.onWelcome(d.team, d.econ.money)
+        // v9: nueva sesión de partida → contadores de carrera a cero
+        liveTally.reset()
+        this.matchRecorded = false
+        // v9: el invitado adopta el modo del anfitrión (objetivos CTF/DOM
+        // visibles aunque el invitado entró con otro modo por defecto)
+        if (this.mode === 'guest' && d.round?.mode && d.round.mode !== useGame.getState().gameMode) {
+          game.applyServerMode(d.round.mode)
+        }
         break
       }
       case 'spawnEvent': {
@@ -765,6 +869,7 @@ export class NetClient {
       case 'deathEvent': {
         const d = data as { killerName: string; respawnIn: number }
         game.onDeath(d.killerName, d.respawnIn)
+        liveTally.addDeath()
         break
       }
       case 'kill': {
@@ -778,7 +883,10 @@ export class NetClient {
           victim: d.victimName, victimTeam: d.victimTeam,
           weapon: d.weapon, headshot: d.headshot,
         })
-        if (d.killer === this.id) game.audio.killConfirm()
+        if (d.killer === this.id) {
+          game.audio.killConfirm()
+          liveTally.addKill(d.headshot)
+        }
         break
       }
       case 'shotFired': {
@@ -834,6 +942,27 @@ export class NetClient {
           `FINAL VICTORY: ${d.winner === 'A' ? 'AMBER' : 'GREEN'} ${d.roundWinsA}–${d.roundWinsB}`,
           'round', d.winner,
         )
+        // v9: estadísticas de carrera + regreso al MENÚ tras la victoria
+        // definitiva (TDM/CTF/DOM/FFA) — no se repite partida automáticamente
+        if (!this.matchRecorded) {
+          this.matchRecorded = true
+          const t = liveTally.snapshot()
+          recordMatch({
+            mode: useGame.getState().gameMode,
+            kills: t.kills,
+            deaths: t.deaths,
+            headshots: t.headshots,
+            win: d.winner === useGame.getState().team,
+            duration: Math.max(0, (Date.now() - t.startedAt) / 1000),
+          })
+          store.addAnnouncement('MATCH OVER — returning to main menu…', 'round', d.winner)
+          if (this.matchReturnTimer) clearTimeout(this.matchReturnTimer)
+          this.matchReturnTimer = setTimeout(() => {
+            if (this.disposed) return
+            try { game.dispose() } catch { /* ya desechado */ }
+            useGame.getState().setPhase('menu')
+          }, 6500)
+        }
         break
       }
       case 'econ': {
@@ -917,6 +1046,18 @@ export class NetClient {
       case 'captureFX': {
         const d = data as { x: number; z: number; team: 'A' | 'B' }
         game.onCaptureFX(d.x, d.z, d.team)
+        break
+      }
+      case 'storySync': {
+        // v9 COOP: el anfitrión difunde el estado del director de misión
+        const d = data as {
+          chapter: number; chapterLive: boolean; cine: boolean
+          objective: string; progress: string; timer: number; hint: string
+          dialogue: { who: string; text: string } | null
+          status: 'playing' | 'victory'
+          doneLabels: string[]
+        }
+        game.onStorySync(d)
         break
       }
       default:

@@ -42,6 +42,9 @@ interface BotAI {
   objX: number
   objZ: number
   objUntil: number
+  /** v9 DOMINACIÓN: subida al tejado de BRAVO (almacén norte) */
+  roof: null | 'climb' | 'top'
+  climbT: number
 }
 
 interface SimPlayer {
@@ -128,6 +131,8 @@ interface SimZone {
   id: 'A' | 'B' | 'C'
   name: string
   x: number; z: number
+  /** v9: altura mínima para capturar (BRAVO = tejado) */
+  minY?: number
   owner: Team | null
   prog: number
   by: Team | null
@@ -182,7 +187,7 @@ export class GameSim {
     b: { team: 'B', status: 'home', x: FLAG_B[0], z: FLAG_B[1], carrier: null, returnAt: 0 },
   }
   // dominación
-  private zones: SimZone[] = DOM_ZONES.map(z => ({ id: z.id, name: z.name, x: z.x, z: z.z, owner: null, prog: 0, by: null }))
+  private zones: SimZone[] = DOM_ZONES.map(z => ({ id: z.id, name: z.name, x: z.x, z: z.z, minY: z.minY, owner: null, prog: 0, by: null }))
   private domTickAt = 0
 
   private round = {
@@ -388,6 +393,7 @@ export class GameSim {
         speedMult: 0.88 + Math.random() * 0.26,
         role: Math.random() < 0.62 ? 'attack' : 'defend',
         objX: 0, objZ: 0, objUntil: 0,
+        roof: null, climbT: 0,
       }
     }
     this.respawnPlayer(p, true)
@@ -876,8 +882,9 @@ export class GameSim {
         this.endRound(this.round.scoresA > this.round.scoresB ? 'A' : 'B')
       }
     } else if (this.mode === 'ffa') {
+      // v9: la partida TERMINA cuando el primer jugador llega a 50
       for (const p of this.players.values()) {
-        if (p.kills >= target) { this.endRound(p.team); break }
+        if (p.kills >= target) { this.endMatch(p.team); break }
       }
     } else {
       // bandera / dominación: puntuación de equipo
@@ -1059,6 +1066,9 @@ export class GameSim {
       for (const p of this.players.values()) {
         if (p.dead) continue
         if (Math.hypot(p.x - z.x, p.z - z.z) > GAME.DOM_ZONE_RADIUS) continue
+        // v9: BRAVO se captura SOLO desde el TEJADO del almacén
+        // (minY definido en DOM_ZONES; la planta baja no cuenta)
+        if (z.minY !== undefined && p.y < z.minY) continue
         if (p.team === 'A') a++; else b++
       }
       if (a > 0 && b === 0 && z.owner !== 'A') {
@@ -1162,13 +1172,39 @@ export class GameSim {
       return [own.x + rand(-7, 7), own.z + rand(-7, 7)]
     }
     if (this.mode === 'dominacion') {
-      // zona más cercana que no sea nuestra
+      // v9: zona más cercana que no sea nuestra
       let best: SimZone | null = null
       let bestD = Infinity
       for (const z of this.zones) {
         if (z.owner === p.team) continue
         const d = Math.hypot(z.x - p.x, z.z - p.z)
         if (d < bestD) { bestD = d; best = z }
+      }
+      // v9: BRAVO vive en el TEJADO — subir por la escalera exterior
+      // (oeste del almacén); al elegir otra zona, bajar al suelo
+      const ai = p.ai!
+      if (best && best.minY !== undefined) {
+        if (ai.roof === 'top') {
+          // ya está arriba: rondar la zona del tejado
+          return [best.x + rand(-2.5, 2.5), best.z + rand(-2.5, 2.5)]
+        }
+        if (ai.roof !== 'climb') {
+          // dirigirse a la base de la escalera exterior oeste
+          const STAIR_BX = -32, STAIR_BZ = -8.3
+          const dStair = Math.hypot(p.x - STAIR_BX, p.z - STAIR_BZ)
+          if (dStair > 2.2) return [STAIR_BX + rand(-1, 1), STAIR_BZ + rand(-1, 1)]
+          // llegado a la escalera: iniciar la subida (5 s)
+          ai.roof = 'climb'
+          ai.climbT = 5
+          return [p.x, p.z]
+        }
+        return [p.x, p.z] // subiendo
+      }
+      // otra zona: si estaba en el tejado, saltar al suelo
+      if (ai.roof === 'top' || ai.roof === 'climb') {
+        ai.roof = null
+        ai.climbT = 0
+        p.y = 0.02
       }
       if (best) return [best.x + rand(-3, 3), best.z + rand(-3, 3)]
       // todas nuestras: quedarse en la más cercana
@@ -1414,7 +1450,37 @@ export class GameSim {
       }
       ai.lastX = p.x; ai.lastZ = p.z; ai.stuckCheck = t
     }
-    p.y = 0.02
+    // v9 DOMINACIÓN: bots en el tejado de BRAVO (escalera exterior oeste
+    // del almacén norte): durante la subida avanzan hacia el extremo alto
+    // y ganan altura; arriba se mantienen a nivel de tejado
+    if (p.ai && (p.ai.roof === 'climb' || p.ai.roof === 'top')) {
+      if (p.ai.roof === 'climb') {
+        p.ai.climbT -= dt
+        const f = Math.min(1, Math.max(0, 1 - p.ai.climbT / 5))
+        p.y = 0.02 + f * 6.1
+        // avanzar por la escalera (de la base (-32,-8.3) hacia el norte)
+        const tx = -32, tz = -8.3 - f * 5.5
+        const ddx = tx - p.x, ddz = tz - p.z
+        const dl = Math.hypot(ddx, ddz) || 1
+        if (dl > 0.4) {
+          p.x += (ddx / dl) * 1.2 * dt
+          p.z += (ddz / dl) * 1.2 * dt
+        }
+        p.yaw = Math.atan2(ddx, ddz)
+        p.speed = 1.2
+        if (p.ai.climbT <= 0) {
+          p.ai.roof = 'top'
+          // aterrizar en el tejado junto a la zona
+          p.x = -21.5 + rand(-1, 1)
+          p.z = -17 + rand(-2, 2)
+          p.y = 6.17
+        }
+      } else {
+        p.y = 6.17
+      }
+    } else {
+      p.y = 0.02
+    }
   }
 
   private angleLerp(cur: number, want: number, rate: number): number {
@@ -1432,6 +1498,8 @@ export class GameSim {
   }
 
   private botShoot(p: SimPlayer, target: SimPlayer, d: number, t: number): void {
+    // v9 CTF: quien lleva la bandera corre, no dispara
+    if (p.flag) return
     const ai = p.ai!
     const skill = BOT_SKILL[this.difficulty]
     const w = WEAPONS[p.weapon]
@@ -1602,6 +1670,11 @@ export class GameSim {
     hits: { target: string, part: BodyPart, dist: number }[]
   }): void {
     if (p.dead) return
+    // v9 CTF: el portador de la bandera NO puede disparar
+    if (p.flag) {
+      this.emit('buyResult', { ok: false, money: p.money, error: 'WEAPONS DISABLED — you carry the flag!' }, p.id)
+      return
+    }
     const w = WEAPONS[data.weapon]
     if (!w) return
     const t = now()
@@ -1710,7 +1783,18 @@ export class GameSim {
     }
 
     if (this.round.phase === 'live' && t > this.round.endsAt) {
-      const winner = this.round.scoresA === this.round.scoresB
+      // v9: en FFA el líder se lleva la partida al agotarse el tiempo
+      let winner: Team
+      if (this.mode === 'ffa') {
+        let best: SimPlayer | null = null
+        for (const p of this.players.values()) {
+          if (!best || p.kills > best.kills || (p.kills === best.kills && p.deaths < best.deaths)) best = p
+        }
+        winner = best ? best.team : 'A'
+        this.endMatch(winner)
+        return
+      }
+      winner = this.round.scoresA === this.round.scoresB
         ? (this.teamCounts().A <= this.teamCounts().B ? 'A' : 'B')
         : (this.round.scoresA > this.round.scoresB ? 'A' : 'B')
       this.endRound(winner)

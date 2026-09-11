@@ -4,7 +4,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 
-const ROOT = '/home/z/my-project/out'
+const ROOT = '/home/z/my-project/Googlecom/out'
 const BASE = '/Googlecom'
 const PORT = 4173
 

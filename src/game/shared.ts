@@ -17,9 +17,10 @@ export const GAME = {
   SNAPSHOT_EVERY: 2,     // snapshot cada 2 ticks (15 Hz)
   INPUT_RATE: 50,        // cliente envía input cada 50 ms (20 Hz)
   INTERP_DELAY: 120,     // ms de interpolación de jugadores remotos
-  ROUND_TIME: 240,       // segundos por ronda (combate de equipos)
+  // v9: rondas de 3 minutos — primera escuadra en ganar 3 rondas gana
+  ROUND_TIME: 180,       // segundos por ronda (combate de equipos)
   ROUND_KILLS: 30,       // kills de equipo para ganar la ronda
-  ROUNDS_TO_WIN: 5,      // rondas para ganar la partida
+  ROUNDS_TO_WIN: 3,      // rondas para ganar la partida (v9: mejor de 5)
   RESPAWN_TIME: 3.0,     // segundos hasta reaparecer
   SPAWN_PROTECT: 2.5,    // segundos de protección al aparecer
   BUY_RADIUS: 8,         // metros de la zona de compra
@@ -45,8 +46,13 @@ export const GAME = {
   DOM_CAP_TIME: 7,       // segundos para capturar una zona
   DOM_TICK_POINTS: 5,    // puntos por zona cada 5 s
   DOM_TARGET: 150,       // puntos para ganar la ronda
-  // todos contra todos
-  FFA_KILLS: 15,         // bajas individuales para ganar la ronda
+  // todos contra todos (v9: la partida termina al primer 50)
+  FFA_KILLS: 50,         // bajas individuales para ganar la PARTIDA
+  // battle royale (v9)
+  BR_PLAYERS: 20,        // operadores por partida (bots rellenan)
+  BR_REAL_FOR_COUNTDOWN: 4,  // jugadores conectados que activan la cuenta atrás
+  BR_COUNTDOWN: 60,      // s de matchmaking tras detectar 4 conectados
+  BR_MAP_HALF: 140,      // mapa 280×280 (el doble que el 140×140 de combate)
 } as const
 
 // ------------------------------------------------------------
@@ -67,13 +73,13 @@ export interface ModeInfo {
 export const MODES: Record<GameMode, ModeInfo> = {
   escaramuza: {
     id: 'escaramuza', name: 'TEAM DEATHMATCH', short: 'TEAMS',
-    desc: '4 vs 4 · first squad to hit the target wins the round',
+    desc: '4 vs 4 · 30 eliminations or best score at 3:00 wins the round · first squad to take 3 rounds wins',
     target: GAME.ROUND_KILLS, time: GAME.ROUND_TIME, teams: true,
   },
   ffa: {
     id: 'ffa', name: 'FREE FOR ALL', short: 'FFA',
-    desc: 'Operator vs operator · first personal streak wins',
-    target: GAME.FFA_KILLS, time: GAME.ROUND_TIME, teams: false,
+    desc: 'Operator vs operator · the match ends when someone reaches 50 eliminations',
+    target: GAME.FFA_KILLS, time: 300, teams: false,
   },
   bandera: {
     id: 'bandera', name: 'CAPTURE THE FLAG', short: 'CTF',
@@ -1569,10 +1575,16 @@ export const FLAG_A: [number, number] = [-58, 0]
 export const FLAG_B: [number, number] = [58, 0]
 
 // --- Zonas de dominación ---
-export interface DomZoneSpec { id: 'A' | 'B' | 'C'; name: string; x: number; z: number }
+// v9: BRAVO se captura SOLO desde el TEJADO del almacén norte
+// (escalera exterior en el lado oeste; la planta baja no cuenta)
+export interface DomZoneSpec {
+  id: 'A' | 'B' | 'C'; name: string; x: number; z: number
+  /** v9: captura solo por encima de esta altura (tejado) */
+  minY?: number
+}
 export const DOM_ZONES: DomZoneSpec[] = [
   { id: 'A', name: 'ALPHA', x: 0, z: 0 },         // rotonda central
-  { id: 'B', name: 'BRAVO', x: -19.5, z: -19.5 },// interior del almacén norte
+  { id: 'B', name: 'BRAVO', x: -19.5, z: -19.5, minY: 5.2 },  // ¡TEJADO del almacén norte!
   { id: 'C', name: 'CHARLIE', x: 46, z: 58 },    // parque SE
 ]
 

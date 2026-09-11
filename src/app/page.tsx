@@ -3,11 +3,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useGame } from '@/game/store'
+import { useAuth, restoreSession } from '@/game/auth'
+import { useBr } from '@/game/br-store'
 import { MainMenu, ConnectingScreen, PauseMenu } from '@/components/game/menus'
 import { Hud, DeathOverlay, StoryVictory } from '@/components/game/hud'
 import { BuyMenu } from '@/components/game/buy-menu'
 import { Scoreboard } from '@/components/game/scoreboard'
 import { BootScreen } from '@/components/boot-screen'
+import { AuthScreen } from '@/components/auth-screen'
 import { getAudio } from '@/game/audio'
 
 const GameMount = dynamic(
@@ -15,10 +18,23 @@ const GameMount = dynamic(
   { ssr: false },
 )
 
+// v9: Battle Royale lives in its own lazily-fetched chunk (modular
+// architecture) — the module code is only downloaded and evaluated
+// when the player actually enters BR, and it is fully disposed on exit.
+const BrMount = dynamic(
+  () => import('@/components/game/br-mount').then(m => m.BrMount),
+  { ssr: false },
+)
+
 export default function Home() {
   const phase = useGame(s => s.phase)
   const [booted, setBooted] = useState(false)
+  const authReady = useAuth(s => s.ready)
+  const authUser = useAuth(s => s.user)
+  const brActive = useBr(s => s.active)
   const inGame = phase !== 'menu'
+  // Battle Royale takes over the whole screen while active
+  const brScreen = brActive
 
   // la música arranca con el primer gesto (política de autoplay) y ya no se
   // detiene: el motor la atenúa durante la partida y la restaura en el menú
@@ -42,6 +58,11 @@ export default function Home() {
     }
   }, [])
 
+  // restore the persisted login session once, right after the boot screen
+  useEffect(() => {
+    if (booted) restoreSession()
+  }, [booted])
+
   const onBootDone = useCallback(() => setBooted(true), [])
 
   return (
@@ -49,15 +70,21 @@ export default function Home() {
       {!booted && <BootScreen onDone={onBootDone} />}
       {booted && (
         <>
-          {inGame && <GameMount />}
-          {inGame && <Hud />}
-          {inGame && <Scoreboard />}
-          {inGame && <BuyMenu />}
-          {inGame && <DeathOverlay />}
-          {inGame && <PauseMenu />}
-          {inGame && <StoryVictory />}
-          {phase === 'menu' && <MainMenu />}
-          {phase === 'connecting' && <ConnectingScreen />}
+          {brScreen && <BrMount />}
+          {!brScreen && authReady && !authUser && <AuthScreen />}
+          {!brScreen && authUser && (
+            <>
+              {inGame && <GameMount />}
+              {inGame && <Hud />}
+              {inGame && <Scoreboard />}
+              {inGame && <BuyMenu />}
+              {inGame && <DeathOverlay />}
+              {inGame && <PauseMenu />}
+              {inGame && <StoryVictory />}
+              {phase === 'menu' && <MainMenu />}
+              {phase === 'connecting' && <ConnectingScreen />}
+            </>
+          )}
         </>
       )}
     </main>

@@ -75,10 +75,10 @@ export function Hud() {
           <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-lg px-5 py-2 text-center shadow-xl tac-corner">
             <div className="flex items-center gap-2 text-amber-300">
               <Swords className="w-4 h-4" />
-              <span className="font-tac text-xl tabular-nums">{myKills} / {round?.scoreTarget ?? 15}</span>
+              <span className="font-tac text-xl tabular-nums">{myKills} / {round?.scoreTarget ?? 50}</span>
             </div>
             <div className="font-tac-md text-[9px] text-stone-400">
-              LEADER: {round?.leader?.name ?? '—'} · {round?.leader?.kills ?? 0}
+              FIRST TO {round?.scoreTarget ?? 50} WINS · LEADER: {round?.leader?.name ?? '—'} · {round?.leader?.kills ?? 0}
             </div>
           </div>
         )}
@@ -108,11 +108,21 @@ export function Hud() {
       {/* ===== P2P room chip ===== */}
       <RoomChip />
 
-      {/* ===== Carrying the flag ===== */}
+      {/* ===== Carrying the flag (v9: weapons disabled) ===== */}
       {carryingFlag && phase === 'playing' && (
-        <div className="absolute top-36 left-1/2 -translate-x-1/2 bg-amber-500/20 border border-amber-400 rounded-lg px-5 py-1.5 flex items-center gap-2 animate-pulse shadow-2xl">
-          <Flag className="w-4 h-4 text-amber-300" />
-          <span className="font-tac-md text-amber-200 text-sm">YOU HAVE THE FLAG — RUN TO YOUR BASE</span>
+        <div className="absolute top-36 left-1/2 -translate-x-1/2 bg-amber-500/25 border-2 border-amber-400 rounded-lg px-6 py-2 flex items-center gap-2.5 animate-pulse shadow-2xl">
+          <Flag className="w-5 h-5 text-amber-300" />
+          <span className="font-tac-md text-amber-100 text-sm tracking-wider">YOU CARRY THE FLAG — WEAPONS DISABLED · RUN HOME!</span>
+        </div>
+      )}
+
+      {/* ===== v9: BRAVO zone lives on the warehouse ROOF ===== */}
+      {gameMode === 'dominacion' && phase === 'playing' && (
+        <div className="absolute top-[88px] left-1/2 -translate-x-1/2 bg-stone-950/75 border border-amber-900/60 rounded px-3 py-1 flex items-center gap-2">
+          <Target className="w-3.5 h-3.5 text-amber-400/90" />
+          <span className="font-tac-md text-[10px] text-stone-400 tracking-wider">
+            BRAVO is captured on the <b className="text-amber-200">WAREHOUSE ROOF</b> — take the outside stairs · ground floor does NOT count
+          </span>
         </div>
       )}
 

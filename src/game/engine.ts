@@ -16,7 +16,7 @@ import {
   STORY_EXTRACTION, EQUIPMENT,
   getMapData, keyLabel,
   type MapData, type MapId,
-  type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
+  type Team, type WeaponId, type GameMode, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
   isMouseButton, mouseButtonIndex,
 } from './shared'
 import { AudioEngine, getAudio } from './audio'
@@ -27,7 +27,7 @@ import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture
 import { useGame } from './store'
 import { NetClient } from './net'
 import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
-import { StoryDirector } from './story'
+import { StoryDirector, type StorySyncData, type StoryRemoteMsg } from './story'
 
 interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
 interface HitMarker { t: number; headshot: boolean; dmg?: number }
@@ -187,6 +187,8 @@ export class Game {
 
   // runtime de armas
   private nextShotAt = 0
+  /** v9: última vez que se avisó del bloqueo de disparo (CTF) */
+  private flagWarnAt = 0
   private sprayIdx = 0
   private lastShotTime = 0
   private reloading = false
@@ -337,7 +339,7 @@ export class Game {
   private grassUniform = { value: 0 }
 
   // ---- objetivos de los modos (banderas / zonas) ----
-  private flagViews = new Map<'a' | 'b', { group: THREE.Group; cloth: THREE.Mesh; beam: THREE.Mesh }>()
+  private flagViews = new Map<'a' | 'b', { group: THREE.Group; cloth: THREE.Mesh; beam: THREE.Mesh; pad?: THREE.Mesh }>()
   private zoneViews: { id: 'A' | 'B' | 'C'; ring: THREE.Mesh; ring2: THREE.Mesh; letter: THREE.Sprite }[] = []
   private zoneMatCache = new Map<string, THREE.MeshBasicMaterial>()
 
@@ -1636,31 +1638,49 @@ export class Game {
   private buildObjectives(): void {
     const mode = useGame.getState().gameMode
     if (mode === 'bandera') {
+      // v9: bandera MUY visible — mástil alto, paño emisivo, haz de luz
+      // permanente y plataforma pulsante en la base
       const mk = (key: 'a' | 'b', pos: [number, number], team: Team): void => {
         const color = team === 'A' ? 0xf59e0b : 0x22c55e
         const group = new THREE.Group()
         const pole = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.06, 0.07, 3.3, 8),
-          new THREE.MeshStandardMaterial({ color: 0xd0d4d8, roughness: 0.4, metalness: 0.8 }),
+          new THREE.CylinderGeometry(0.07, 0.09, 4.4, 8),
+          new THREE.MeshStandardMaterial({ color: 0xe8ecef, roughness: 0.35, metalness: 0.85 }),
         )
-        pole.position.y = 1.65
+        pole.position.y = 2.2
         pole.castShadow = true
         group.add(pole)
+        // remate dorado
+        const finial = new THREE.Mesh(
+          new THREE.SphereGeometry(0.16, 12, 10),
+          new THREE.MeshStandardMaterial({ color: 0xffd25e, emissive: 0x8a5a12, emissiveIntensity: 0.8, metalness: 0.7, roughness: 0.3 }),
+        )
+        finial.position.y = 4.5
+        group.add(finial)
         const cloth = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.1, 0.7),
-          new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, roughness: 0.8, emissive: color, emissiveIntensity: 0.25 }),
+          new THREE.PlaneGeometry(1.5, 0.95),
+          new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, roughness: 0.75, emissive: color, emissiveIntensity: 0.55 }),
         )
-        cloth.position.set(0.56, 2.9, 0)
+        cloth.position.set(0.78, 3.85, 0)
         group.add(cloth)
+        // haz vertical SIEMPRE visible (se intensifica al ser portada)
         const beam = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.16, 0.3, 12, 10, 1, true),
-          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }),
+          new THREE.CylinderGeometry(0.22, 0.42, 16, 12, 1, true),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
         )
-        beam.position.y = 6
+        beam.position.y = 8
         group.add(beam)
+        // plataforma pulsante en la base
+        const pad = new THREE.Mesh(
+          new THREE.RingGeometry(1.5, 2.3, 40),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }),
+        )
+        pad.rotation.x = -Math.PI / 2
+        pad.position.y = 0.06
+        group.add(pad)
         group.position.set(pos[0], 0, pos[1])
         this.scene.add(group)
-        this.flagViews.set(key, { group, cloth, beam })
+        this.flagViews.set(key, { group, cloth, beam, pad })
       }
       mk('a', FLAG_A, 'A')
       mk('b', FLAG_B, 'B')
@@ -1671,11 +1691,13 @@ export class Game {
         const mat = this.zoneMat(null)
         const ring = new THREE.Mesh(new THREE.RingGeometry(GAME.DOM_ZONE_RADIUS - 0.4, GAME.DOM_ZONE_RADIUS, 48), mat)
         ring.rotation.x = -Math.PI / 2
-        ring.position.y = 0.05
+        // v9: BRAVO (tejado del almacén) — el anillo y la letra suben al tejado
+        const baseY = z.minY !== undefined ? z.minY + 0.12 : 0.05
+        ring.position.y = baseY
         group.add(ring)
         const ring2 = new THREE.Mesh(new THREE.RingGeometry(GAME.DOM_ZONE_RADIUS - 1.6, GAME.DOM_ZONE_RADIUS - 1.3, 48), mat)
         ring2.rotation.x = -Math.PI / 2
-        ring2.position.y = 0.05
+        ring2.position.y = baseY
         group.add(ring2)
         // letra de la zona (sprite de canvas)
         const c = document.createElement('canvas')
@@ -1689,12 +1711,21 @@ export class Game {
         ctx2.fillText(z.name[0], 32, 34)
         const tex = new THREE.CanvasTexture(c)
         const letter = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
-        letter.position.set(z.x, 6.5, z.z)
+        letter.position.set(z.x, z.minY !== undefined ? z.minY + 8.5 : 6.5, z.z)
         letter.scale.setScalar(2.2)
         this.scene.add(letter)
         group.position.set(z.x, 0, z.z)
         this.scene.add(group)
         this.zoneViews.push({ id: z.id, ring, ring2, letter })
+        // v9: aviso vertical "CAPTURE ON THE ROOF" en la zona del tejado
+        if (z.minY !== undefined) {
+          const beam = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.55, 0.9, 14, 10, 1, true),
+            new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
+          )
+          beam.position.set(z.x, z.minY + 7, z.z)
+          this.scene.add(beam)
+        }
       }
     }
   }
@@ -1714,14 +1745,24 @@ export class Game {
   /** actualiza visuales de banderas/zonas desde el snapshot */
   private updateObjectiveViews(round: NetSnapshot['round']): void {
     if (round.flags) {
+      const t = performance.now()
       const place = (key: 'a' | 'b', fs: { status: string; x: number; z: number }): void => {
         const v = this.flagViews.get(key)
         if (!v) return
         v.group.position.set(fs.x, 0, fs.z)
         v.group.visible = true
-        // paño ondeando
-        v.cloth.rotation.y = Math.sin(performance.now() / 350 + (key === 'a' ? 0 : 2)) * 0.28
-        v.beam.visible = fs.status === 'carried'
+        // paño ondeando (más vivo al ser portada)
+        v.cloth.rotation.y = Math.sin(t / 350 + (key === 'a' ? 0 : 2)) * (fs.status === 'carried' ? 0.42 : 0.28)
+        v.beam.visible = true
+        const bm = v.beam.material as THREE.MeshBasicMaterial
+        bm.opacity = fs.status === 'carried' ? 0.3 : 0.16
+        // plataforma pulsante en la base
+        if (v.pad) {
+          const pm = v.pad.material as THREE.MeshBasicMaterial
+          pm.opacity = 0.3 + 0.18 * Math.sin(t / 420 + (key === 'a' ? 0 : 1.7))
+          const s = 1 + 0.06 * Math.sin(t / 420 + (key === 'a' ? 0 : 1.7))
+          v.pad.scale.set(s, s, 1)
+        }
       }
       place('a', round.flags.a)
       place('b', round.flags.b)
@@ -1751,6 +1792,46 @@ export class Game {
       // pequeño destello donde ocurre el evento
       this.effects.impact(new THREE.Vector3(x, 1.2, z), new THREE.Vector3(0, 1, 0))
     }
+  }
+
+  /** v9: el INVITADO adopta el modo de juego del ANFITRIÓN — reconstruye
+   *  los objetivos (banderas CTF / zonas DOM) que su menú no conocía */
+  applyServerMode(mode: GameMode): void {
+    if (this.disposed) return
+    const cur = useGame.getState().gameMode
+    if (cur === mode || mode === 'historia') return
+    // retirar los objetivos del modo anterior
+    for (const v of this.flagViews.values()) {
+      this.scene.remove(v.group)
+      v.group.traverse(o => {
+        const m = (o as THREE.Mesh).material
+        for (const mm of Array.isArray(m) ? m : [m]) mm?.dispose()
+      })
+    }
+    this.flagViews.clear()
+    for (const v of this.zoneViews) {
+      this.scene.remove(v.ring.parent as THREE.Object3D)
+      this.scene.remove(v.letter)
+      v.letter.material.dispose()
+    }
+    this.zoneViews.length = 0
+    useGame.getState().setHud({ gameMode: mode })
+    this.buildObjectives()
+  }
+
+  /** v9 COOP: el anfitrión difunde el estado de la misión */
+  storySyncPayload(): StorySyncData | null {
+    return this.story ? this.story.syncPayload() : null
+  }
+
+  /** v9 COOP: el invitado aplica el estado del anfitrión */
+  onStorySync(d: StorySyncData): void {
+    this.story?.remoteSync(d)
+  }
+
+  /** v9 COOP: un invitado completó una interacción de campaña */
+  storyRemoteComplete(d: StoryRemoteMsg): void {
+    this.story?.remoteComplete(d)
   }
 
   onZoneEvent(_zone: 'A' | 'B' | 'C', _owner: Team | null): void {
@@ -3052,6 +3133,16 @@ export class Game {
 
     if (!this.shooting || this.reloading || now < this.nextShotAt) return
     if (this.drawT < 0.8) return
+    // v9 CTF: mientras portas la bandera no puedes disparar (corre a tu base)
+    if (useGame.getState().carryingFlag) {
+      if (!this.flagWarnAt || now - this.flagWarnAt > 1600) {
+        this.flagWarnAt = now
+        useGame.getState().addAnnouncement('WEAPONS DISABLED — you carry the flag! RUN!', 'info')
+        this.audio.dryFire()
+      }
+      this.shooting = false
+      return
+    }
 
     const a = this.ammo[this.weapon]
     if (w.mag > 0 && (a?.mag ?? 0) <= 0) {
