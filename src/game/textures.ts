@@ -130,6 +130,32 @@ export function makeWorldTextures(): Record<MatKey, THREE.Texture> {
     T.wood = toTexture(c, 1)
   }
 
+  // --- Suelo interior de baldosas (v8: forjados; Piso1.jpg la sustituye) ---
+  {
+    const [c, ctx] = makeCanvas(512)
+    ctx.fillStyle = '#b8b0a0'
+    ctx.fillRect(0, 0, 512, 512)
+    // baldosas 4×4 con juntas
+    const s = 128
+    for (let ty = 0; ty < 4; ty++) {
+      for (let tx = 0; tx < 4; tx++) {
+        const alt = (tx + ty) % 2 === 0
+        ctx.fillStyle = alt ? '#b6ad9c' : '#a89f8e'
+        ctx.fillRect(tx * s + 2, ty * s + 2, s - 4, s - 4)
+      }
+    }
+    ctx.strokeStyle = 'rgba(70,64,54,0.45)'
+    ctx.lineWidth = 3
+    for (let k = 0; k <= 512; k += s) {
+      ctx.beginPath(); ctx.moveTo(0, k); ctx.lineTo(512, k); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(k, 0); ctx.lineTo(k, 512); ctx.stroke()
+    }
+    splotches(ctx, 512, 14, '#948a78', 46, 0.35)
+    splotches(ctx, 512, 8, '#c4bca9', 38, 0.3)
+    noiseOverlay(ctx, 512, 18, 0)
+    T.floor = toTexture(c, 1)
+  }
+
   // --- Metal de contenedor (base para variantes de color) ---
   const metalBase = (base: string, streak: string): THREE.Texture => {
     const [c, ctx] = makeCanvas(512)

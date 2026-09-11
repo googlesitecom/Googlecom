@@ -13,7 +13,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import {
   GAME, WEAPONS, MAP_BOXES, MAP_AABBS, SPAWN_A, SPAWN_B, TREES, LAMPS, NEONS, PUDDLES,
   PICKUP_INFO, EXPLODING_BARRELS, ZIPLINES, JUMP_PADS, FLAG_A, FLAG_B, DOM_ZONES,
-  STORY_EXTRACTION,
+  STORY_EXTRACTION, EQUIPMENT,
   getMapData, keyLabel,
   type MapData, type MapId,
   type Team, type WeaponId, type NetSnapshot, type NetPlayerState, type NetPickup, type PickupKind, type MatKey, type GrenadeKind, type ActionId,
@@ -103,6 +103,7 @@ const BASE_FOV = 75
 const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
   sand: { roughness: 0.95, metalness: 0.0 },
   concrete: { roughness: 0.9, metalness: 0.0 },
+  floor: { roughness: 0.82, metalness: 0.0 },
   wood: { roughness: 0.85, metalness: 0.0 },
   metalRed: { roughness: 0.5, metalness: 0.55 },
   metalBlue: { roughness: 0.5, metalness: 0.55 },
@@ -213,6 +214,30 @@ export class Game {
   private vmKickVel = 0
   /** v7: amplitud de bob suavizada */
   private bobAmt = 0
+  /** v8: inercia posicional del arma (sigue al ratón con retraso suave) */
+  private swayPX = 0
+  private swayPY = 0
+  /** v8: muelle de aterrizaje (el arma cae y rebota al tocar suelo) */
+  private landDip = 0
+  private landDipVel = 0
+  private prevOnGround = true
+  /** v8: velocidad vertical justo antes de aterrizar (para el muelle del arma) */
+  private lastFallSpeed = 0
+  /** v8: balanceo lateral suavizado por velocidad lateral */
+  private strafeRoll = 0
+  /** v8: sacudida de la fase de recarga (cargador fuera/dentro) */
+  private reloadJolt = 0
+  private reloadJoltVel = 0
+
+  // ---- v8: equipo táctico (bengala + estímulo) ----
+  private flares = 0
+  private stims = 0
+  private vest = false
+  private helmet = false
+  private flareUntil = 0
+  private stimUntilMs = 0
+  /** bengalas visibles (proyectil que sube y arde) */
+  private flareViews: { group: THREE.Group; light: THREE.PointLight; t: number; born: number; px: number; py: number; pz: number }[] = []
 
   // overlay 2D
   private dmgNumbers: DamageNumber[] = []
@@ -1784,7 +1809,7 @@ export class Game {
         } catch { /* mantener el entorno anterior */ }
       }
     }
-    // --- muros (Pared.jpg) y suelos (Piso.jpg) ---
+    // --- muros (Pared.jpg) y suelos interiores (Piso.jpg) ---
     if (pared) {
       for (const m of this.mapMeshes) {
         const mat = m.material as THREE.MeshStandardMaterial
@@ -1792,6 +1817,22 @@ export class Game {
         if (m.userData.matKey === 'sand' || m.userData.matKey === 'concrete') {
           mat.map = pared
           mat.color.set(m.userData.matKey === 'sand' ? 0xd6c6a4 : 0xc2c6ca)
+          mat.needsUpdate = true
+        }
+      }
+    }
+    // v8: los forjados/suelos interiores usan la textura Piso1.jpg del usuario
+    if (piso) {
+      const floorTex = piso.clone()
+      floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping
+      floorTex.needsUpdate = true
+      for (const m of this.mapMeshes) {
+        const mat = m.material as THREE.MeshStandardMaterial
+        if (!mat || !mat.map) continue
+        if (m.userData.matKey === 'floor') {
+          mat.map = floorTex
+          mat.color.set(0xffffff)
+          mat.roughness = 0.8
           mat.needsUpdate = true
         }
       }
@@ -1908,6 +1949,15 @@ export class Game {
       for (const sp of sv.sprites) (sp.material as THREE.SpriteMaterial).dispose()
     }
     this.smokeViews.clear()
+    // v8: bengalas visibles
+    for (const f of this.flareViews) {
+      this.scene.remove(f.group)
+      for (const c of f.group.children) {
+        const m = (c as THREE.Sprite).material as THREE.Material | undefined
+        m?.dispose()
+      }
+    }
+    this.flareViews = []
     this.composer?.dispose()
     this.renderer?.dispose()
   }
@@ -1983,6 +2033,8 @@ export class Game {
     else if (code === this.kb('reload')) this.startReload()
     else if (code === this.kb('grenadeFrag')) this.throwGrenade('frag')
     else if (code === this.kb('grenadeSmoke')) this.throwGrenade('smoke')
+    else if (code === this.kb('flare')) this.useFlare()
+    else if (code === this.kb('stim')) this.useStim()
     else if (code === this.kb('lastWeapon')) this.switchTo(this.lastWeapon)
     else if (code === this.kb('zipline')) this.tryAttachZipline()
     else if (code === this.kb('slot1')) {
@@ -2317,6 +2369,8 @@ export class Game {
     // granadas visibles
     this.updateGrenadeViews(dt)
     this.updateSmokeViews(dt)
+    // v8: bengalas localizadoras
+    this.updateFlareViews(dt)
 
     // efectos
     this.effects.update(dt, this.camera)
@@ -2432,6 +2486,8 @@ export class Game {
     const movingFwd = this.keys.has(this.kb('fwd')) || this.padIz > 0.5
 
     let speed = 4.6 * w.moveMult
+    // v8: estímulo de adrenalina activo → +30% de velocidad de movimiento
+    if (this.stimUntilMs > Date.now()) speed *= EQUIPMENT.STIM_SPEED
     this.sprinting = false
     if (wantSprint && movingFwd && this.onGround) {
       speed *= 1.45
@@ -2538,6 +2594,7 @@ export class Game {
       }
       if (ny <= groundY + 0.001) {
         if (!this.onGround && this.vel.y < -6) this.audio.land()
+        this.lastFallSpeed = this.vel.y   // v8: para el muelle de aterrizaje del viewmodel
         ny = groundY
         this.vel.y = 0
         this.onGround = true
@@ -2837,67 +2894,108 @@ export class Game {
   private updateViewmodel(dt: number, t: number): void {
     if (!this.vmGroup) return
     const pose = weaponPose(this.weapon)
-    this.drawT = Math.min(1, this.drawT + dt * 4.5)
-    const draw = this.drawT
+    // ---- desenfundado: easeOutBack (entra rápido y frena con un pequeño
+    // rebote de sobrepaso — antes era lineal y se veía robótico) ----
+    this.drawT = Math.min(1, this.drawT + dt * 4.2)
+    const raw = this.drawT
+    const c1 = 1.70158, c3 = c1 + 1
+    // easeOutBack normalizado; el sobrepaso solo en el último tramo
+    const draw = raw >= 1 ? 1 : 1 + c3 * Math.pow(raw - 1, 3) + c1 * Math.pow(raw - 1, 2)
+    const drawInv = 1 - draw   // 1→0 con rebote
 
-    // sway (v7: decay exponencial suave)
+    // ---- sway (decaimiento exponencial suave) + inercia POSICIONAL ----
+    // v8: el arma no solo rota con el ratón, también se desplaza con retraso
     this.swayX *= Math.max(0, 1 - dt * 6)
     this.swayY *= Math.max(0, 1 - dt * 6)
+    this.swayPX += (this.swayX * 0.012 - this.swayPX) * Math.min(1, dt * 9)
+    this.swayPY += (this.swayY * 0.010 - this.swayPY) * Math.min(1, dt * 9)
 
-    // posiciones
+    // ---- muelle de aterrizaje: al tocar suelo el arma cae y rebota ----
+    if (this.prevOnGround && !this.onGround) { /* despegue: nada */ }
+    if (!this.prevOnGround && this.onGround) {
+      const impact = Math.min(1, Math.abs(this.lastFallSpeed) / 9)
+      this.landDipVel -= impact * 0.85
+      this.reloadJoltVel -= impact * 0.3
+    }
+    this.prevOnGround = this.onGround
+    this.landDipVel += (-120 * this.landDip - 11 * this.landDipVel) * dt
+    this.landDip += this.landDipVel * dt
+    if (Math.abs(this.landDip) < 0.0005 && Math.abs(this.landDipVel) < 0.01) { this.landDip = 0; this.landDipVel = 0 }
+
+    // ---- posiciones (ADS con curva suavestep: arranque rápido, freno suave) ----
     const hip = pose.hip
     const ads = pose.ads
-    const adsA = this.adsAmt
-    const sprintA = this.sprintAmt * (1 - adsA)
-    // v7: retroceso con MUELLE (sube rápido, vuelve con un pequeño
-    // rebote — antes era un decaimiento lineal que se veía robótico)
+    const adsLin = this.adsAmt
+    const adsS = adsLin * adsLin * (3 - 2 * adsLin)
+    const sprintA = this.sprintAmt * (1 - adsLin)
+    // v7: retroceso con MUELLE (sube rápido, vuelve con un pequeño rebote)
     const vmKick = this.vmKick
     this.vmKickVel += (-140 * this.vmKick - 13 * this.vmKickVel) * dt
     this.vmKick += this.vmKickVel * dt
     if (this.vmKick < 0.0001 && Math.abs(this.vmKickVel) < 0.01) { this.vmKick = 0; this.vmKickVel = 0 }
+    // v8: sacudida de recarga (cargador fuera/dentro) — muelle corto y seco
+    this.reloadJoltVel += (-220 * this.reloadJolt - 16 * this.reloadJoltVel) * dt
+    this.reloadJolt += this.reloadJoltVel * dt
+    if (Math.abs(this.reloadJolt) < 0.0005 && Math.abs(this.reloadJoltVel) < 0.01) { this.reloadJolt = 0; this.reloadJoltVel = 0 }
 
-    // bob del arma (v7: amplitud suavizada)
+    // bob del arma (amplitud suavizada)
     const hSpeed = Math.hypot(this.vel.x, this.vel.z)
-    const bobTarget = this.onGround ? Math.min(1, hSpeed / 5) * (1 - adsA * 0.85) : 0
+    const bobTarget = this.onGround ? Math.min(1, hSpeed / 5) * (1 - adsLin * 0.85) : 0
     this.bobAmt += (bobTarget - this.bobAmt) * Math.min(1, dt * 8)
     const bob = this.bobAmt
 
+    // v8: balanceo lateral por velocidad lateral (inclinación al esquivar)
+    const rightX = Math.cos(this.yaw), rightZ = -Math.sin(this.yaw)
+    const latVel = this.vel.x * rightX + this.vel.z * rightZ
+    this.strafeRoll += (latVel * 0.012 - this.strafeRoll) * Math.min(1, dt * 7)
+
     // v7: respiración en reposo (el arma nunca está muerta en pantalla)
-    const breathX = Math.cos(t * 1.15) * 0.0022 * (1 - adsA)
-    const breathY = Math.sin(t * 1.55) * 0.0028 * (1 - adsA)
+    const breathX = Math.cos(t * 1.15) * 0.0022 * (1 - adsLin)
+    const breathY = Math.sin(t * 1.55) * 0.0028 * (1 - adsLin)
 
-    let px = hip.x + (ads.x - hip.x) * adsA
-    let py = hip.y + (ads.y - hip.y) * adsA
-    let pz = hip.z + (ads.z - hip.z) * adsA + vmKick * 0.09
+    let px = hip.x + (ads.x - hip.x) * adsS
+    let py = hip.y + (ads.y - hip.y) * adsS
+    let pz = hip.z + (ads.z - hip.z) * adsS + vmKick * 0.09
 
-    // animación de recarga (v7: rotación más articulada en dos fases)
+    // ---- animación de recarga en TRES fases (v8) ----
+    // 0-30%: inclina y baja · 30%: cargador FUERA (sacudida) · 30-82%:
+    // cargador fuera de pantalla · 82%: cargador DENTRO (sacudida) · 95%: cerrojo
     let reloadRot = 0
+    let reloadTiltZ = 0
     if (this.reloading) {
       const now = performance.now()
       const w = WEAPONS[this.weapon]
       const progress = 1 - (this.reloadEndAt - now) / (w.reloadTime * 1000)
       const p = Math.min(1, Math.max(0, progress))
-      const dip = Math.sin(p * Math.PI)
-      reloadRot = dip * 0.9
-      py -= dip * 0.16
-      // ligera rotación lateral durante el cambio de cargador
-      // sonidos por etapas (30 %: cargador fuera · 82 %: cargador dentro + cerrojo)
-      if (progress > 0.3 && this.reloadStage === 0) { this.reloadStage = 1; this.audio.reload('mag') }
-      if (progress > 0.82 && this.reloadStage === 1) { this.reloadStage = 2; this.audio.reload('end') }
+      // envolvente: entra (0→0.25), se mantiene, sale (0.85→1)
+      const env = p < 0.25 ? p / 0.25 : p > 0.85 ? Math.max(0, (1 - p) / 0.15) : 1
+      reloadRot = env * 0.75
+      reloadTiltZ = env * 0.5
+      py -= env * 0.13
+      pz += env * 0.045
+      // sacudidas sincronizadas con los sonidos por etapas
+      if (progress > 0.3 && this.reloadStage === 0) { this.reloadStage = 1; this.reloadJoltVel += 2.6; this.audio.reload('mag') }
+      if (progress > 0.82 && this.reloadStage === 1) { this.reloadStage = 2; this.reloadJoltVel += 3.4; this.audio.reload('end') }
+      if (progress > 0.95 && this.reloadStage === 2) { this.reloadStage = 3; this.reloadJoltVel += 1.8 }
     }
 
-    px += Math.cos(this.bobT) * 0.012 * bob - this.swayX * 0.028 * (1 - adsA * 0.8)
-    py += Math.abs(Math.sin(this.bobT)) * 0.010 * bob + this.swayY * 0.024 * (1 - adsA * 0.8)
-    py -= (1 - draw) * 0.35   // animación de desenfundado
-    pz -= (1 - draw) * 0.12
+    // ---- composición final de posición ----
+    px += Math.cos(this.bobT) * 0.012 * bob - this.swayPX * (1 - adsLin * 0.85)
+    py += Math.abs(Math.sin(this.bobT)) * 0.010 * bob - this.swayPY * (1 - adsLin * 0.85)
+    py -= drawInv * 0.35          // desenfundado: sube desde abajo
+    pz -= drawInv * 0.12
     px += breathX
-    py += breathY
+    py += breathY + this.landDip * 0.06   // v8: el aterrizaje hunde el arma
+    if (!this.onGround) {          // v8: en el aire el arma baja y se acerca
+      py -= 0.025
+      pz += 0.015
+    }
 
     this.vmGroup.position.set(px, py, pz)
     this.vmGroup.rotation.set(
-      pose.hipRot.x + reloadRot + vmKick * 0.14 + this.swayY * 0.06 * (1 - adsA) + (1 - draw) * 0.7,
-      pose.hipRot.y * (1 - adsA) + sprintA * 0.5 - this.swayX * 0.05 * (1 - adsA) + (1 - draw) * 0.35,
-      pose.hipRot.z + sprintA * 0.25 + reloadRot * 0.4 + Math.sin(this.bobT) * 0.008 * bob,
+      pose.hipRot.x + reloadRot + vmKick * 0.14 + this.swayY * 0.06 * (1 - adsLin) + drawInv * 0.7 + this.landDip * 0.22 + this.reloadJolt * 0.05,
+      pose.hipRot.y * (1 - adsS) + sprintA * 0.5 - this.swayX * 0.05 * (1 - adsLin) + drawInv * 0.35 - this.reloadJolt * 0.03,
+      pose.hipRot.z + sprintA * 0.25 + reloadTiltZ * 0.4 + Math.sin(this.bobT) * 0.008 * bob + this.strafeRoll + this.reloadJolt * 0.06,
     )
     // sprint: arma apuntando abajo
     if (sprintA > 0.01) {
@@ -2907,7 +3005,7 @@ export class Game {
 
     // francotirador ADS: ocultar modelo
     const w = WEAPONS[this.weapon]
-    this.vmHolder.visible = !(w.sniper && adsA > 0.7) && !this.dead
+    this.vmHolder.visible = !(w.sniper && adsLin > 0.7) && !this.dead
 
     void t
   }
@@ -3215,6 +3313,104 @@ export class Game {
     const vel = dir.clone().multiplyScalar(speed)
     vel.y += kind === 'smoke' ? 4.2 : 3.5
     this.net.throwGrenade([eye.x, eye.y, eye.z], [vel.x, vel.y, vel.z], kind)
+  }
+
+  // ----------------------------------------------------------
+  // v8 — Equipo táctico: bengala localizadora y estímulo
+  // ----------------------------------------------------------
+  /** Dispara una bengala: la simulación valida y responde con flareUsed */
+  useFlare(): void {
+    const s = useGame.getState()
+    if (s.phase !== 'playing' || this.dead || s.buyOpen || this.cine.active) return
+    if ((s.flares ?? 0) <= 0) {
+      useGame.getState().addAnnouncement('No locator flares — buy them at the shop (B)', 'info')
+      return
+    }
+    this.net.useFlare()
+  }
+
+  /** Se inyecta un estímulo de adrenalina */
+  useStim(): void {
+    const s = useGame.getState()
+    if (s.phase !== 'playing' || this.dead || s.buyOpen || this.cine.active) return
+    if ((s.stims ?? 0) <= 0) {
+      useGame.getState().addAnnouncement('No stims — buy them at the shop (B)', 'info')
+      return
+    }
+    this.net.useStim()
+  }
+
+  /** La simulación activó la revelación de enemigos para este cliente */
+  onFlareUsed(until: number): void {
+    this.flareUntil = Math.max(this.flareUntil, until)
+    useGame.getState().addAnnouncement('ENEMY POSITIONS REVEALED', 'round')
+    this.audio.announceDing()
+  }
+
+  /** Estímulo activo (velocidad +) */
+  onStimUsed(until: number): void {
+    this.stimUntilMs = Math.max(this.stimUntilMs, until)
+    useGame.getState().addAnnouncement('ADRENALINE ACTIVE — MOVE FAST', 'info')
+  }
+
+  /** Bengala visible: proyectil que sube ardiendo y queda flotando */
+  onFlareFx(x: number, y: number, z: number): void {
+    const group = new THREE.Group()
+    const core = new THREE.Sprite(new THREE.SpriteMaterial({
+      color: 0xff5030, transparent: true, opacity: 0.95, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }))
+    core.scale.setScalar(1.6)
+    group.add(core)
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      color: 0xff9060, transparent: true, opacity: 0.4, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }))
+    halo.scale.setScalar(4.5)
+    group.add(halo)
+    const light = new THREE.PointLight(0xff5a30, 14, 34, 1.6)
+    group.add(light)
+    group.position.set(x, y + 1.4, z)
+    this.scene.add(group)
+    this.flareViews.push({ group, light, t: 0, born: performance.now(), px: x, py: y + 1.4, pz: z })
+  }
+
+  /** Anima las bengalas visibles: suben en arco y se consumen */
+  private updateFlareViews(dt: number): void {
+    for (let i = this.flareViews.length - 1; i >= 0; i--) {
+      const f = this.flareViews[i]
+      f.t += dt
+      const life = 22
+      if (f.t < 1.1) {
+        // fase de subida: arco vertical con deriva ligera
+        const k = f.t / 1.1
+        f.group.position.set(
+          f.px + Math.sin(f.t * 5) * 0.35 * (1 - k),
+          f.py + (26 * k - 4.5 * k * k),
+          f.pz,
+        )
+        f.light.intensity = 14 + Math.sin(f.t * 30) * 4
+      } else {
+        // fase de quema flotando: parpadeo y descenso muy lento
+        const burn = Math.min(1, (f.t - 1.1) / life)
+        f.group.position.y = f.py + 21.5 - burn * 2.2
+        const flick = 0.75 + 0.25 * Math.sin(f.t * 21 + Math.sin(f.t * 7) * 2)
+        f.light.intensity = 9 * (1 - burn) * flick + 1
+        const core = f.group.children[0] as THREE.Sprite
+        const halo = f.group.children[1] as THREE.Sprite
+        if (core) (core.material as THREE.SpriteMaterial).opacity = 0.95 * (1 - burn * 0.6) * flick
+        if (halo) (halo.material as THREE.SpriteMaterial).opacity = 0.4 * (1 - burn) * flick
+        f.group.scale.setScalar(1 + Math.sin(f.t * 3) * 0.06)
+      }
+      if (f.t > 1.1 + life) {
+        this.scene.remove(f.group)
+        for (const c of f.group.children) {
+          const m = (c as THREE.Sprite).material as THREE.Material | undefined
+          m?.dispose()
+        }
+        this.flareViews.splice(i, 1)
+      }
+    }
   }
 
   /** Cortina de humo desplegada por una granada (evento de la simulación) */
@@ -3584,11 +3780,20 @@ export class Game {
     useGame.getState().addAnnouncement(parts.join(' '), 'info')
   }
 
-  setMoney(money: number, frags?: number, smokes?: number): void {
+  setMoney(money: number, frags?: number, smokes?: number, econ?: { vest?: number; helmet?: number; flares?: number; stims?: number; stimUntil?: number }): void {
     this.money = money
     if (frags !== undefined) this.frags = frags
     if (smokes !== undefined) this.smokes = smokes
-    useGame.getState().setHud({ money, frags: this.frags, smokes: this.smokes })
+    // v8: equipo táctico sincronizado con la simulación
+    const patch: Partial<Record<string, unknown>> = { money, frags: this.frags, smokes: this.smokes }
+    if (econ) {
+      if (econ.vest !== undefined) { this.vest = !!econ.vest; patch.vest = !!econ.vest }
+      if (econ.helmet !== undefined) { this.helmet = !!econ.helmet; patch.helmet = !!econ.helmet }
+      if (econ.flares !== undefined) { this.flares = econ.flares; patch.flares = econ.flares }
+      if (econ.stims !== undefined) { this.stims = econ.stims; patch.stims = econ.stims }
+      if (econ.stimUntil !== undefined) { this.stimUntilMs = econ.stimUntil; patch.stimUntil = econ.stimUntil }
+    }
+    useGame.getState().setHud(patch)
   }
 
   onHitConfirm(dmg: number, headshot: boolean): void {
@@ -4011,6 +4216,62 @@ export class Game {
       }
     }
 
+    // v8 — BENGALA LOCALIZADORA: marcadores de enemigos a través de las
+    // paredes (rombos rojos con distancia, estilo pulso de radar)
+    if (this.flareUntil > Date.now() && s.phase === 'playing' && !this.dead) {
+      const remain = Math.max(0, (this.flareUntil - Date.now()) / 1000)
+      const blink = 0.55 + 0.45 * Math.sin(now / 160)
+      const pv = new THREE.Vector3()
+      let drawn = 0
+      for (const rp of this.remotes.map.values()) {
+        if (drawn >= 14) break
+        const st = rp.state
+        if (!st || st.dead || st.team === this.team) continue
+        pv.set(rp.root.position.x, rp.root.position.y + 1.75, rp.root.position.z)
+        const distCam = pv.distanceTo(this.camera.position)
+        pv.project(this.camera)
+        if (pv.z > 1 || pv.x < -1.05 || pv.x > 1.05 || pv.y < -1.05 || pv.y > 1.05) continue
+        const sx = (pv.x * 0.5 + 0.5) * W
+        const sy = (-pv.y * 0.5 + 0.5) * H
+        drawn++
+        // rombo pulsante
+        const size = 11 + Math.min(10, 90 / Math.max(4, distCam)) + Math.sin(now / 200 + sx) * 1.4
+        ctx.save()
+        ctx.translate(sx, sy)
+        ctx.globalAlpha = blink
+        ctx.fillStyle = 'rgba(255,60,50,0.92)'
+        ctx.beginPath()
+        ctx.moveTo(0, -size * 0.62); ctx.lineTo(size * 0.5, 0); ctx.lineTo(0, size * 0.62); ctx.lineTo(-size * 0.5, 0)
+        ctx.closePath()
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(255,220,220,0.95)'
+        ctx.lineWidth = 1.6
+        ctx.stroke()
+        // distancia en metros
+        ctx.globalAlpha = 0.95
+        ctx.font = `700 11px ${this.tacFont}, monospace`
+        ctx.textAlign = 'center'
+        ctx.fillStyle = 'rgba(255,120,110,0.95)'
+        ctx.fillText(`${Math.round(distCam)}m`, 0, size * 0.62 + 13)
+        ctx.restore()
+      }
+      // aviso de duración (arriba, centrado)
+      ctx.save()
+      ctx.globalAlpha = blink
+      ctx.textAlign = 'center'
+      ctx.font = `700 14px ${this.tacFont}, monospace`
+      const label = `RECON ${Math.ceil(remain)}s`
+      const lw2 = ctx.measureText(label).width
+      ctx.fillStyle = 'rgba(60,10,8,0.72)'
+      ctx.fillRect(cx - lw2 / 2 - 12, 84, lw2 + 24, 26)
+      ctx.strokeStyle = 'rgba(255,80,70,0.85)'
+      ctx.lineWidth = 1.5
+      ctx.strokeRect(cx - lw2 / 2 - 12, 84, lw2 + 24, 26)
+      ctx.fillStyle = 'rgba(255,110,100,0.98)'
+      ctx.fillText(label, cx, 102)
+      ctx.restore()
+    }
+
     // pista de interacción (tirolina)
     if (this.interactHint && s.phase === 'playing' && !this.dead) {
       const pulse = 0.75 + 0.25 * Math.sin(now / 180)
@@ -4306,15 +4567,36 @@ export class Game {
     // aliados: puntos verdes con tick de orientación
     for (const rp of this.remotes.map.values()) {
       const st = rp.state
-      if (!st || st.dead || st.team !== this.team) continue
+      if (!st || st.dead) continue
+      const isTeam = st.team === this.team
+      // v8: BENGALA ACTIVA → los enemigos también se dibujan (rojos,
+      // parpadeantes, con tick de orientación — como un radar táctico)
+      const flareOn = !isTeam && this.flareUntil > Date.now()
+      if (!isTeam && !flareOn) continue
       const x = O + rp.root.position.x * S, y = O + rp.root.position.z * S
-      ctx.fillStyle = '#4ade80'
+      if (isTeam) {
+        ctx.fillStyle = '#4ade80'
+        ctx.globalAlpha = 1
+      } else {
+        const blink = 0.6 + 0.4 * Math.sin(now / 150)
+        ctx.fillStyle = '#ff4545'
+        ctx.globalAlpha = blink
+      }
       ctx.beginPath()
-      ctx.arc(x, y, 3, 0, Math.PI * 2)
+      ctx.arc(x, y, isTeam ? 3 : 3.4, 0, Math.PI * 2)
       ctx.fill()
+      if (!isTeam) {
+        // halo para destacar el blip enemigo revelado
+        ctx.strokeStyle = 'rgba(255,70,70,0.5)'
+        ctx.lineWidth = lw(1.2)
+        ctx.beginPath()
+        ctx.arc(x, y, 6, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      ctx.globalAlpha = 1
       // dirección a la que mira (yaw del modelo, frente +Z)
       const myaw = rp.root.rotation.y
-      ctx.strokeStyle = 'rgba(220,255,230,0.9)'
+      ctx.strokeStyle = isTeam ? 'rgba(220,255,230,0.9)' : 'rgba(255,180,180,0.9)'
       ctx.lineWidth = lw(1.6)
       ctx.beginPath()
       ctx.moveTo(x, y)

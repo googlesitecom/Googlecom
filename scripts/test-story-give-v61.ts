@@ -39,7 +39,7 @@ check('sin duplicados en arsenal', p.armory.filter(w => w === 'cr4').length === 
 console.log('— jefe Vega (boss) —')
 const bot = Array.from(S.values()).find((q: any) => q.bot && q.team === 'B')!
 sim.handleStoryCmd('humano', { cmd: 'boss', botId: bot.id })
-check('bot renombrado a Cnel. Vega', bot.name === 'Cnel. Vega')
+check('bot renombrado a Col. Vega', bot.name === 'Col. Vega')
 check('jefe con cr4 valida (owned la contiene)', bot.owned.includes('cr4'), JSON.stringify(bot.owned))
 check('jefe con 400 HP y 150 escudo', bot.hp === 400 && bot.shield === 150)
 

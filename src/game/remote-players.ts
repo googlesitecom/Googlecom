@@ -1,6 +1,7 @@
 // ============================================================
 // EMERGENCY STRIKE — Jugadores remotos
-// Modelo de soldado realista (soldier.glb) + interpolación de red
+// Modelo de soldado realista (soldier1.glb — v8: el nuevo soldado del
+// usuario, 9,4 MB en vez de 17,8) + interpolación de red
 // + hitboxes. Fallback: humanoide low-poly si el GLB no carga.
 // ============================================================
 import * as THREE from 'three'
@@ -68,7 +69,13 @@ const UNIFORM: Record<Team, number> = { A: 0x6b5a3a, B: 0x3a4a5a }
 
 // ---- tinte de equipo para el uniforme del soldado (sutil) ----
 const SOLDIER_TINT: Record<Team, number> = { A: 0xc79a4a, B: 0x5a9a6a }
-const TINTABLE_MATS = new Set(['Topmat', 'Hatmat', 'Bottommat'])
+// v8: el soldado nuevo empaqueta la ropa en PackedMaterial1/2mat
+// (Tops/Bottoms/Gloves/Masks + Shoes/Hats); el viejo usaba
+// Topmat/Bottommat/Hatmat. Se mantienen ambos conjuntos por seguridad.
+const TINTABLE_MATS = new Set([
+  'Topmat', 'Hatmat', 'Bottommat',
+  'PackedMaterial1mat', 'PackedMaterial2mat',
+])
 
 // ---- pose de reposo del soldado (bajar brazos de la T-pose) ----
 // Ejes verificados empíricamente en el rig mixamo: rotation.x baja ambos
@@ -213,10 +220,13 @@ function findBone(root: THREE.Object3D, pattern: RegExp): THREE.Object3D | null 
   return found
 }
 
-/** Prepara la plantilla del soldado: escala, sombras, tinte por equipo */
+/** Prepara la plantilla del soldado: escala, sombras, tinte por equipo.
+ *  v8: además normaliza los materiales de Sketchfab (alphaMode BLEND con
+ *  opacidad 1 → opaco con depthWrite, metalness/roughness moderados para
+ *  que la ropa no se vea plástica ni se transparente) */
 function prepareSoldier(scene: THREE.Group): SoldierAssets {
   const template = scene
-  // el GLB mide ~184 unidades (cm) → escalar a 1.84 m
+  // normalizar a 1,84 m de altura (sea cual sea la escala del GLB)
   const box = new THREE.Box3().setFromObject(template)
   const scale = 1.84 / Math.max(0.01, box.max.y - box.min.y)
   template.scale.setScalar(scale)
@@ -226,6 +236,23 @@ function prepareSoldier(scene: THREE.Group): SoldierAssets {
       o.castShadow = true
       o.receiveShadow = false
       o.frustumCulled = false   // la piel se anima: no dejar que el frustum la descarte
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      for (const m of mats) {
+        const std = m as THREE.MeshStandardMaterial
+        if (!std || std.isMeshStandardMaterial !== true) continue
+        // Sketchfab exporta todo como BLEND aunque sea opaco: eso hace que
+        // la ropa se vea a través de otras capas y falle el ordenado.
+        if (std.transparent && (std.opacity ?? 1) >= 0.999) {
+          std.transparent = false
+          std.depthWrite = true
+        }
+        if (std.map) {
+          std.map.colorSpace = THREE.SRGBColorSpace
+          std.metalness = Math.min(std.metalness, 0.25)
+          std.roughness = Math.min(Math.max(std.roughness, 0.55), 0.92)
+          std.envMapIntensity = 0.55
+        }
+      }
     }
   })
   return { template, tintCache: { A: new Map(), B: new Map() } }
@@ -371,7 +398,7 @@ export class RemotePlayers {
     this.soldierLoading = true
     const loader = new GLTFLoader()
     loader.load(
-      `${ASSET_BASE}/soldier.glb`,
+      `${ASSET_BASE}/models/soldier1.glb`,
       gltf => {
         try {
           soldierAssets = prepareSoldier(gltf.scene)
@@ -385,13 +412,13 @@ export class RemotePlayers {
           }
           step()
         } catch (e) {
-          console.error('EMERGENCY STRIKE: error preparando soldier.glb', e)
+          console.error('EMERGENCY STRIKE: error preparando soldier1.glb', e)
         }
       },
       undefined,
       err => {
         // sin GLB → seguimos con los humanoides low-poly
-        console.warn('EMERGENCY STRIKE: soldier.glb no disponible, usando modelo simple', err)
+        console.warn('EMERGENCY STRIKE: soldier1.glb no disponible, usando modelo simple', err)
       },
     )
   }
@@ -551,17 +578,41 @@ export class RemotePlayers {
         if (dead) rp.deathTime = renderT / 1000
       }
       if (dead) {
-        // caer
+        // v8: caída con desaceleración natural (easeOutCubic) + giro leve:
+        // antes era un volcado lineal a velocidad constante que se veía rígido
         const dt2 = renderT / 1000 - rp.deathTime
-        rp.bodyGroup.rotation.x = Math.min(Math.PI / 2, dt2 * 6)
-        rp.bodyGroup.position.y = -Math.min(0.7, dt2 * 2.5)
+        const fall = Math.min(1, dt2 / 0.6)
+        const ease = 1 - Math.pow(1 - fall, 3)
+        rp.bodyGroup.rotation.x = (Math.PI / 2) * ease
+        rp.bodyGroup.rotation.z = 0.14 * ease
+        rp.bodyGroup.position.y = -0.64 * ease
+        // v8: los miembros se relajan al caer (brazos a reposo, rodillas flojas)
+        if (rp.usingSoldier && fall < 1) {
+          const k = Math.min(1, dt * 9)
+          rp.arms[0].rotation.x += (ARM_REST_X - rp.arms[0].rotation.x) * k
+          rp.arms[1].rotation.x += (ARM_REST_X - rp.arms[1].rotation.x) * k
+          rp.arms[0].rotation.y *= 1 - k
+          rp.arms[1].rotation.y *= 1 - k
+          rp.arms[0].rotation.z *= 1 - k
+          rp.arms[1].rotation.z *= 1 - k
+          rp.forearms[0].rotation.x += (FORE_BEND_X - rp.forearms[0].rotation.x) * k
+          rp.forearms[1].rotation.x += (FORE_BEND_X - rp.forearms[1].rotation.x) * k
+          rp.forearms[0].rotation.z *= 1 - k
+          rp.forearms[1].rotation.z *= 1 - k
+          rp.knees[0].rotation.x += (0.3 - rp.knees[0].rotation.x) * k * 0.6
+          rp.knees[1].rotation.x += (0.22 - rp.knees[1].rotation.x) * k * 0.6
+          rp.torso.rotation.x *= 1 - k
+        }
         rp.tag.visible = false
+        rp.weaponHolder.visible = false
         if (dt2 > 8) { rp.root.visible = false } else { rp.root.visible = true }
         continue
       }
       rp.root.visible = true
       rp.bodyGroup.rotation.x = 0
+      rp.bodyGroup.rotation.z = 0
       rp.bodyGroup.position.y = 0
+      rp.weaponHolder.visible = true
       rp.tag.visible = true
 
       // ============ ESTADOS DE ANIMACIÓN ============
@@ -575,7 +626,8 @@ export class RemotePlayers {
       const aimTarget = !hasWeapon ? 0 : (state.aiming ? 1 : 0.42)
       rp.aimPose += (aimTarget - rp.aimPose) * Math.min(1, dt * (state.aiming ? 10 : 6))
       const aim = rp.aimPose
-      rp.fireKick = Math.max(0, rp.fireKick - dt * 5.5)
+      // v8: recuperación de la patada exponencial (mucho más suave que lineal)
+      rp.fireKick *= Math.max(0, 1 - dt * 7)
       const kick = rp.fireKick
       rp.crouchAmt += ((crouch ? 1 : 0) - rp.crouchAmt) * Math.min(1, dt * 9)
       const crouchA = rp.crouchAmt
@@ -601,11 +653,18 @@ export class RemotePlayers {
         // rodillas: dobladas al agacharse y al bombear las piernas al correr
         rp.knees[0].rotation.x = Math.max(0, -legSwing0) * (0.55 + sprint * 0.75) + crouchA * 1.72
         rp.knees[1].rotation.x = Math.max(0, -legSwing1) * (0.55 + sprint * 0.75) + crouchA * 1.38
+        // v8: balanceo vertical también al CAMINAR (no solo al esprintar)
+        const walkBounce = Math.abs(Math.sin(rp.walkPhase)) * 0.028 * swing * (1 - sprint)
         // el cuerpo baja (sin aplastar la escala) + inclinación al esprintar
-        rp.bodyGroup.position.y = -0.4 * crouchA + runBounce
+        rp.bodyGroup.position.y = -0.4 * crouchA + runBounce + walkBounce
         rp.bodyGroup.rotation.x = sprint * 0.26 + crouchA * 0.06
-        // el torso acompaña y la cabeza compensa mirando al frente
+        // v8: vaivén de cadera (transferencia de peso) — el caminar se lee
+        // como humano: el torso balancea el peso de pierna a pierna
+        rp.bodyGroup.rotation.z = Math.sin(rp.walkPhase) * 0.05 * swing * (1 - crouchA * 0.6)
+        // el torso acompaña, CONTRARrotaando el hombro respecto a la cadera
+        // (así el pecho no gira rígido con la pelvis) y la cabeza compensa
         rp.torso.rotation.x = sprint * 0.12 + breath * 0.4
+        rp.torso.rotation.y = -Math.sin(rp.walkPhase) * 0.09 * swing
 
         // ---- brazos: reposo ↔ porteo (0.42) ↔ apuntado (1) ----
         // soldado mixamo: gatillo = arms[1] (RightArm, −X) · apoyo = arms[0] (LeftArm, +X)

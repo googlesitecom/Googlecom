@@ -239,7 +239,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
   },
 }
 
-export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke'; name: string; price: number; desc: string; cat: string }[] = [
+export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke' | 'vest' | 'helmet' | 'flare' | 'medkit' | 'stim' | 'ammo'; name: string; price: number; desc: string; cat: string }[] = [
   { id: 'w:aguila', weapon: 'aguila', name: 'Eagle .50', price: 700, desc: 'High-caliber sidearm', cat: 'Pistols' },
   { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'Fast, agile SMG', cat: 'SMG' },
   { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Short-barrel shotgun', cat: 'Shotguns' },
@@ -249,7 +249,24 @@ export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'fra
   { id: 'e:shield', equip: 'shield', name: 'Full Shield', price: 1000, desc: 'Restores shield to 100', cat: 'Equipment' },
   { id: 'e:frag', equip: 'frag', name: 'MOLO Grenade', price: 300, desc: 'Max. 2 units', cat: 'Equipment' },
   { id: 'e:smoke', equip: 'smoke', name: 'Smoke Grenade', price: 200, desc: '12 s smoke curtain · max. 2', cat: 'Equipment' },
+  { id: 'e:vest', equip: 'vest', name: 'Ballistic Vest', price: 6000, desc: 'Blocks 35% body damage · whole match', cat: 'Equipment' },
+  { id: 'e:helmet', equip: 'helmet', name: 'Ballistic Helmet', price: 2400, desc: 'Blocks 30% headshot damage · whole match', cat: 'Equipment' },
+  { id: 'e:flare', equip: 'flare', name: 'Locator Flare', price: 900, desc: 'Reveals every enemy for 20 s · max. 2', cat: 'Equipment' },
+  { id: 'e:medkit', equip: 'medkit', name: 'Trauma Kit', price: 650, desc: 'Instantly restores full health', cat: 'Equipment' },
+  { id: 'e:stim', equip: 'stim', name: 'Adrenaline Stim', price: 800, desc: '+30% speed for 12 s · max. 2', cat: 'Equipment' },
+  { id: 'e:ammo', equip: 'ammo', name: 'Ammo Crate', price: 350, desc: 'Refills reserve ammo of all weapons', cat: 'Equipment' },
 ]
+
+// ---- v8: parámetros de los objetos de equipo ----
+export const EQUIPMENT = {
+  VEST_REDUCTION: 0.35,       // 35% menos de daño al cuerpo/piernas
+  HELMET_REDUCTION: 0.3,      // 30% menos de daño a la cabeza
+  FLARE_DURATION: 20,         // segundos que revela a los enemigos
+  FLARE_MAX: 2,               // máximo de bengalas
+  STIM_DURATION: 12,          // segundos de adrenalina
+  STIM_SPEED: 1.3,            // multiplicador de velocidad
+  STIM_MAX: 2,                // máximo de estímulos
+}
 
 // ------------------------------------------------------------
 // CONTROLES CONFIGURABLES (teclado + RATÓN + mando)
@@ -258,7 +275,7 @@ export type ActionId =
   | 'fwd' | 'back' | 'left' | 'right'
   | 'sprint' | 'crouch' | 'jump'
   | 'reload' | 'grenadeFrag' | 'grenadeSmoke'
-  | 'buy' | 'lastWeapon' | 'zipline'
+  | 'flare' | 'stim' | 'buy' | 'lastWeapon' | 'zipline'
   | 'slot1' | 'slot2' | 'slot3'
   | 'shoot' | 'aim'
 
@@ -275,6 +292,8 @@ export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
   reload: 'KeyR',
   grenadeFrag: 'KeyG',
   grenadeSmoke: 'KeyH',
+  flare: 'KeyF',
+  stim: 'KeyT',
   buy: 'KeyB',
   lastWeapon: 'KeyQ',
   zipline: 'KeyE',
@@ -296,6 +315,8 @@ export const ACTION_LABELS: Record<ActionId, string> = {
   reload: 'Reload',
   grenadeFrag: 'MOLO grenade',
   grenadeSmoke: 'Smoke grenade',
+  flare: 'Locator flare',
+  stim: 'Adrenaline stim',
   buy: 'Shop',
   lastWeapon: 'Previous weapon',
   zipline: 'Interact / Zipline',
@@ -462,7 +483,7 @@ export const PICKUP_SPOTS: PickupSpot[] = [
 
 export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
 
-export type MatKey = 'sand' | 'concrete' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock'
+export type MatKey = 'sand' | 'concrete' | 'floor' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock'
 
 export interface MapBox {
   x: number; y: number; z: number
@@ -594,74 +615,196 @@ function stairsBR(cx: number, cz: number, f: Facing, xAt: number, zAt: number, d
 }
 
 // ------------------------------------------------------------
-// HOTEL MERIDIANO — 18×14, 3 plantas + azotea (escaleras interiores
-// de dos tramos apilados + escalera exterior de incendios)
+// v8 — Ayudantes de detalle arquitectónico (reutilizables)
+// ------------------------------------------------------------
+/** Pilastra de esquina (columna vertical que refuerza las 4 esquinas) */
+function pilasters(cx: number, cz: number, f: Facing, HW: number, HD: number, H: number, y0 = 0): void {
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    BR(cx, cz, f, sx * (HW - 0.35), y0 + H / 2, sz * (HD - 0.35), 0.7, H, 0.7, 'concrete')
+  }
+}
+
+/** Cornisa: anillo plano que remata la fachada a la altura del tejado */
+function cornice(cx: number, cz: number, f: Facing, HW: number, HD: number, y: number): void {
+  BR(cx, cz, f, 0, y, -HD - 0.28, HW * 2 + 1.4, 0.26, 0.3, 'concrete')
+  BR(cx, cz, f, 0, y, HD + 0.28, HW * 2 + 1.4, 0.26, 0.3, 'concrete')
+  BR(cx, cz, f, HW + 0.28, y, 0, 0.3, 0.26, HD * 2 + 1.4, 'concrete')
+  BR(cx, cz, f, -HW - 0.28, y, 0, 0.3, 0.26, HD * 2 + 1.4, 'concrete')
+}
+
+/** Barandilla rectangular sobre una plataforma (hueco opcional en un lado) */
+function railing(cx: number, cz: number, f: Facing, x0: number, x1: number, z0: number, z1: number, yTop: number, gap: 'none' | 'front' | 'back' | 'left' | 'right' = 'none'): void {
+  const h = 1.0, t = 0.12, cy = yTop + h / 2
+  const w = x1 - x0, d = z1 - z0, mx = (x0 + x1) / 2, mz = (z0 + z1) / 2
+  if (gap !== 'front') BR(cx, cz, f, mx, cy, z0, w, h, t, 'metalGrey')
+  if (gap !== 'back') BR(cx, cz, f, mx, cy, z1, w, h, t, 'metalGrey')
+  if (gap !== 'left') BR(cx, cz, f, x0, cy, mz, t, h, d, 'metalGrey')
+  if (gap !== 'right') BR(cx, cz, f, x1, cy, mz, t, h, d, 'metalGrey')
+}
+
+/** Suelo interior de baldosas (Piso1.jpg vía matKey 'floor') */
+function interiorFloor(cx: number, cz: number, f: Facing, HW: number, HD: number): void {
+  BR(cx, cz, f, 0, 0.06, 0, HW * 2, 0.12, HD * 2, 'floor')
+}
+
+/** Mobiliario: cama (somier + colchón) */
+function bed(cx: number, cz: number, f: Facing, lx: number, lz: number, y0 = 0, len = 2.0): void {
+  BR(cx, cz, f, lx, y0 + 0.22, lz, 1.0, 0.44, len, 'wood')
+  BR(cx, cz, f, lx, y0 + 0.48, lz - len * 0.22, 0.92, 0.14, len * 0.55, 'sandbag')
+  BR(cx, cz, f, lx, y0 + 0.44, lz + len * 0.38, 0.92, 0.1, 0.4, 'crate')
+}
+
+/** Mobiliario: mesa con patas */
+function table(cx: number, cz: number, f: Facing, lx: number, lz: number, y0 = 0, w = 1.4, d = 0.9): void {
+  BR(cx, cz, f, lx, y0 + 0.72, lz, w, 0.08, d, 'wood')
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    BR(cx, cz, f, lx + sx * (w / 2 - 0.08), y0 + 0.36, lz + sz * (d / 2 - 0.08), 0.08, 0.72, 0.08, 'wood')
+  }
+}
+
+/** Mobiliario: estantería con baldas */
+function shelf(cx: number, cz: number, f: Facing, lx: number, lz: number, rot = false, y0 = 0, len = 1.8, h = 1.9): void {
+  const w = rot ? 0.5 : len, d = rot ? len : 0.5
+  BR(cx, cz, f, lx, y0 + h / 2, lz, w, h, d, 'wood')
+  for (let i = 1; i < 3; i++) BR(cx, cz, f, lx, y0 + i * 0.55, lz, rot ? w + 0.02 : w, 0.06, rot ? d : d + 0.02, 'crate')
+}
+
+/** Climatizador de tejado (ventilador con rejilla) */
+function acUnit(cx: number, cz: number, f: Facing, lx: number, lz: number, y0: number): void {
+  BR(cx, cz, f, lx, y0 + 0.42, lz, 1.5, 0.84, 1.2, 'metalGrey')
+  BR(cx, cz, f, lx, y0 + 0.88, lz, 1.3, 0.1, 1.0, 'metalOrange')
+}
+
+// ------------------------------------------------------------
+// HOTEL MERIDIANO — v8: 23×18, 3 plantas + azotea. Escalera
+// interior de dos carriles en U (patrón v6.4, peldaño 0,28) +
+// escalera exterior de incendios. Lobby con recepción, planta 1
+// con habitaciones, planta 2 tipo suite, balcones y tejado
+// equipado (climas, cisterna, antena y caseta).
 // ------------------------------------------------------------
 function hotel(cx: number, cz: number, f: Facing): void {
-  const HW = 9, HD = 7, H1 = 3.0, H2 = 2.8, T = 0.4
+  const HW = 11.5, HD = 9, H1 = 3.0, H2 = 2.8, T = 0.4
   const F2 = 3.3, F3 = 6.6, ROOF = 9.55
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  pilasters(cx, cz, f, HW, HD, ROOF)
+  cornice(cx, cz, f, HW, HD, ROOF + 0.28)
   // ---- planta baja: lobby ----
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H1, T, door: 0, doorHalf: 1.7, doorH: 2.4, wins: [-6, 6] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H1, T, wins: [-5, 0, 5] })
-  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
-  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H1, T, wins: [-3.5, 0, 3.5] })
-  // columnas del lobby
-  BR(cx, cz, f, 0, 1.5, -3, 0.7, 3.0, 0.7, 'concrete')
-  BR(cx, cz, f, 0, 1.5, 2, 0.7, 3.0, 0.7, 'concrete')
-  // recepción + mobiliario
-  BR(cx, cz, f, -4.5, 0.55, -4.5, 3.4, 1.1, 0.9, 'wood')        // mostrador
-  BR(cx, cz, f, -6, 0.4, 1.5, 2.0, 0.8, 0.9, 'sandbag')          // sofá
-  BR(cx, cz, f, -3.2, 0.45, 1.5, 1.2, 0.9, 0.9, 'wood')         // mesa baja
-  BR(cx, cz, f, -7.6, 0.9, -1, 0.7, 1.8, 1.6, 'wood')           // estante
-  // ---- escalera interior v6.4: DOS CARRILES EN U (en lugar de tramos
-  // apilados, que dejaban el 2.º inalcanzable: escalera trabada).
-  // Tramo A en el carril ESTE sube del lobby al rellano norte de P1;
-  // tramo B en el carril OESTE arranca de ese rellano y sube hacia +z
-  // hasta P2. Peldaño de 0,28: al abordar de lado el jugador solapa dos
-  // peldaños (0,56) y el escalón automático de 0,58 lo salva ----
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H1, T, door: 0, doorHalf: 1.9, doorH: 2.55, wins: [-7.5, -3, 3, 7.5] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H1, T, wins: [-6, 0, 6] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H1, T, wins: [-5, 0, 5] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H1, T, wins: [-5, 0, 5] })
+  // columnas del lobby (4, en dos filas)
+  for (const px of [-5, 5]) for (const pz of [-3.5, 3.5]) {
+    BR(cx, cz, f, px, 1.5, pz, 0.7, 3.0, 0.7, 'concrete')
+  }
+  // recepción + mobiliario del lobby
+  BR(cx, cz, f, -5.5, 0.6, -5.8, 5.0, 1.2, 1.0, 'wood')          // mostrador recepción
+  BR(cx, cz, f, -5.5, 1.28, -5.8, 5.0, 0.14, 1.15, 'concrete')   // encimera
+  shelf(cx, cz, f, -10.2, -5.8, false, 0, 3.2, 2.2)              // paneles de recepción
+  BR(cx, cz, f, -2.5, 0.4, 5.5, 2.4, 0.8, 0.95, 'sandbag')       // sofá grande
+  BR(cx, cz, f, -2.5, 0.4, 3.9, 2.4, 0.8, 0.95, 'sandbag')
+  table(cx, cz, f, -2.5, 4.7, 0, 1.3, 0.8)                       // mesa de centro
+  table(cx, cz, f, 2.2, 5.5, 0, 1.0, 1.0)                        // mesa auxiliar
+  BR(cx, cz, f, 0.8, 0.5, 6.9, 1.0, 1.0, 1.0, 'barrel')          // planta maceta
+  BR(cx, cz, f, -9.9, 0.5, 6.9, 1.0, 1.0, 1.0, 'barrel')
+  BR(cx, cz, f, 3.2, 0.8, -6.5, 1.4, 1.6, 1.2, 'crate')          // carrito de equipaje
+  BR(cx, cz, f, 3.9, 1.9, -6.5, 1.0, 0.9, 1.0, 'crate')
+  BR(cx, cz, f, -9.6, 0.55, 0, 1.2, 1.1, 1.6, 'metalBlue')       // expendedoras
+  BR(cx, cz, f, -9.6, 0.55, 2.0, 1.2, 1.1, 1.6, 'metalRed')
+  // escalera de acceso exterior (puerta principal)
+  BR(cx, cz, f, 0, 0.05, -HD - 0.55, 6.0, 0.1, 1.1, 'concrete')
+  // marquesina de la entrada
+  BR(cx, cz, f, 0, 2.85, -HD - 1.7, 7.0, 0.3, 3.0, 'roof')
+  BR(cx, cz, f, -3.1, 1.4, -HD - 3.0, 0.22, 2.8, 0.22, 'concrete')
+  BR(cx, cz, f, 3.1, 1.4, -HD - 3.0, 0.22, 2.8, 0.22, 'concrete')
+  // ---- escalera interior v6.4: DOS CARRILES EN U ----
+  // muretes del núcleo (evitan abordar la escalera de costado)
+  BR(cx, cz, f, 4.95, 1.6, 3.5, 0.16, 3.2, 7.0, 'sand')
+  BR(cx, cz, f, 9.05, 1.6, 3.5, 0.16, 3.2, 7.0, 'sand')
   stairsBR(cx, cz, f, 7.6, 6.4, 0, -1, 11, 0.28, 0.55, 1.4, 0)     // tramo A (carril este): lobby → rellano P1
   stairsBR(cx, cz, f, 6.2, 0.4, 0, 1, 11, 0.28, 0.55, 1.4, F2)     // tramo B (carril oeste): rellano P1 → P2
-  // ---- forjado P1 con hueco sobre la escalera (x 5..9, z 0.4..7) ----
-  BR(cx, cz, f, -2.1, 3.15, 0, 14.2, 0.3, 14, 'concrete')       // franja oeste
-  BR(cx, cz, f, 7, 3.15, -3.85, 4, 0.3, 6.3, 'concrete')        // rincón este-sur
-  BR(cx, cz, f, 6.9, 3.15, -0.15, 2.8, 0.3, 1.1, 'concrete')    // rellano del tramo A
+  // ---- forjado P1 (hueco del núcleo x 5..9, z 0.4..7) ----
+  BR(cx, cz, f, -3.15, 3.15, 0, 16.3, 0.3, 17.6, 'floor')       // franja oeste
+  BR(cx, cz, f, 10.15, 3.15, 0, 2.3, 0.3, 17.6, 'floor')        // franja este
+  BR(cx, cz, f, 7, 3.15, -4.75, 4.0, 0.3, 8.1, 'floor')         // rincón este-frente
+  BR(cx, cz, f, 7, 3.15, 7.9, 4.0, 0.3, 1.8, 'floor')           // rincón este-fondo
+  BR(cx, cz, f, 6.9, 3.15, -0.15, 2.8, 0.3, 1.1, 'floor')       // rellano del tramo A
   // ---- muros P1 ----
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-6, 0, 6] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-5, 0, 5] })
-  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
-  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-3.5, 0, 3.5] })
-  // tabique de habitaciones en P1
-  wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.7, 'sand', { H: H2, T: 0.3, y0: F2, door: -2, doorHalf: 0.8, doorH: 2.05 })
-  BR(cx, cz, f, -6, F2 + 0.4, -4, 1.8, 0.8, 0.9, 'sandbag')     // cama (hab.)
-  BR(cx, cz, f, -6, F2 + 0.45, 0, 1.2, 0.9, 0.9, 'wood')
-  // ---- forjado P2 + muros P2 ----
-  BR(cx, cz, f, -2.1, F3 + 0.15 - 0.3, 0, 14.2, 0.3, 14, 'concrete')
-  BR(cx, cz, f, 7, F3 - 0.15, -3.85, 4, 0.3, 6.3, 'concrete')
-  BR(cx, cz, f, 6.9, F3 - 0.15, -0.15, 2.8, 0.3, 1.1, 'concrete')
-  // v6.4: rellano SUR de P2 — desembarco del tramo B (carril oeste) y
-  // enlace con la franja oeste del forjado: la escalera interior ya
-  // entrega en el piso 2.º sin trabarse
-  BR(cx, cz, f, 6.65, F3 - 0.15, 6.5, 3.3, 0.3, 0.4, 'concrete')
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-6, 0, 6] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
-  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
-  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-3.5, 0, 3.5] })
-  BR(cx, cz, f, -6, F3 + 0.7, 4, 1.2, 1.2, 1.2, 'crate')
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F2, wins: [-7.5, -3, 3, 7.5] })
+  // fachada trasera P1 en dos segmentos: una puerta por balcón
+  wallL(cx, cz, f, 'z', +HD, -HW, -1, 'sand', { H: H2, T, y0: F2, wins: [-10.3, -4], door: -8, doorHalf: 0.85, doorH: 2.05 })
+  wallL(cx, cz, f, 'z', +HD, -1, HW, 'sand', { H: H2, T, y0: F2, wins: [5, 10.3], door: 1.5, doorHalf: 0.85, doorH: 2.05 })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-5, 0, 5] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F2, wins: [-5, 0, 5] })
+  // tabiques de habitaciones en P1 (lado frente, 3 cuartos)
+  wallL(cx, cz, f, 'x', -7.0, -8.5, 2.5, 'sand', { H: H2, T: 0.25, y0: F2, door: -5.5, doorHalf: 0.75, doorH: 2.05, bandLo: H2, bandHi: H2 - 0.1 })
+  wallL(cx, cz, f, 'x', -3.5, -8.5, 2.5, 'sand', { H: H2, T: 0.25, y0: F2, door: -2.0, doorHalf: 0.75, doorH: 2.05, bandLo: H2, bandHi: H2 - 0.1 })
+  wallL(cx, cz, f, 'x', 0.5, -8.5, 2.5, 'sand', { H: H2, T: 0.25, y0: F2, door: -6.0, doorHalf: 0.75, doorH: 2.05, bandLo: H2, bandHi: H2 - 0.1 })
+  bed(cx, cz, f, -9.5, -6.5, F2 + 0.3, 2.1)
+  table(cx, cz, f, -9.5, -3.5, F2 + 0.3, 0.6, 0.6)
+  bed(cx, cz, f, -5.5, -6.5, F2 + 0.3, 2.1)
+  bed(cx, cz, f, -1.6, -6.5, F2 + 0.3, 2.1)
+  shelf(cx, cz, f, 2.2, -8.3, false, F2 + 0.3, 1.6, 1.8)
+  BR(cx, cz, f, -5.5, F2 + 0.9, -8.3, 1.2, 1.2, 1.0, 'wood')     // armario
+  BR(cx, cz, f, -1.6, F2 + 0.9, -8.3, 1.2, 1.2, 1.0, 'wood')
+  BR(cx, cz, f, 2.4, F2 + 0.45, 6.8, 1.4, 0.9, 0.9, 'wood')      // escritorio corredor
+  BR(cx, cz, f, -6.5, F2 + 0.4, 7.2, 2.2, 0.8, 0.95, 'sandbag')  // sofá corredor
+  // ---- forjado P2 (mismo hueco + rellano sur) ----
+  BR(cx, cz, f, -3.15, 6.45, 0, 16.3, 0.3, 17.6, 'floor')
+  BR(cx, cz, f, 10.15, 6.45, 0, 2.3, 0.3, 17.6, 'floor')
+  BR(cx, cz, f, 7, 6.45, -4.75, 4.0, 0.3, 8.1, 'floor')
+  BR(cx, cz, f, 6.9, 6.45, -0.15, 2.8, 0.3, 1.1, 'floor')
+  BR(cx, cz, f, 6.65, 6.45, 6.5, 3.3, 0.3, 0.4, 'floor')        // rellano sur (desembarco tramo B)
+  // ---- muros P2 ----
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-7.5, -3, 3, 7.5] })
+  wallL(cx, cz, f, 'z', +HD, -HW, -1, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-10.3, -4], door: -8, doorHalf: 0.85, doorH: 2.05 })
+  wallL(cx, cz, f, 'z', +HD, -1, HW, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [5, 10.3], door: 1.5, doorHalf: 0.85, doorH: 2.05 })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: H2, T, y0: F3 + 0.3, wins: [-5, 0, 5] })
+  // suite P2: salón + cama
+  bed(cx, cz, f, -9.5, -6.0, F3 + 0.3, 2.3)
+  BR(cx, cz, f, -5.0, F3 + 0.7, -6.0, 1.8, 1.4, 1.2, 'crate')
+  BR(cx, cz, f, -2.0, F3 + 0.4, -6.5, 2.6, 0.8, 0.95, 'sandbag') // sofá suite
+  table(cx, cz, f, -2.0, -4.8, F3 + 0.3, 1.3, 0.8)
+  table(cx, cz, f, 3.0, -6.0, F3 + 0.3, 1.8, 1.0)                // mesa de juntas
+  BR(cx, cz, f, 3.0, F3 + 1.1, -6.0, 0.5, 0.5, 0.5, 'crate')
+  shelf(cx, cz, f, 10.2, -8.2, false, F3 + 0.3, 2.2, 2.0)
+  // ---- balcones (fachada +z, plantas 1 y 2) — plataforma A RAS del forjado
+  // (si sobresale aunque sea 0,15 m, el escalón automático choca con el
+  // dintel de la puerta y el jugador queda atrapado) ----
+  for (const [fy, doorX] of [[F2, 1.5], [F3 + 0.3, 1.5]] as [number, number][]) {
+    BR(cx, cz, f, doorX, fy - 0.09, HD + 1.0, 3.2, 0.18, 2.0, 'concrete')
+    railing(cx, cz, f, doorX - 1.55, doorX + 1.55, HD + 0.15, HD + 1.9, fy, 'front')
+    BR(cx, cz, f, -8.0, fy - 0.09, HD + 1.0, 3.2, 0.18, 2.0, 'concrete')
+    railing(cx, cz, f, -9.55, -6.45, HD + 0.15, HD + 1.9, fy, 'front')
+  }
   // ---- azotea: forjado + pretil (hueco al este donde llega la escalera) ----
   BR(cx, cz, f, 0, ROOF, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
   const py = ROOF + 0.475
   BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, +HW + 0.12, py, -6.5, 0.22, 0.35, 1.1, 'concrete')   // pretil este, tramo norte
-  BR(cx, cz, f, +HW + 0.12, py, 4.5, 0.22, 0.35, 5.1, 'concrete')     // pretil este, tramo sur
+  BR(cx, cz, f, +HW + 0.12, py, 5.2, 0.22, 0.35, 6.2, 'concrete')     // pretil este, tramo sur
   BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
-  BR(cx, cz, f, -4, ROOF + 0.75, -4, 1.6, 1.1, 1.3, 'metalGrey')  // climatizador
-  BR(cx, cz, f, -6.5, ROOF + 0.6, 3, 1.1, 0.8, 1.1, 'metalGrey')
+  // equipamiento de la azotea
+  acUnit(cx, cz, f, -4.5, -4.5, ROOF + 0.3)
+  acUnit(cx, cz, f, -8.0, 4.0, ROOF + 0.3)
+  BR(cx, cz, f, 2.0, ROOF + 1.1, -5.0, 2.2, 1.6, 2.2, 'metalGrey')   // cisterna
+  BR(cx, cz, f, 2.0, ROOF + 0.55, -5.0, 2.4, 0.5, 2.4, 'concrete')
+  BR(cx, cz, f, -1.0, ROOF + 2.4, 6.5, 0.18, 4.2, 0.18, 'metalGrey') // antena
+  BR(cx, cz, f, -1.0, ROOF + 4.6, 6.5, 0.6, 0.25, 0.6, 'metalOrange')
+  // caseta de acceso a la azotea
+  wallL(cx, cz, f, 'z', -3.7, -8.0, -3.0, 'sand', { H: 2.2, T: 0.2, y0: ROOF + 0.3, door: 0, doorHalf: 0.75, doorH: 2.0, bandLo: 2.3, bandHi: 2.2 })
+  wallL(cx, cz, f, 'z', -4.3, -8.0, -3.0, 'sand', { H: 2.2, T: 0.2, y0: ROOF + 0.3, bandLo: 2.3, bandHi: 2.2 })
+  wallL(cx, cz, f, 'x', -8.0, -4.6, -3.4, 'sand', { H: 2.2, T: 0.2, y0: ROOF + 0.3, bandLo: 2.3, bandHi: 2.2 })
+  wallL(cx, cz, f, 'x', -3.4, -4.6, -3.4, 'sand', { H: 2.2, T: 0.2, y0: ROOF + 0.3, bandLo: 2.3, bandHi: 2.2 })
+  BR(cx, cz, f, -5.7, ROOF + 1.7, -3.7, 3.4, 0.2, 1.8, 'roof')
   // ---- escalera exterior de incendios (fachada este, sube hacia -z) ----
-  stairsBR(cx, cz, f, 10.1, 7.2, 0, -1, 19, 0.5, 0.62, 1.4)
-  // waypoints: entrada, lobby, pasillo P1 (solo planta baja para bots)
+  stairsBR(cx, cz, f, 12.7, 10.4, 0, -1, 19, 0.5, 0.62, 1.4)
+  BR(cx, cz, f, 12.7, ROOF, 1.2, 2.2, 0.3, 3.0, 'roof')           // rellano de llegada
+  // waypoints: entrada, lobby, corredor P1 (solo planta baja para bots)
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -8.6),
+    wpTransform(cx, cz, f, 0, -11.4),
     wpTransform(cx, cz, f, 0, -1),
     wpTransform(cx, cz, f, -4, 3),
     wpTransform(cx, cz, f, 3, -2),
@@ -674,73 +817,115 @@ function hotel(cx: number, cz: number, f: Facing): void {
 // tramo desemboca en la azotea a través de un hueco.
 // ------------------------------------------------------------
 function torreOficina(cx: number, cz: number, f: Facing): void {
-  const HW = 7, HD = 7, HF = 2.8, T = 0.4
+  const HW = 10, HD = 10, HF = 2.8, T = 0.4
   const F = [0, 3.1, 6.2, 9.3]
   const ROOF = 12.25
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  pilasters(cx, cz, f, HW, HD, ROOF)
+  cornice(cx, cz, f, HW, HD, ROOF + 0.28)
   for (let p = 0; p < 4; p++) {
     const y0 = F[p]
-    // fachada sur: con puerta en planta baja
+    // fachada sur: puerta doble ancha en planta baja (vestíbulo)
     if (p === 0) {
-      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, door: 0, doorHalf: 1.3, doorH: 2.3, wins: [-4.5, 4.5] })
+      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, door: 3, doorHalf: 1.3, doorH: 2.55, wins: [8.6] })
     } else {
-      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
+      wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-8, -3, 0, 3, 8] })
     }
-    wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-4.5, 0, 4.5] })
-    wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
-    wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-4, 0, 4] })
+    wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H: HF, T, y0, wins: [-8, -3, 0, 3, 8] })
+    wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-6, 0, 6] })
+    wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H: HF, T, y0, wins: [-6, 0, 6] })
+    // columnas intermedias de fachada (ritmo vertical, entre ventanas)
+    for (const px of [-5.5, 5.5]) {
+      BR(cx, cz, f, px, y0 + HF / 2, -HD, 0.8, HF, 0.8, 'concrete')
+      BR(cx, cz, f, px, y0 + HF / 2, +HD, 0.8, HF, 0.8, 'concrete')
+    }
+    for (const pz of [-3, 3]) {
+      BR(cx, cz, f, +HW, y0 + HF / 2, pz, 0.8, HF, 0.8, 'concrete')
+      BR(cx, cz, f, -HW, y0 + HF / 2, pz, 0.8, HF, 0.8, 'concrete')
+    }
   }
-  // tabiques de oficinas (plantas 1..3)
-  for (let p = 1; p < 4; p++) {
-    wallL(cx, cz, f, 'z', 1.5, -HW + T, 4.2, 'sand', { H: HF, T: 0.25, y0: F[p], door: -1, doorHalf: 0.8, doorH: 2.05 })
-  }
-  // escritorios
-  BR(cx, cz, f, -4.5, 0.45, -4.5, 1.6, 0.9, 0.9, 'wood')
-  BR(cx, cz, f, -4.5, 3.55, 3.5, 1.6, 0.9, 0.9, 'wood')
-  BR(cx, cz, f, -4.5, 6.65, -3.5, 1.6, 0.9, 0.9, 'wood')
-  BR(cx, cz, f, 3, 0.45, 5, 1.3, 0.9, 0.9, 'wood')
-  // ---- escalera interior v6.4: DOS CARRILES EN ZIGZAG (los tramos
-  // apilados dejaban los tramos 2.º-4.º inalcanzables: núcleo trabado).
-  // Tramos PARES en el carril ESTE suben hacia -z (del sur al rellano
-  // norte); tramos IMPARES en el carril OESTE arrancan del rellano
-  // norte y suben hacia +z hasta el rellano sur del piso siguiente.
-  // De la planta baja a la azotea, siempre transitable ----
+  // ---- escalera interior v6.4: DOS CARRILES EN ZIGZAG ----
+  // muretes del núcleo (acceso frontal, sin abordajes laterales)
+  BR(cx, cz, f, 4.45, 1.55, 3.5, 0.16, 3.1, 7.0, 'sand')
+  BR(cx, cz, f, 7.15, 1.55, 3.5, 0.16, 3.1, 7.0, 'sand')
   stairsBR(cx, cz, f, 6.2, 6.4, 0, -1, 11, 0.28, 0.55, 1.2, F[0])  // t0 (este): baja → rellano norte P1
   stairsBR(cx, cz, f, 5.0, 0.4, 0, 1, 11, 0.28, 0.55, 1.2, F[1])   // t1 (oeste): rellano P1 → rellano sur P2
   stairsBR(cx, cz, f, 6.2, 6.4, 0, -1, 11, 0.28, 0.55, 1.2, F[2])  // t2 (este): rellano sur P2 → rellano norte P3
   stairsBR(cx, cz, f, 5.0, 0.4, 0, 1, 11, 0.28, 0.55, 1.2, F[3])   // t3 (oeste): rellano P3 → azotea (salida oeste)
-  // ---- forjados (hueco del núcleo x 4.2..7, z 0.4..7 + rellano) ----
+  // ---- forjados (hueco del núcleo x 4.2..7, z 0.4..7 + rellanos) ----
   for (let p = 1; p < 4; p++) {
-    BR(cx, cz, f, -1.6, F[p] - 0.15, 0, 11.2, 0.3, 14, 'concrete')   // franja oeste
-    BR(cx, cz, f, 6.2, F[p] - 0.15, -3.85, 2.6, 0.3, 6.3, 'concrete')
-    BR(cx, cz, f, 5.6, F[p] - 0.15, -0.15, 2.4, 0.3, 1.1, 'concrete')
+    BR(cx, cz, f, -2.75, F[p] - 0.15, 0, 13.9, 0.3, 19.4, 'floor')   // franja oeste
+    BR(cx, cz, f, 8.35, F[p] - 0.15, 0, 2.7, 0.3, 19.4, 'floor')     // franja este
+    BR(cx, cz, f, 5.6, F[p] - 0.15, -5.2, 2.8, 0.3, 9.0, 'floor')   // franja frente del núcleo
+    BR(cx, cz, f, 5.6, F[p] - 0.15, -0.15, 2.4, 0.3, 1.1, 'floor')  // rellano norte
+    BR(cx, cz, f, 5.6, F[p] - 0.15, 8.35, 2.8, 0.3, 2.7, 'floor')   // franja fondo del núcleo
   }
   // v6.4: rellano SUR de P2 — desembarco del t1 y arranque del t2
-  BR(cx, cz, f, 5.6, F[2] - 0.15, 6.5, 2.4, 0.3, 0.4, 'concrete')
+  BR(cx, cz, f, 5.6, F[2] - 0.15, 6.5, 2.4, 0.3, 0.4, 'floor')
+  // ---- tabiques de oficinas (plantas 1..3): cubículos bajos ----
+  for (let p = 1; p < 4; p++) {
+    wallL(cx, cz, f, 'x', -3.0, -8.8, 4.8, 'sand', { H: 1.25, T: 0.18, y0: F[p], door: -6.0, doorHalf: 0.8, doorH: 1.25, bandLo: 1.3, bandHi: 1.2 })
+    wallL(cx, cz, f, 'x', 1.0, -8.8, 4.8, 'sand', { H: 1.25, T: 0.18, y0: F[p], door: 3.0, doorHalf: 0.8, doorH: 1.25, bandLo: 1.3, bandHi: 1.2 })
+    // escritorios y archivadores por planta
+    for (const dx of [-8.5, -6.2, -1.5, 5.5]) {
+      BR(cx, cz, f, dx, F[p] + 0.45, -6.5, 1.6, 0.9, 0.9, 'wood')
+    }
+    BR(cx, cz, f, -9.5, F[p] + 0.55, 6.5, 1.0, 1.1, 0.5, 'metalGrey')   // archivadores
+    BR(cx, cz, f, -8.3, F[p] + 0.55, 6.5, 1.0, 1.1, 0.5, 'metalGrey')
+    BR(cx, cz, f, -6.9, F[p] + 0.45, 8.6, 1.2, 0.9, 0.7, 'wood')        // mesa de reuniones
+    BR(cx, cz, f, 8.6, F[p] + 0.5, -7.5, 1.0, 1.0, 1.0, 'metalOrange')  // impresora/cafetera
+    BR(cx, cz, f, 8.6, F[p] + 0.5, 7.5, 1.0, 1.0, 1.0, 'barrel')        // planta
+  }
+  // vestíbulo (planta baja): recepción, sofás y ascensor decorativo
+  BR(cx, cz, f, -2.0, 0.6, -6.5, 4.6, 1.2, 1.0, 'wood')       // recepción (lado oeste, no tapa la puerta este)
+  BR(cx, cz, f, -2.0, 1.28, -6.5, 4.6, 0.14, 1.15, 'concrete')
+  BR(cx, cz, f, -6.5, 0.4, 4.5, 2.6, 0.8, 0.95, 'sandbag')    // sofás
+  BR(cx, cz, f, -6.5, 0.4, 6.2, 2.6, 0.8, 0.95, 'sandbag')
+  table(cx, cz, f, -6.5, 5.35, 0, 1.2, 0.8)
+  BR(cx, cz, f, 9.3, 1.4, -4.5, 1.0, 2.8, 0.25, 'metalGrey')  // puertas de ascensor
+  BR(cx, cz, f, 9.3, 1.4, 3.5, 1.0, 2.8, 0.25, 'metalGrey')
+  BR(cx, cz, f, 9.3, 0.9, -5.6, 0.35, 0.6, 0.15, 'metalOrange') // botonera
+  BR(cx, cz, f, -9.3, 0.55, 0, 1.2, 1.1, 1.6, 'metalBlue')     // expendedoras
+  BR(cx, cz, f, -9.3, 0.55, 2.2, 1.2, 1.1, 1.6, 'metalRed')
   // ---- azotea con mirador (pretil alto) + hueco de la escalera ----
-  BR(cx, cz, f, -1.6, ROOF, 0, 11.2, 0.3, 14, 'roof')
-  BR(cx, cz, f, 6.2, ROOF, -3.85, 2.6, 0.3, 6.3, 'concrete')
+  BR(cx, cz, f, -2.75, ROOF, 0, 13.9, 0.3, 19.4, 'roof')
+  BR(cx, cz, f, 5.6, ROOF, -5.2, 2.8, 0.3, 9.0, 'concrete')
   BR(cx, cz, f, 5.6, ROOF, -0.15, 2.4, 0.3, 1.1, 'concrete')
+  BR(cx, cz, f, 8.35, ROOF, 0, 2.7, 0.3, 19.4, 'concrete')
   const py = ROOF + 0.55
   BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.7, 0.7, 0.22, 'concrete')
   BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.7, 0.7, 0.22, 'concrete')
   BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.7, HD * 2 + 0.7, 'concrete')
-  BR(cx, cz, f, +HW + 0.12, py, -3.5, 0.22, 0.7, 7, 'concrete')       // pretil este, tramo norte
-  BR(cx, cz, f, +HW + 0.12, py, 4, 0.22, 0.7, 6, 'concrete')          // tramo sur (hueco en medio)
-  BR(cx, cz, f, -3.5, ROOF + 0.6, -4, 1.5, 1.0, 1.2, 'metalGrey')     // maquinaria
+  BR(cx, cz, f, +HW + 0.12, py, -4.5, 0.22, 0.7, 10, 'concrete')       // pretil este, tramo norte
+  BR(cx, cz, f, +HW + 0.12, py, 7.5, 0.22, 0.7, 5, 'concrete')         // tramo sur (hueco en medio)
+  acUnit(cx, cz, f, -7.0, -6.5, ROOF + 0.3)
+  acUnit(cx, cz, f, -7.0, 6.5, ROOF + 0.3)
+  BR(cx, cz, f, -2.0, ROOF + 3.2, 8.5, 0.22, 6.0, 0.22, 'metalGrey')   // mástil de antena
+  BR(cx, cz, f, -2.0, ROOF + 6.3, 8.5, 0.7, 0.3, 0.7, 'metalOrange')
+  BR(cx, cz, f, -2.0, ROOF + 5.2, 8.5, 2.6, 0.12, 0.12, 'metalGrey')
+  // helipuerto pintado: pad con marcas de esquina
+  BR(cx, cz, f, -4.0, ROOF + 0.32, 0, 8.0, 0.12, 8.0, 'concrete')
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    BR(cx, cz, f, -4.0 + sx * 3.6, ROOF + 0.41, sz * 3.6, 0.8, 0.06, 0.8, 'metalOrange')
+  }
+  BR(cx, cz, f, -4.0, ROOF + 0.45, 0, 0.9, 0.06, 5.4, 'metalOrange')   // trazo H (largo)
+  BR(cx, cz, f, -4.0, ROOF + 0.45, 0, 3.6, 0.06, 0.9, 'metalOrange')   // trazo H (cruzado)
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -8.5),
-    wpTransform(cx, cz, f, 0, -3),
+    wpTransform(cx, cz, f, 0, -11.5),
+    wpTransform(cx, cz, f, -3.5, -3),
     wpTransform(cx, cz, f, -4, 0),
-    wpTransform(cx, cz, f, 3, -4),
+    wpTransform(cx, cz, f, 3, -7),
   )
 }
 
 // ------------------------------------------------------------
-// MERCADO CENTRAL — 20×20 con 4 puertas, puestos interiores y
+// MERCADO CENTRAL — v8: 22×22 con 4 puertas, 6 puestos con
+// toldos, estantes perimetrales, muelle de carga trasero y
 // tejado accesible por escaleras exteriores N y S
 // ------------------------------------------------------------
 function mercado(cx: number, cz: number, f: Facing): void {
-  const MW = 10, MH = 4.6, MT = 0.6, MG = 1.7
+  const MW = 11, MH = 4.6, MT = 0.6, MG = 1.9
+  interiorFloor(cx, cz, f, MW - MT, MW - MT)
   // fachadas N y S (z = ∓MW) con puerta central
   {
     const segW = MW - MG
@@ -748,147 +933,234 @@ function mercado(cx: number, cz: number, f: Facing): void {
       BR(cx, cz, f, -(MG + segW / 2), MH / 2, sz * MW, segW, MH, MT, 'sand')
       BR(cx, cz, f, MG + segW / 2, MH / 2, sz * MW, segW, MH, MT, 'sand')
       BR(cx, cz, f, 0, MH - 0.5, sz * MW, MG * 2, 1, MT, 'sand')
+      // ventanas de fachada
+      BR(cx, cz, f, -(MW - 1.2), 2.0, sz * MW, 1.4, 0.9, MT, 'sand')
+      BR(cx, cz, f, MW - 1.2, 2.0, sz * MW, 1.4, 0.9, MT, 'sand')
     }
     // fachadas E y O (x = ±MW) con puerta central
     for (const sx of [-1, 1]) {
       BR(cx, cz, f, sx * MW, MH / 2, -(MG + segW / 2), MT, MH, segW, 'sand')
       BR(cx, cz, f, sx * MW, MH / 2, (MG + segW / 2), MT, MH, segW, 'sand')
       BR(cx, cz, f, sx * MW, MH - 0.5, 0, MT, 1, MG * 2, 'sand')
+      BR(cx, cz, f, sx * MW, 2.0, -(MW - 1.2), MT, 0.9, 1.4, 'sand')
+      BR(cx, cz, f, sx * MW, 2.0, MW - 1.2, MT, 0.9, 1.4, 'sand')
     }
   }
   // pilares de esquina e interiores
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    BR(cx, cz, f, sx * 9.6, MH / 2, sz * 9.6, 1, MH, 1, 'concrete')
-    BR(cx, cz, f, sx * 6, MH / 2, sz * 6, 0.7, MH, 0.7, 'concrete')
+    BR(cx, cz, f, sx * 10.6, MH / 2, sz * 10.6, 1, MH, 1, 'concrete')
+    BR(cx, cz, f, sx * 6.6, MH / 2, sz * 6.6, 0.7, MH, 0.7, 'concrete')
   }
-  // puestos interiores
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    BR(cx, cz, f, sx * 4.2, 0.6, sz * 2, 1.2, 1.2, 1.2, 'crate')
-    BR(cx, cz, f, sx * 4.2, 1.8, sz * 2, 1.2, 1.2, 1.2, 'crate')
-    BR(cx, cz, f, sx * 2, 0.45, sz * 5, 0.7, 0.9, 0.7, 'barrel')
+  // 6 puestos interiores con toldo y mercancía
+  const stalls: [number, number][] = [[-5.6, -3.4], [0, -3.4], [5.6, -3.4], [-5.6, 4.2], [0, 4.2], [5.6, 4.2]]
+  for (const [sx, sz] of stalls) {
+    BR(cx, cz, f, sx, 0.55, sz, 2.6, 1.1, 1.6, 'wood')          // mostrador del puesto
+    BR(cx, cz, f, sx, 1.25, sz, 2.6, 0.3, 1.7, 'crate')         // mercancía
+    BR(cx, cz, f, sx, 2.55, sz, 3.2, 0.14, 2.2, 'metalOrange')  // toldo
+    BR(cx, cz, f, sx - 1.45, 1.3, sz, 0.12, 2.6, 0.12, 'metalGrey') // postes del toldo
+    BR(cx, cz, f, sx + 1.45, 1.3, sz, 0.12, 2.6, 0.12, 'metalGrey')
+    BR(cx, cz, f, sx, 0.35, sz + 2.2, 0.7, 0.7, 0.7, 'barrel')  // bidón junto al puesto
   }
+  // estantes perimetrales (rotados: pegados a las fachadas E/O, sin tapar las puertas)
+  shelf(cx, cz, f, -9.9, -5.5, true, 0, 4.5, 2.2)
+  shelf(cx, cz, f, -9.9, 5.0, true, 0, 4.5, 2.2)
+  shelf(cx, cz, f, 9.9, -5.5, true, 0, 4.5, 2.2)
+  shelf(cx, cz, f, 9.9, 5.0, true, 0, 4.5, 2.2)
+  // jaulas y palets sueltos
+  BR(cx, cz, f, -3.0, 0.6, -8.0, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, -3.0, 1.8, -8.0, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, 3.2, 0.6, 8.0, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, 3.2, 1.8, 8.0, 1.2, 1.2, 1.2, 'crate')
+  // muelle de carga trasero (fachada +z)
+  BR(cx, cz, f, -6.5, 0.35, MW + 1.1, 5.0, 0.7, 1.6, 'concrete')
+  BR(cx, cz, f, 0, 1.9, MW + 1.7, 7.0, 0.3, 2.8, 'roof')       // visera del muelle
+  BR(cx, cz, f, -3.6, 0.9, MW + 2.9, 0.4, 1.8, 0.4, 'concrete')
+  BR(cx, cz, f, 3.6, 0.9, MW + 2.9, 0.4, 1.8, 0.4, 'concrete')
   // techo con parapeto (hueco N/S donde llegan las escaleras)
   BR(cx, cz, f, 0, MH + 0.15, 0, MW * 2 + 1.4, 0.3, MW * 2 + 1.4, 'roof')
-  BR(cx, cz, f, 4.4, MH + 0.45, -10.3, 11.9, 0.4, 0.3, 'concrete')    // parapeto N (hueco a la izq.)
-  BR(cx, cz, f, -4.4, MH + 0.45, 10.3, 11.9, 0.4, 0.3, 'concrete')   // parapeto S (hueco a la der.)
-  BR(cx, cz, f, 10.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
-  BR(cx, cz, f, -10.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+  BR(cx, cz, f, 5.0, MH + 0.45, -11.3, 12.4, 0.4, 0.3, 'concrete')    // parapeto N (hueco a la izq.)
+  BR(cx, cz, f, -5.0, MH + 0.45, 11.3, 12.4, 0.4, 0.3, 'concrete')   // parapeto S (hueco a la der.)
+  BR(cx, cz, f, 11.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+  BR(cx, cz, f, -11.3, MH + 0.45, 0, 0.3, 0.4, MW * 2 + 1.4, 'concrete')
+  // claraboyas de extracción
+  for (const kx of [-4.5, 4.5]) {
+    BR(cx, cz, f, kx, MH + 0.5, 0, 2.6, 0.4, 2.6, 'metalGrey')
+    BR(cx, cz, f, kx, MH + 0.95, 0, 2.2, 0.3, 2.2, 'metalOrange')
+  }
   // escaleras exteriores N y S (junto a la fachada, suben a lo largo de x)
-  stairsBR(cx, cz, f, -10.6, -12.6, 1, 0, 9, 0.5, 0.9, 1.0, 0)
-  stairsBR(cx, cz, f, 10.6, 12.6, -1, 0, 9, 0.5, 0.9, 1.0, 0)
+  stairsBR(cx, cz, f, -11.6, -13.6, 1, 0, 9, 0.5, 0.9, 1.0, 0)
+  stairsBR(cx, cz, f, 11.6, 13.6, -1, 0, 9, 0.5, 0.9, 1.0, 0)
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -11),
+    wpTransform(cx, cz, f, 0, -12),
     wpTransform(cx, cz, f, 0, 0),
     wpTransform(cx, cz, f, 0, 7),
-    wpTransform(cx, cz, f, -6, 3),
+    wpTransform(cx, cz, f, -6, 0),
     wpTransform(cx, cz, f, 6, -3),
   )
 }
 
 // ------------------------------------------------------------
-// CASAS (colonia residencial) — probadas en v3
+// CASAS (colonia residencial) — v8 con porche, cocina y más detalle
 // ------------------------------------------------------------
-/** Casa pequeña 9×8 con interior: salón + dormitorio, ventanas, tejado plano */
+/** Casa pequeña 12×10 con interior: salón + dormitorio + cocina, porche */
 function smallHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
-  const HW = 4.5, HD = 4.0, H = 3.3, T = 0.35
+  const HW = 6, HD = 5, H = 3.3, T = 0.35
   const o: WallOpts = { H, T }
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.05, doorH: 2.15, wins: [-2.85, 2.85] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-2.2, 2.2] })
-  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
-  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [-1.4, 1.4] })
-  wallL(cx, cz, f, 'z', 1.2, -HW + T, HW - T, mat, { ...o, door: 1.9, doorHalf: 0.8, doorH: 2.05 })
-  BR(cx, cz, f, -2.7, 0.4, -3.1, 1.9, 0.8, 0.85, 'sandbag')   // sofá
-  BR(cx, cz, f, -0.6, 0.45, -2.5, 1.3, 0.9, 0.9, 'wood')      // mesa
-  BR(cx, cz, f, 3.9, 0.9, -1.5, 0.7, 1.8, 1.6, 'wood')        // estante
-  BR(cx, cz, f, -2.6, 0.3, 2.7, 1.7, 0.6, 1.9, 'wood')        // cama
-  BR(cx, cz, f, -1.1, 0.3, 3.3, 0.7, 0.6, 0.7, 'crate')       // mesita
-  BR(cx, cz, f, 3.6, 0.45, 3.2, 0.7, 0.9, 0.7, 'barrel')      // bidón
-  // tejado plano con pretiles
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  pilasters(cx, cz, f, HW, HD, H)
+  cornice(cx, cz, f, HW, HD, H + 0.28)
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.1, doorH: 2.55, wins: [-3.8, 3.8] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-3, 0, 3] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [-2.2, 2.2] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [-2.2, 2.2] })
+  wallL(cx, cz, f, 'z', 1.6, -HW + T, HW - T, mat, { ...o, door: 2.6, doorHalf: 0.8, doorH: 2.05 })
+  // porche de entrada (2 postes + visera + escalón)
+  BR(cx, cz, f, 0, 0.05, -HD - 0.6, 4.0, 0.1, 1.2, 'concrete')
+  BR(cx, cz, f, 0, 2.62, -HD - 1.5, 4.6, 0.22, 2.6, 'roof')
+  BR(cx, cz, f, -2.0, 1.3, -HD - 2.5, 0.22, 2.6, 0.22, 'wood')
+  BR(cx, cz, f, 2.0, 1.3, -HD - 2.5, 0.22, 2.6, 0.22, 'wood')
+  // salón
+  BR(cx, cz, f, -3.6, 0.4, -3.2, 2.2, 0.8, 0.9, 'sandbag')     // sofá
+  BR(cx, cz, f, -3.6, 0.85, -3.2, 2.2, 0.55, 0.95, 'crate')     // respaldo
+  table(cx, cz, f, -3.4, -1.2, 0, 1.3, 0.9)                    // mesa del comedor
+  BR(cx, cz, f, -4.6, 0.45, -1.2, 0.55, 0.9, 0.55, 'wood')     // sillas
+  BR(cx, cz, f, -2.2, 0.45, -1.2, 0.55, 0.9, 0.55, 'wood')
+  BR(cx, cz, f, -4.0, 0.9, 3.4, 0.6, 1.8, 1.6, 'wood')         // estante/librería
+  // cocina (lado este)
+  BR(cx, cz, f, 4.9, 0.45, -2.8, 1.6, 0.9, 3.4, 'wood')        // encimera
+  BR(cx, cz, f, 4.9, 0.95, -3.6, 1.5, 0.35, 1.2, 'metalGrey')  // fregadero
+  BR(cx, cz, f, 5.0, 0.9, 0.6, 0.85, 1.8, 0.8, 'metalGrey')    // frigorífico
+  // dormitorio
+  bed(cx, cz, f, -4.2, 2.2, 0, 2.0)
+  BR(cx, cz, f, -5.4, 0.9, 3.9, 1.1, 1.8, 0.7, 'wood')         // armario
+  BR(cx, cz, f, -2.9, 0.4, 3.6, 0.7, 0.8, 0.7, 'crate')        // mesita
+  // tejado plano con pretiles + climatizador y chimenea
   BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
   BR(cx, cz, f, 0, H + 0.475, -HD - 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, 0, H + 0.475, +HD + 0.11, HW * 2 + 0.7, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, -HW - 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
   BR(cx, cz, f, +HW + 0.11, H + 0.475, 0, 0.22, 0.35, HD * 2 + 0.7, 'concrete')
+  acUnit(cx, cz, f, 2.5, 2.5, H + 0.3)
+  BR(cx, cz, f, -3.0, H + 0.9, -2.5, 0.5, 1.3, 0.5, 'concrete')
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -6.2),
-    wpTransform(cx, cz, f, 1.9, -1.5),
-    wpTransform(cx, cz, f, 1.9, 3.3),
+    wpTransform(cx, cz, f, 0, -8.2),
+    wpTransform(cx, cz, f, 2.6, -1.5),
+    wpTransform(cx, cz, f, 2.6, 3.3),
   )
 }
 
-/** Casa grande de dos plantas: escalera interior y tejado accesible */
+/** Casa grande v8: 15×12 de dos plantas, escalera interior y tejado accesible */
 function bigHouse(cx: number, cz: number, f: Facing, mat: MatKey = 'sand'): void {
-  const HW = 5.5, HD = 4.5, H1 = 3.2, H2 = 2.8, T = 0.4
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H1, T, door: 0, doorHalf: 1.15, doorH: 2.25, wins: [-3.6, 3.6] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H1, T, wins: [-3.3, 0, 3.3] })
-  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
-  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H1, T, wins: [-2, 2] })
-  // escalera interior junto a la pared este
+  const HW = 7.5, HD = 6, H1 = 3.2, H2 = 2.8, T = 0.4
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  pilasters(cx, cz, f, HW, HD, H1 + 0.3 + H2 + 0.15)
+  cornice(cx, cz, f, HW, HD, H1 + 0.3 + H2 + 0.4)
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H1, T, door: 0, doorHalf: 1.2, doorH: 2.55, wins: [-4.6, 4.6] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H1, T, wins: [-4.2, 0, 4.2] })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H1, T, wins: [-2.8, 2.8] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H1, T, wins: [-2.8, 2.8] })
+  // porche de entrada
+  BR(cx, cz, f, 0, 0.05, -HD - 0.6, 4.4, 0.1, 1.3, 'concrete')
+  BR(cx, cz, f, 0, 2.66, -HD - 1.6, 5.2, 0.22, 2.8, 'roof')
+  BR(cx, cz, f, -2.3, 1.33, -HD - 2.7, 0.22, 2.66, 0.22, 'wood')
+  BR(cx, cz, f, 2.3, 1.33, -HD - 2.7, 0.22, 2.66, 0.22, 'wood')
+  // escalera interior junto a la pared este (patrón v6.4 con muretes)
   stairsBR(cx, cz, f, 3.55, 2.7, 0, -1, 8, 0.4, 0.8, 1.4, 0)
-  // v6.4: laterales de la escalera — sin ellos, al acercarse de costado
-  // el jugador embiste peldaños de 1,2 m y la escalera se siente trabada;
-  // con los muretes se sube por el frente (z 2.7) sin atascos
   BR(cx, cz, f, 2.78, 1.6, -0.1, 0.16, 3.2, 5.8, 'sand')   // murete oeste del hueco
   BR(cx, cz, f, 4.32, 1.6, -0.1, 0.16, 3.2, 5.8, 'sand')   // murete este del hueco
-  // mobiliario planta baja
-  BR(cx, cz, f, -3.4, 0.4, -3.3, 2.1, 0.8, 0.85, 'sandbag')
-  BR(cx, cz, f, -1.2, 0.45, -2.7, 1.3, 0.9, 0.9, 'wood')
-  BR(cx, cz, f, -4.85, 0.9, -0.5, 0.7, 1.8, 1.7, 'wood')
-  BR(cx, cz, f, -4.3, 0.6, 3.4, 1.2, 1.2, 1.2, 'crate')
-  BR(cx, cz, f, -4.3, 1.8, 3.4, 1.2, 1.2, 1.2, 'crate')
-  // forjado 2.ª planta (hueco sobre la escalera)
-  BR(cx, cz, f, -1.5, H1 + 0.15, 0, 8.0, 0.3, HD * 2, 'concrete')
-  BR(cx, cz, f, 4.0, H1 + 0.15, 3.25, 3.0, 0.3, 2.5, 'concrete')
+  // mobiliario planta baja: salón + comedor + cocina
+  BR(cx, cz, f, -4.4, 0.4, -4.0, 2.6, 0.8, 0.95, 'sandbag')    // sofá grande
+  BR(cx, cz, f, -4.4, 0.85, -4.0, 2.6, 0.55, 1.0, 'crate')
+  table(cx, cz, f, -4.4, -1.6, 0, 1.8, 1.1)                   // mesa del comedor
+  BR(cx, cz, f, -5.6, 0.45, -1.6, 0.55, 0.9, 0.55, 'wood')    // sillas
+  BR(cx, cz, f, -3.2, 0.45, -1.6, 0.55, 0.9, 0.55, 'wood')
+  BR(cx, cz, f, -6.9, 0.9, -3.0, 0.6, 1.8, 1.8, 'wood')       // librería
+  BR(cx, cz, f, -5.6, 0.45, 4.5, 1.6, 0.9, 0.8, 'wood')       // consola
+  BR(cx, cz, f, -2.0, 0.6, 4.8, 1.3, 1.2, 1.2, 'crate')       // cajas apiladas
+  BR(cx, cz, f, -2.0, 1.8, 4.8, 1.3, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, -6.4, 0.9, 1.2, 0.85, 1.8, 0.8, 'metalGrey')  // frigorífico
+  BR(cx, cz, f, -6.5, 0.45, -0.8, 1.5, 0.9, 2.4, 'wood')      // encimera de cocina
+  // forjado 2.ª planta (hueco de la escalera x 2.5..5.5, z -4.5..2.0)
+  BR(cx, cz, f, -2.4, H1 + 0.15, 0, 9.8, 0.3, 11.6, 'floor')  // franja oeste
+  BR(cx, cz, f, 4.0, H1 + 0.15, 3.25, 3.0, 0.3, 2.5, 'floor') // desembarco este
+  BR(cx, cz, f, 6.4, H1 + 0.15, 0, 1.8, 0.3, 11.6, 'floor')   // franja este
+  BR(cx, cz, f, 4.0, H1 + 0.15, -5.15, 3.0, 0.3, 1.3, 'floor')// franja frente del hueco
+  BR(cx, cz, f, 4.0, H1 + 0.15, 5.15, 3.0, 0.3, 1.3, 'floor') // franja fondo del hueco
   // muros 2.ª planta
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-3.3, 0, 3.3] })
-  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
-  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.2, 2.2] })
-  BR(cx, cz, f, -4.5, H1 + 0.9, 3.4, 1.2, 1.2, 1.2, 'crate')
-  BR(cx, cz, f, -4.5, H1 + 2.1, 3.4, 1.2, 1.2, 1.2, 'crate')
-  BR(cx, cz, f, -2.0, H1 + 0.75, -3.0, 1.3, 0.9, 0.9, 'wood')
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-4.2, 0, 4.2] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { H: H2, T, y0: H1 + 0.3, wins: [-4.2, 0, 4.2], door: -5.4, doorHalf: 0.85, doorH: 2.05 })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.8, 2.8] })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { H: H2, T, y0: H1 + 0.3, wins: [-2.8, 2.8] })
+  // tabique 2.ª planta: 2 dormitorios
+  wallL(cx, cz, f, 'z', -2.5, -7.1, 5.4, mat, { H: H2, T: 0.22, y0: H1 + 0.3, door: -4.0, doorHalf: 0.75, doorH: 2.05, bandLo: H2, bandHi: H2 - 0.1 })
+  // dormitorio principal (oeste)
+  bed(cx, cz, f, -6.1, -3.2, H1 + 0.3, 2.2)
+  BR(cx, cz, f, -7.0, H1 + 1.2, -3.2, 1.1, 1.8, 0.7, 'wood')   // cabecero/armario
+  table(cx, cz, f, -5.0, -1.2, H1 + 0.3, 0.6, 0.6)
+  // dormitorio pequeño (este del tabique)
+  bed(cx, cz, f, -6.1, 3.2, H1 + 0.3, 2.0)
+  BR(cx, cz, f, -4.2, H1 + 1.0, 3.2, 0.9, 1.4, 0.6, 'wood')    // cómoda
+  BR(cx, cz, f, 4.6, H1 + 0.75, -6.2, 1.3, 0.9, 0.9, 'wood')   // escritorio
+  shelf(cx, cz, f, 5.0, 0.5, false, H1 + 0.3, 2.0, 1.8)
+  // balcón 2.ª planta (fachada +z, A RAS del forjado para no trabar la puerta)
+  BR(cx, cz, f, -5.4, H1 + 0.3 - 0.09, HD + 1.0, 2.6, 0.18, 2.0, 'concrete')
+  railing(cx, cz, f, -6.65, -4.15, HD + 0.15, HD + 1.9, H1 + 0.3, 'front')
   // tejado accesible + pretil (hueco oeste para la escalera exterior)
   BR(cx, cz, f, 0, H1 + 0.3 + H2 + 0.15, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
   const py = H1 + 0.3 + H2 + 0.475
   BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
   BR(cx, cz, f, +HW + 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
-  BR(cx, cz, f, -HW - 0.12, py, 1.9, 0.22, 0.35, 5.2, 'concrete')
-  BR(cx, cz, f, -HW - 0.12, py, -3.5, 0.22, 0.35, 2.0, 'concrete')
+  BR(cx, cz, f, -HW - 0.12, py, 2.4, 0.22, 0.35, 7.0, 'concrete')
+  BR(cx, cz, f, -HW - 0.12, py, -4.6, 0.22, 0.35, 2.8, 'concrete')
+  acUnit(cx, cz, f, 3.5, 3.5, H1 + 0.3 + H2 + 0.15)
+  BR(cx, cz, f, -4.5, H1 + 0.3 + H2 + 1.0, -4.0, 0.6, 1.4, 0.6, 'concrete') // chimenea
   // escalera exterior al tejado (pared oeste)
-  stairsBR(cx, cz, f, -6.3, 4.0, 0, -1, 14, 0.5, 0.62, 1.3, 0)
+  stairsBR(cx, cz, f, -8.7, 5.0, 0, -1, 14, 0.5, 0.62, 1.3, 0)
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -6.5),
+    wpTransform(cx, cz, f, 0, -8.5),
     wpTransform(cx, cz, f, 0, -1),
     wpTransform(cx, cz, f, 0, 2.5),
   )
 }
 
-/** Barracón militar 8×5.4 con literas */
+/** Barracón militar v8: 10×7 con 4 literas dobles y armeros */
 function barracks(cx: number, cz: number, f: Facing, mat: MatKey = 'metalGreen'): void {
-  const HW = 4.0, HD = 2.7, H = 2.9, T = 0.35
+  const HW = 5.0, HD = 3.5, H = 2.9, T = 0.35
   const o: WallOpts = { H, T }
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.0, doorH: 2.05, wins: [-2.5, 2.5] })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-1.8, 1.8] })
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, mat, { ...o, door: 0, doorHalf: 1.0, doorH: 2.55, wins: [-3.2, 3.2] })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, mat, { ...o, wins: [-2.4, 2.4] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, mat, { ...o, wins: [0] })
   wallL(cx, cz, f, 'x', -HW, -HD, HD, mat, { ...o, wins: [0] })
-  BR(cx, cz, f, 2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
-  BR(cx, cz, f, -2.6, 0.35, 1.3, 1.7, 0.7, 1.9, 'wood')
-  BR(cx, cz, f, -3.3, 0.9, -1.6, 0.6, 1.8, 1.0, 'metalGrey')
-  BR(cx, cz, f, 2.2, 0.6, -1.5, 1.2, 1.2, 1.2, 'crate')
+  // 4 literas (dos a cada lado)
+  for (const bx of [-3.2, 3.2]) {
+    for (const bz of [-1.6, 1.6]) {
+      BR(cx, cz, f, bx, 0.3, bz, 1.7, 0.6, 0.9, 'wood')         // litera baja
+      BR(cx, cz, f, bx, 0.75, bz, 1.6, 0.12, 0.85, 'sandbag')   // colchón
+      BR(cx, cz, f, bx, 1.15, bz, 1.7, 0.6, 0.9, 'wood')        // litera alta
+      BR(cx, cz, f, bx, 1.6, bz, 1.6, 0.12, 0.85, 'sandbag')
+    }
+  }
+  BR(cx, cz, f, -4.5, 0.9, -2.2, 0.6, 1.8, 1.0, 'metalGrey')    // armero
+  BR(cx, cz, f, 4.5, 0.9, -2.2, 0.6, 1.8, 1.0, 'metalGrey')
+  BR(cx, cz, f, 0, 0.6, -1.5, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, -4.5, 0.55, 2.4, 0.7, 1.1, 0.7, 'barrel')
   BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.7, 0.3, HD * 2 + 0.7, 'roof')
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -4.3),
+    wpTransform(cx, cz, f, 0, -5.2),
     wpTransform(cx, cz, f, 0, 0),
   )
 }
 
 // ------------------------------------------------------------
-// ALMACÉN — grande, con puerta amplia, estanterías y tejado
-// accesible por escalera exterior. XW/ZW = semiejes.
+// ALMACÉN — v8: grande, con puerta amplia, oficina acristalada,
+// 3 hileras de estanterías, muelle con rampas y tejado accesible
+// por escalera exterior. XW/ZW = semiejes.
 // ------------------------------------------------------------
 function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): void {
   const T = 0.6, G = 2.6
+  interiorFloor(cx, cz, f, XW - T, ZW - T)
   // pared trasera y frontal con puerta grande
   wallL(cx, cz, f, 'z', -ZW, -XW, XW, 'metalBlue', { H, T, door: 0, doorHalf: G, doorH: 3.6 })
   wallL(cx, cz, f, 'z', +ZW, -XW, XW, 'metalBlue', { H, T, wins: [-XW * 0.55, 0, XW * 0.55], bandLo: 1.6, bandHi: 3.0 })
@@ -896,25 +1168,45 @@ function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): voi
   for (const sx of [-1, 1]) {
     wallL(cx, cz, f, 'x', sx * XW, -ZW, ZW, 'metalBlue', { H, T, door: 0, doorHalf: 1.3, doorH: 3.2, wins: [-ZW * 0.5, ZW * 0.5], bandLo: 1.6, bandHi: 3.0 })
   }
+  // oficina acristalada (esquina NO): muros bajos con ventana corrida
+  wallL(cx, cz, f, 'z', -ZW + 4.4, -XW + T, -XW + 5.4, 'sand', { H: 2.6, T: 0.2, bandLo: 1.1, bandHi: 2.1, wins: [], door: undefined })
+  wallL(cx, cz, f, 'x', -XW + 5.4, -ZW, -ZW + 4.4, 'sand', { H: 2.6, T: 0.2, door: -ZW + 2.2, doorHalf: 0.75, doorH: 2.05 })
+  BR(cx, cz, f, -XW + 2.0, 0.38, -ZW + 2.2, 2.2, 0.76, 1.0, 'wood')       // escritorio de la oficina
+  BR(cx, cz, f, -XW + 0.5, 0.55, -ZW + 2.2, 0.6, 1.1, 0.6, 'metalGrey')  // archivador
   // techo
   BR(cx, cz, f, 0, H + 0.15, 0, XW * 2 + 1.2, 0.3, ZW * 2 + 1.2, 'roof')
-  // estanterías interiores (dos hileras)
-  BR(cx, cz, f, -XW * 0.45, 1.3, -ZW * 0.3, 2.4, 2.6, ZW * 1.2, 'metalGreen')
-  BR(cx, cz, f, XW * 0.45, 1.3, -ZW * 0.3, 2.4, 2.6, ZW * 1.2, 'metalGreen')
-  BR(cx, cz, f, -XW * 0.45, 1.3, 0, 1.4, 1.2, 1.4, 'crate')
-  BR(cx, cz, f, -XW * 0.45, 2.6, 0, 1.4, 1.2, 1.4, 'crate')
-  BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.5, 0.7, 0.9, 0.7, 'barrel')
-  // muelle de carga frente a la puerta
-  BR(cx, cz, f, 0, 0.225, -ZW - 1.4, 7, 0.45, 2, 'concrete')
+  // estanterías interiores (dos hileras dobles + una central de palets)
+  const rackH = 2.6, rackD = ZW * 0.62
+  BR(cx, cz, f, -XW * 0.62, 1.3, -ZW * 0.18, 2.6, rackH, rackD, 'metalGreen')
+  BR(cx, cz, f, XW * 0.62, 1.3, -ZW * 0.18, 2.6, rackH, rackD, 'metalGreen')
+  BR(cx, cz, f, 0, 0.5, 0, 2.4, 1.0, 3.2, 'wood')                          // palet central
+  // cajas sobre las estanterías y bidones
+  for (const [bx, bz] of [[-XW * 0.62, -ZW * 0.5], [XW * 0.62, -ZW * 0.5], [-XW * 0.62, 0], [XW * 0.62, 0]] as [number, number][]) {
+    BR(cx, cz, f, bx, 2.9, bz, 1.4, 1.2, 1.4, 'crate')
+    BR(cx, cz, f, bx, 4.1, bz, 1.4, 1.2, 1.4, 'crate')
+  }
+  BR(cx, cz, f, -XW * 0.45, 0.45, ZW * 0.55, 0.7, 0.9, 0.7, 'barrel')
+  BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.55, 0.7, 0.9, 0.7, 'barrel')
+  BR(cx, cz, f, XW * 0.45, 0.45, ZW * 0.55, 0.7, 0.9, 0.7, 'barrel')
+  BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.4, 0.7, 0.9, 0.7, 'barrel')
+  // muelle de carga frente a la puerta (plataforma + rampas laterales)
+  BR(cx, cz, f, 0, 0.225, -ZW - 1.4, 9, 0.45, 2, 'concrete')
+  stairsBR(cx, cz, f, -5.4, -ZW - 2.9, 1, 0, 2, 0.225, 0.9, 1.2, 0)
+  stairsBR(cx, cz, f, 5.4, -ZW - 2.9, -1, 0, 2, 0.225, 0.9, 1.2, 0)
   // escalera exterior al tejado (lado oeste, sube hacia -z)
   stairsBR(cx, cz, f, -XW - 1.0, ZW + 1.2, 0, -1, Math.ceil(H / 0.5), 0.5, 0.62, 1.3, 0)
   // pretiles del tejado (hueco donde llega la escalera, lado oeste)
   BR(cx, cz, f, 0, H + 0.45, -ZW - 0.15, XW * 2 + 1.2, 0.4, 0.28, 'concrete')
   BR(cx, cz, f, 0, H + 0.45, +ZW + 0.15, XW * 2 + 1.2, 0.4, 0.28, 'concrete')
   BR(cx, cz, f, +XW + 0.15, H + 0.45, 0, 0.28, 0.4, ZW * 2 + 1.2, 'concrete')
-  BR(cx, cz, f, -XW - 0.15, H + 0.45, 3, 0.28, 0.4, 5, 'concrete')
+  BR(cx, cz, f, -XW - 0.15, H + 0.45, 3, 0.28, 0.4, ZW * 2 + 0.2, 'concrete')
+  // extractores y lucernarios del tejado
+  for (const vx of [-XW * 0.5, XW * 0.5]) {
+    BR(cx, cz, f, vx, H + 0.65, 0, 1.6, 0.7, 1.6, 'metalGrey')
+    BR(cx, cz, f, vx, H + 1.2, 0, 1.2, 0.4, 1.2, 'metalOrange')
+  }
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 0, -ZW - 3.4),
+    wpTransform(cx, cz, f, 0, -ZW - 3.6),
     wpTransform(cx, cz, f, 0, -4),
     wpTransform(cx, cz, f, 0, 0),
     wpTransform(cx, cz, f, 0, 4),
@@ -922,77 +1214,116 @@ function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): voi
   )
 }
 
-/** Tienda pequeña 7×6 con mostrador y escaparate */
+/** Tienda v8: 10×8 con mostrador en L, estanterías, congelador y toldo */
 function shop(cx: number, cz: number, f: Facing): void {
-  const HW = 3.5, HD = 3, H = 3.6, T = 0.35
-  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H, T, door: 1.8, doorHalf: 0.9, doorH: 2.2, wins: [-1.6, 0.6], winW: 2.0 })
-  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H, T })
+  const HW = 5, HD = 4, H = 3.6, T = 0.35
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  cornice(cx, cz, f, HW, HD, H + 0.28)
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { H, T, door: 2.2, doorHalf: 1.0, doorH: 2.55, wins: [-2.8, 0.2], winW: 2.0 })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { H, T, wins: [0] })
   wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { H, T, wins: [0] })
   wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { H, T, wins: [0] })
-  BR(cx, cz, f, 0, 0.55, 0.8, 2.6, 1.1, 0.8, 'wood')       // mostrador
-  BR(cx, cz, f, -2.6, 0.9, 0, 0.6, 1.8, 1.5, 'wood')       // estante
-  BR(cx, cz, f, 2.4, 0.45, -1.8, 1.2, 0.9, 0.9, 'crate')
+  // mostrador en L
+  BR(cx, cz, f, 0, 0.55, 0.8, 2.8, 1.1, 0.8, 'wood')
+  BR(cx, cz, f, -1.0, 0.55, 2.0, 0.8, 1.1, 1.6, 'wood')
+  // estanterías
+  shelf(cx, cz, f, -3.5, 1.0, false, 0, 2.6, 2.0)
+  shelf(cx, cz, f, 3.4, 1.5, false, 0, 2.6, 1.8)
+  shelf(cx, cz, f, 0.4, -2.6, true, 0, 2.4, 1.9)
+  // congelador / nevera
+  BR(cx, cz, f, -4.2, 0.9, -2.6, 1.2, 1.8, 1.2, 'metalBlue')
+  BR(cx, cz, f, 3.4, 0.45, -3.2, 1.2, 0.9, 1.2, 'crate')
+  // toldo sobre el escaparate + rótulo en el tejado
+  BR(cx, cz, f, 2.2, 2.55, -HD - 1.3, 5.2, 0.16, 2.4, 'metalOrange')
+  BR(cx, cz, f, -0.2, 1.2, -HD - 2.3, 0.16, 2.4, 0.16, 'metalGrey')
+  BR(cx, cz, f, 4.6, 1.2, -HD - 2.3, 0.16, 2.4, 0.16, 'metalGrey')
+  BR(cx, cz, f, -1.0, H + 0.7, 0, 4.2, 0.9, 0.5, 'metalOrange')   // rótulo
+  BR(cx, cz, f, -1.0, H + 0.7, -0.45, 3.4, 0.5, 0.1, 'metalGrey')
   BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.5, 0.3, HD * 2 + 0.5, 'roof')
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, 1.8, -4.6),
+    wpTransform(cx, cz, f, 2.2, -5.6),
     wpTransform(cx, cz, f, 0, 0),
   )
 }
 
 // ------------------------------------------------------------
-// GASOLINERA — kiosco + marquesina con bombas (f: entrada hacia +x)
+// GASOLINERA v8 — kiosco grande + marquesina con 4 bombas,
+// tótem de precios, inflador y contenedores (f: entrada hacia +x)
 // ------------------------------------------------------------
 function gasStation(cx: number, cz: number, f: Facing): void {
-  const KW = 5, KD = 4, KH = 3.2, T = 0.4
-  // kiosco (tienda) 10×8
-  wallL(cx, cz, f, 'z', -KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.5, 2.5] })
-  wallL(cx, cz, f, 'z', +KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.5, 0, 2.5] })
-  wallL(cx, cz, f, 'x', +KW, -KD, KD, 'sand', { H: KH, T, door: 0, doorHalf: 0.95, doorH: 2.2, wins: [-1.5, 1.5] })
-  wallL(cx, cz, f, 'x', -KW, -KD, KD, 'sand', { H: KH, T })
+  const KW = 5.5, KD = 4.5, KH = 3.2, T = 0.4
+  // kiosco (tienda) 11×9
+  interiorFloor(cx, cz, f, KW - T, KD - T)
+  cornice(cx, cz, f, KW, KD, KH + 0.28)
+  wallL(cx, cz, f, 'z', -KD, -KW, KW, 'sand', { H: KH, T, wins: [-3, 3] })
+  wallL(cx, cz, f, 'z', +KD, -KW, KW, 'sand', { H: KH, T, wins: [-2.8, 0, 2.8] })
+  wallL(cx, cz, f, 'x', +KW, -KD, KD, 'sand', { H: KH, T, door: 0, doorHalf: 1.0, doorH: 2.55, wins: [-1.8, 1.8] })
+  wallL(cx, cz, f, 'x', -KW, -KD, KD, 'sand', { H: KH, T, wins: [0] })
   BR(cx, cz, f, 0, 3.75, 0, KW * 2 + 0.8, 0.3, KD * 2 + 0.8, 'roof')
-  BR(cx, cz, f, 2.2, 0.55, 0, 1.2, 1.1, 3, 'crate')        // mostrador
-  BR(cx, cz, f, -3, 0.6, -2.5, 3, 1.2, 0.9, 'crate')       // estantería
-  BR(cx, cz, f, -3, 0.6, 2.5, 3, 1.2, 0.9, 'crate')
+  BR(cx, cz, f, 2.4, 0.55, 0, 1.2, 1.1, 3.2, 'crate')        // mostrador
+  shelf(cx, cz, f, -3.4, -2.6, false, 0, 2.6, 1.9)
+  shelf(cx, cz, f, -3.4, 2.4, false, 0, 2.6, 1.9)
+  BR(cx, cz, f, -4.6, 0.6, 0, 1.0, 1.2, 1.4, 'metalBlue')    // nevera de bebidas
   // marquesina (patio de bombas, al este)
-  BR(cx, cz, f, 8.5, 0.225, 0, 8, 0.45, 10, 'concrete')    // explanada
-  BR(cx, cz, f, 8.5, 4.4, 0, 12, 0.5, 12, 'roof')          // marquesina
-  for (const [px, pz] of [[6.2, -2.5], [6.2, 2.5], [10.8, -2.5], [10.8, 2.5]] as [number, number][]) {
-    BR(cx, cz, f, px, 2.1, pz, 0.5, 4.2, 0.5, 'concrete')
+  BR(cx, cz, f, 8.5, 0.225, 0, 8, 0.45, 11, 'concrete')      // explanada
+  BR(cx, cz, f, 8.5, 4.4, 0, 13, 0.5, 13, 'roof')            // marquesina
+  for (const [px, pz] of [[5.5, -4.5], [5.5, 4.5], [11.0, -4.5], [11.0, 4.5]] as [number, number][]) {
+    BR(cx, cz, f, px, 2.1, pz, 0.55, 4.2, 0.55, 'concrete')
   }
-  BR(cx, cz, f, 7.2, 0.6, 0, 1.2, 1.2, 1.2, 'metalRed')    // bombas
-  BR(cx, cz, f, 9.8, 0.6, 0, 1.2, 1.2, 1.2, 'metalRed')
+  BR(cx, cz, f, 6.7, 0.6, -1.6, 1.0, 1.2, 1.2, 'metalRed')   // bombas
+  BR(cx, cz, f, 6.7, 0.6, 1.6, 1.0, 1.2, 1.2, 'metalRed')
+  BR(cx, cz, f, 9.5, 0.6, -1.6, 1.0, 1.2, 1.2, 'metalRed')
+  BR(cx, cz, f, 9.5, 0.6, 1.6, 1.0, 1.2, 1.2, 'metalRed')
+  BR(cx, cz, f, 8.5, 3.2, 0, 6.5, 0.3, 0.5, 'metalGrey')     // señal alta bajo marquesina (no estorba el paso)
+  // tótem de precios (alto, junto a la calle)
+  BR(cx, cz, f, 10.5, 2.6, 5.8, 0.5, 5.2, 0.5, 'concrete')
+  BR(cx, cz, f, 10.5, 4.6, 5.8, 2.4, 1.4, 0.3, 'metalOrange')
+  // inflador de neumáticos y contenedor
+  BR(cx, cz, f, -1.5, 0.55, 7.2, 1.0, 1.1, 1.0, 'metalGrey')  // inflador
+  BR(cx, cz, f, -3.0, 0.75, -KD - 1.5, 2.6, 1.5, 1.2, 'metalGreen') // contenedor
   WP_EXTRA.push(
     wpTransform(cx, cz, f, 0, 6),
-    wpTransform(cx, cz, f, 8.5, 6),
-    wpTransform(cx, cz, f, 8.5, -6),
+    wpTransform(cx, cz, f, 9.0, 8),
+    wpTransform(cx, cz, f, 9.0, -8),
   )
 }
 
 // ------------------------------------------------------------
-// ESTACIÓN DE RADAR — recinto amurallado con barracón
+// ESTACIÓN DE RADAR v8 — recinto amurallado con barracón
 // ------------------------------------------------------------
 function radarStation(cx: number, cz: number, f: Facing): void {
-  const W = 12, D = 10, H = 2.6, T = 0.5
+  const W = 13.5, D = 11, H = 3.0, T = 0.5
   wallL(cx, cz, f, 'z', -D, -W, W, 'concrete', { H, T })
   wallL(cx, cz, f, 'z', +D, -W, W, 'concrete', { H, T })
   wallL(cx, cz, f, 'x', -W, -D, D, 'concrete', { H, T })
-  wallL(cx, cz, f, 'x', +W, -D, D, 'concrete', { H, T, door: 0, doorHalf: 1.3, doorH: 2.2 })
-  // radar (base + plataforma + antena)
-  BR(cx, cz, f, -5, 1.5, -4, 3, 3, 3, 'concrete')
-  BR(cx, cz, f, -5, 3.2, -4, 4, 0.4, 4, 'metalOrange')
-  BR(cx, cz, f, -5, 4.2, -4, 0.4, 1.6, 0.4, 'metalGrey')
+  wallL(cx, cz, f, 'x', +W, -D, D, 'concrete', { H, T, door: 0, doorHalf: 1.4, doorH: 2.4 })
+  // radar (base + plataforma + antena + plato)
+  BR(cx, cz, f, -5.5, 1.75, -4.5, 3.4, 3.5, 3.4, 'concrete')
+  BR(cx, cz, f, -5.5, 3.7, -4.5, 4.4, 0.4, 4.4, 'metalOrange')
+  BR(cx, cz, f, -5.5, 4.9, -4.5, 0.4, 2.0, 0.4, 'metalGrey')
+  BR(cx, cz, f, -6.4, 5.9, -4.5, 1.9, 1.7, 0.25, 'metalGrey')  // plato giratorio
+  // mástil de comunicaciones
+  BR(cx, cz, f, -8.5, 3.4, 5.5, 0.35, 6.8, 0.35, 'metalGrey')
+  BR(cx, cz, f, -8.5, 6.2, 5.5, 1.5, 1.5, 0.15, 'metalOrange')
   // barracón con literas (dentro)
   barracks(cx, cz, f)
-  // el barracón se coloca en el centro local (0,0) del recinto
-  BR(cx, cz, f, 4, 0.7, 4, 1.4, 1.4, 1.4, 'crate')     // generador
-  BR(cx, cz, f, 4, 0.6, -4, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, 4.5, 0.7, 5.0, 1.6, 1.4, 1.6, 'crate')     // generador
+  BR(cx, cz, f, 4.5, 0.6, 2.5, 1.2, 1.2, 1.2, 'crate')
+  BR(cx, cz, f, 4.0, 0.9, -5.5, 1.1, 1.8, 1.1, 'metalGrey') // depósito de combustible
+  BR(cx, cz, f, 6.4, 0.9, -5.5, 1.1, 1.8, 1.1, 'metalGrey')
+  // torretas de focos en las esquinas
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    if (sx === 1 && sz === 1) continue
+    BR(cx, cz, f, sx * (W - 1.2), 2.4, sz * (D - 1.2), 0.25, 4.8, 0.25, 'metalGrey')
+    BR(cx, cz, f, sx * (W - 1.2), 4.7, sz * (D - 1.2), 0.8, 0.5, 0.5, 'metalOrange')
+  }
   // sacos de cobertura junto a la puerta (dentro del recinto)
-  for (const z of [-7, 7]) BR(cx, cz, f, W - 3, 0.4, z, 3, 0.8, 0.6, 'sandbag')
+  for (const z of [-8, 8]) BR(cx, cz, f, W - 3, 0.4, z, 3, 0.8, 0.6, 'sandbag')
   WP_EXTRA.push(
-    wpTransform(cx, cz, f, W + 4, 0),
-    wpTransform(cx, cz, f, W - 2, 0),
-    wpTransform(cx, cz, f, 6, 6),
-    wpTransform(cx, cz, f, -8, 6),
+    wpTransform(cx, cz, f, W + 4.5, 0),
+    wpTransform(cx, cz, f, W - 2.5, 0),
+    wpTransform(cx, cz, f, 7, 7),
+    wpTransform(cx, cz, f, -9, 7),
   )
 }
 
@@ -1086,8 +1417,8 @@ B(50, 0.55, -49, 3, 1.1, 0.5, 'concrete')              // barrera
 B(44, 0.55, -49, 3, 1.1, 0.5, 'concrete')
 
 // === NO: distrito industrial ===
-almacen(-19.5, -19.5, 'N', 11, 8, 6)                    // almacén norte (puerta al sur→calle z=-35… fachada -z)
-almacen(-51, -19.5, 'E', 9, 7, 5.5)                     // nave oeste (puerta al este→calle x=-35)
+almacen(-19.5, -19.5, 'N', 11.5, 10, 6)                  // almacén norte (puerta al sur→calle z=-35… fachada -z)
+almacen(-51, -19.5, 'E', 10.5, 8.5, 5.5)                 // nave oeste (puerta al este→calle x=-35)
 // depósito de contenedores
 {
   const row1: MatKey[] = ['metalRed', 'metalBlue', 'metalGreen']
@@ -1109,7 +1440,7 @@ tankPlant(-51, -51)
 // === SE: distrito residencial + parque ===
 smallHouse(16, 16, 'W')
 smallHouse(46, 13.5, 'N')
-smallHouse(46, 27, 'E')
+smallHouse(46, 26, 'E')
 bigHouse(16, 50, 'W')
 // parque SE: árboles + fuente + quiosco + bancos
 fountain(51, 46)
@@ -1200,9 +1531,9 @@ export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
   // gasolinera
   { x: -44.2, z: 14.5 }, { x: -45.8, z: 25 },
   // almacén norte
-  { x: -24, z: -14 }, { x: -14, z: -24 },
+  { x: -21, z: -14 }, { x: -17, z: -24 },
   // mercado
-  { x: 8.5, z: -44 }, { x: 30.5, z: -44 },
+  { x: 7.0, z: -44 }, { x: 32.5, z: -44 },
   // rotonda
   { x: 11, z: -11 }, { x: -11, z: 11 },
   // depósito de contenedores

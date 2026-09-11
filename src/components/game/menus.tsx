@@ -107,7 +107,7 @@ function TabButton({ icon: Icon, label, active, onClick }: {
 // CONTROLS panel (rebindable) — shared menu/pause
 // ============================================================
 const MOVEMENT: ActionId[] = ['fwd', 'back', 'left', 'right', 'sprint', 'crouch', 'jump', 'zipline']
-const COMBAT: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
+const COMBAT: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'flare', 'stim', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
 
 function useKeyCapture() {
   const [capture, setCapture] = useState<ActionId | null>(null)

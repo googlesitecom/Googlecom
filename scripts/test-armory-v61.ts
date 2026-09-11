@@ -61,7 +61,7 @@ sim.handleEquip(p, 'cr4', 1)            // mover cr4 al hueco 2 → hueco 1 qued
 check('cr4 movido a hueco 2 (hueco 1 libre)', p.slots[0] === null && p.slots[1] === 'cr4', JSON.stringify(p.slots))
 events.length = 0
 sim.handleEquip(p, 'awp338', 0)         // arma NO comprada
-check('equipar arma no comprada rechazada', events.some(e => e.ev === 'buyResult' && !e.data.ok && /todavía|arma/i.test(e.data.error ?? '')) && p.slots[0] === null)
+check('equipar arma no comprada rechazada', events.some(e => e.ev === 'buyResult' && !e.data.ok && /todavía|arma|own|weapon/i.test(e.data.error ?? '')) && p.slots[0] === null)
 
 console.log('— 4. recomprar arma del arsenal = munición, no huecos nuevos —')
 events.length = 0

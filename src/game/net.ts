@@ -658,6 +658,16 @@ export class NetClient {
     this.sendToSim({ e: 'grenadeThrow', d: { id: this.id, data: { pos, vel, kind } } })
   }
 
+  /** v8: disparar una bengala localizadora */
+  useFlare(): void {
+    this.sendToSim({ e: 'flareUse', d: { id: this.id } })
+  }
+
+  /** v8: inyectarse un estímulo de adrenalina */
+  useStim(): void {
+    this.sendToSim({ e: 'stimUse', d: { id: this.id } })
+  }
+
   /** Disparo del jugador local (para que los demás vean traza + animación de disparo) */
   sendShot(origin: [number, number, number], hit: [number, number, number]): void {
     if (this.mode === 'guest') {
@@ -721,8 +731,18 @@ export class NetClient {
         const d = data as {
           pos: [number, number, number]; yaw: number; hp: number; armor: number
           weapons: WeaponId[]; weapon: WeaponId; frags: number; money: number; protect: number
+          flares?: number; stims?: number; vest?: number; helmet?: number
         }
         game.onSpawn(d.pos, d.yaw, d.weapons, d.weapon, d.hp, d.armor, d.frags, d.money)
+        // v8: equipo táctico conservado al reaparecer
+        if (d.flares !== undefined || d.stims !== undefined || d.vest !== undefined || d.helmet !== undefined) {
+          useGame.getState().setHud({
+            flares: d.flares ?? 0,
+            stims: d.stims ?? 0,
+            vest: !!d.vest,
+            helmet: !!d.helmet,
+          })
+        }
         break
       }
       case 'snapshot': {
@@ -817,8 +837,35 @@ export class NetClient {
         break
       }
       case 'econ': {
-        const d = data as { money: number; frags?: number; smokes?: number }
-        game.setMoney(d.money, d.frags, d.smokes)
+        const d = data as { money: number; frags?: number; smokes?: number; vest?: number; helmet?: number; flares?: number; stims?: number; stimUntil?: number }
+        game.setMoney(d.money, d.frags, d.smokes, d)
+        break
+      }
+      case 'healed': {
+        // v8: botiquín comprado en la tienda → vida al 100 %
+        const d = data as { hp: number }
+        game.setHealth(d.hp, useGame.getState().armor)
+        game.audio.pickup(false)
+        break
+      }
+      case 'flareUsed': {
+        // v8: revelación de enemigos para ESTE cliente
+        const d = data as { until: number; flares: number }
+        game.onFlareUsed(d.until)
+        useGame.getState().setHud({ flares: d.flares })
+        break
+      }
+      case 'flareFx': {
+        // v8: la bengala sube al cielo (la ve todo el mundo)
+        const d = data as { x: number; y: number; z: number }
+        game.onFlareFx(d.x, d.y, d.z)
+        break
+      }
+      case 'stimUsed': {
+        // v8: adrenalina activa
+        const d = data as { until: number; stims: number }
+        game.onStimUsed(d.until)
+        useGame.getState().setHud({ stims: d.stims })
         break
       }
       case 'buyResult': {

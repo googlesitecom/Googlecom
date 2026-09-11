@@ -89,14 +89,19 @@ function journey(start: [number, number], y0: number, wps: [number, number][], l
 
 // ------------------------------------------------------------
 // HOTEL (19.5, -19.5, 'S'): local → mundo (19.5 - lx, -19.5 - lz)
+// v8: el núcleo de la escalera tiene MUROS GUÍA (x 4.95 / 9.05, z 0..7):
+// se entra por el extremo trasero (z > 7) del carril, ya no de costado.
 // ------------------------------------------------------------
 console.log('HOTEL — recorrido completo de la escalera interior:')
 {
   const w = (lx: number, lz: number): [number, number] => [19.5 - lx, -19.5 - lz]
   const r = journey(
-    w(2.0, 5.0), 0,
+    w(0.0, -2.0), 0,
     [
-      w(7.6, 6.0),     // acercarse a la base del tramo A (carril este)
+      w(10.15, -2.0), // frente del lobby → corredor este (libre de pilastras)
+      w(10.15, 8.2),  // norte por el corredor hasta el fondo
+      w(7.6, 8.2),    // girar al oeste: entrada trasera del núcleo (abierta)
+      w(7.6, 6.0),     // base del tramo A (carril este)
       w(7.6, 1.0),     // subir el tramo A hacia el norte
       w(6.2, -0.15),   // cruzar el rellano norte al carril oeste
       w(6.2, 5.5),     // subir el tramo B hacia el sur
@@ -118,6 +123,8 @@ console.log('TORRE — recorrido completo de la escalera interior:')
   const r = journey(
     w(0.0, 3.0), 0,
     [
+      w(2.0, 8.5),    // oeste del núcleo y al fondo del vestíbulo (v8: muros guía)
+      w(6.2, 8.5),    // este por detrás del núcleo (entrada trasera abierta)
       w(6.2, 6.0),     // base del t0 (carril este)
       w(6.2, 1.0),     // t0 sube al norte → rellano P1
       w(5.0, -0.15),   // cruza al carril oeste

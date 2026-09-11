@@ -11,7 +11,7 @@ import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { WEAPONS, TEAM_INFO, keyLabel, type Team } from '@/game/shared'
 import { getGame } from '@/game/game-instance'
-import { Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target, Crosshair } from 'lucide-react'
+import { Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target, Crosshair, ShieldCheck, HardHat, Flame, Syringe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 export function Hud() {
@@ -32,6 +32,19 @@ export function Hud() {
   const phase = useGame(s => s.phase)
   const cineActive = useGame(s => s.cineActive)
   const smokes = useGame(s => s.smokes)
+  const vest = useGame(s => s.vest)
+  const helmet = useGame(s => s.helmet)
+  const flares = useGame(s => s.flares)
+  const stims = useGame(s => s.stims)
+  const stimUntil = useGame(s => s.stimUntil)
+  const flareKey = keyLabel(useGame(s => s.settings.keybinds.flare))
+  const stimKey = keyLabel(useGame(s => s.settings.keybinds.stim))
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    // refresco por segundo mientras corre la adrenalina (contador)
+    const id = setInterval(() => forceTick((v: number) => v + 1), 500)
+    return () => clearInterval(id)
+  }, [])
   const fps = useGame(s => s.fps)
   const mode = useGame(s => s.mode)
   const ping = useGame(s => s.ping)
@@ -224,6 +237,30 @@ export function Hud() {
               <circle cx="9" cy="9" r="2" /><circle cx="15" cy="12" r="2.6" /><circle cx="8.5" cy="15.5" r="2.2" />
             </svg>
             <span className="font-tac text-slate-300 tabular-nums">×{smokes}</span>
+          </div>
+        </div>
+        {/* v8 — tactical gear: chaleco/casco (pasivos) + bengala/estímulo (activos) */}
+        <div className="flex gap-2">
+          {(vest || helmet) && (
+            <div className="flex items-center gap-2 bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1.5 border border-emerald-700/50 shadow-lg" style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
+              {vest && <ShieldCheck className="w-4 h-4 text-emerald-400" />}
+              {helmet && <HardHat className="w-4 h-4 text-emerald-300" />}
+              <span className="font-tac-md text-[9px] text-emerald-300/90 tracking-widest">ARMORED</span>
+            </div>
+          )}
+          <div className={`flex items-center gap-1.5 bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1.5 border shadow-lg transition-opacity ${flares > 0 ? 'border-red-500/60' : 'border-stone-700/60 opacity-50'}`} style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
+            <Flame className="w-4 h-4 text-red-400" />
+            <span className="font-tac text-red-300 tabular-nums">×{flares}</span>
+            <kbd className="font-tac-md text-[8px] px-1 py-0.5 rounded bg-stone-800 text-stone-400">{flareKey}</kbd>
+          </div>
+          <div className={`flex items-center gap-1.5 bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1.5 border shadow-lg transition-opacity ${stims > 0 || stimUntil > Date.now() ? 'border-fuchsia-500/60' : 'border-stone-700/60 opacity-50'}`} style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
+            <Syringe className="w-4 h-4 text-fuchsia-400" />
+            {stimUntil > Date.now() ? (
+              <span className="font-tac text-fuchsia-300 tabular-nums">{Math.ceil((stimUntil - Date.now()) / 1000)}s</span>
+            ) : (
+              <span className="font-tac text-fuchsia-300/90 tabular-nums">×{stims}</span>
+            )}
+            <kbd className="font-tac-md text-[8px] px-1 py-0.5 rounded bg-stone-800 text-stone-400">{stimKey}</kbd>
           </div>
         </div>
       </div>

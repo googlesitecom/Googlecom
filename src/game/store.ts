@@ -80,6 +80,13 @@ interface GameState {
   money: number
   frags: number
   smokes: number
+  /** v8: equipo táctico comprado en la tienda */
+  vest: boolean
+  helmet: boolean
+  flares: number
+  stims: number
+  /** v8: marca (Date.now()) hasta la que corre la adrenalina */
+  stimUntil: number
 
   /** true mientras se reproduce la cinemática de entrada (oculta el HUD) */
   cineActive: boolean
@@ -167,6 +174,11 @@ export const useGame = create<GameState>((set) => ({
   money: 1000,
   frags: 0,
   smokes: 0,
+  vest: false,
+  helmet: false,
+  flares: 0,
+  stims: 0,
+  stimUntil: 0,
   cineActive: false,
   carryingFlag: false,
 

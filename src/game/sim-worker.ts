@@ -91,6 +91,20 @@ self.onmessage = (ev: MessageEvent) => {
       if (p && sim) sim.handleGrenadeThrow(p, c.data.pos, c.data.vel, c.data.kind ?? 'frag')
       break
     }
+    case 'flareUse': {
+      // v8: bengala localizadora (revela enemigos en el minimapa/HUD)
+      const c = d as { id: string }
+      const p = sim?.getPlayer(c.id)
+      if (p && sim) sim.handleUseFlare(p)
+      break
+    }
+    case 'stimUse': {
+      // v8: estímulo de adrenalina (+velocidad temporal)
+      const c = d as { id: string }
+      const p = sim?.getPlayer(c.id)
+      if (p && sim) sim.handleUseStim(p)
+      break
+    }
     case 'playerShot': {
       const c = d as PlayerShotCmd
       const p = sim?.getPlayer(c.id)

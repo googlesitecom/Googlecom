@@ -4,7 +4,7 @@
 // enrutan al jugador local y, si lo hay, al invitado P2P.
 // ============================================================
 import {
-  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, computeDamage, segmentBlocked,
+  GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, EQUIPMENT, computeDamage, segmentBlocked,
   WAYPOINTS, BOT_NAMES, BOT_SKILL,
   MODES, FLAG_A, FLAG_B, DOM_ZONES, getMapData,
   type MapId, type MapData,
@@ -80,6 +80,12 @@ interface SimPlayer {
   aiming: boolean          // en pose de apuntado (para la animación)
   sprint: boolean          // corriendo (animación estilo Fortnite)
   flag: 'A' | 'B' | null   // bandera enemiga que lleva puesta (CTF)
+  // ---- v8: equipamiento táctico ----
+  vest: boolean            // chaleco antibalas (daño al cuerpo −35%)
+  helmet: boolean          // casco balístico (daño a la cabeza −30%)
+  flares: number           // bengalas localizadoras disponibles
+  stims: number            // estímulos de adrenalina disponibles
+  stimUntil: number        // marca de tiempo (ms) hasta la que corre el estímulo
   ai?: BotAI
 }
 
@@ -369,6 +375,7 @@ export class GameSim {
       streak: 0, lastKillAt: 0, multi: 0,
       lastShotAt: 0, lastHitsAt: 0, protectUntil: 0, lastSeenEnemy: 0, lastDamageAt: 0,
       aiming: false, sprint: false, flag: null,
+      vest: false, helmet: false, flares: 0, stims: 0, stimUntil: 0,
     }
     if (bot) {
       p.ai = {
@@ -440,6 +447,11 @@ export class GameSim {
       smokes: p.smokes,
       money: p.money,
       protect: GAME.SPAWN_PROTECT,
+      // v8: el equipo pasivo (chaleco/casco) y las bengalas/estímulos se conservan
+      flares: p.flares,
+      stims: p.stims,
+      vest: p.vest ? 1 : 0,
+      helmet: p.helmet ? 1 : 0,
     }, p.id)
     // v6.1: sincroniza arsenal + huecos con el cliente (tienda/HUD)
     this.syncLoadout(p)
@@ -508,19 +520,27 @@ export class GameSim {
       p.weapon = w
       p.money -= price
     }
-    if (p.money >= 4750 && Math.random() < 0.22) {
-      buyPrimary('awp338', 4750)
-    } else if (p.money >= 2900) {
-      const w: WeaponId = Math.random() < 0.5 ? 'cr4' : 'ar47'
-      buyPrimary(w, WEAPONS[w].price)
-    } else if (p.money >= 1250 && Math.random() < 0.75) {
-      buyPrimary('mp9', 1250)
-    } else if (p.money >= 700 && Math.random() < 0.5) {
-      p.armory = ['knife', 'p9', 'aguila']
-      p.slots = [null, 'aguila']
-      this.recomputeOwned(p)
-      p.weapon = 'aguila'
-      p.money -= 700
+    // v8: armadura pasiva PRIMERO (se conserva toda la partida: mejor
+    // inversión que re-comprar el mismo rifle en cada reaparición)
+    if (p.money >= 6000 && !p.vest) { p.vest = true; p.money -= 6000 }
+    else if (p.money >= 2400 && !p.helmet) { p.helmet = true; p.money -= 2400 }
+    // arma larga solo si AÚN no tiene una (el arsenal se conserva al morir)
+    const hasPrimary = p.armory.some(w => WEAPONS[w] && WEAPONS[w].slot === 'primary')
+    if (!hasPrimary) {
+      if (p.money >= 4750 && Math.random() < 0.22) {
+        buyPrimary('awp338', 4750)
+      } else if (p.money >= 2900) {
+        const w: WeaponId = Math.random() < 0.5 ? 'cr4' : 'ar47'
+        buyPrimary(w, WEAPONS[w].price)
+      } else if (p.money >= 1250 && Math.random() < 0.75) {
+        buyPrimary('mp9', 1250)
+      } else if (p.money >= 700 && Math.random() < 0.5) {
+        p.armory = ['knife', 'p9', 'aguila']
+        p.slots = [null, 'aguila']
+        this.recomputeOwned(p)
+        p.weapon = 'aguila'
+        p.money -= 700
+      }
     }
     // los bots compran un escudo a medias (menos tanque que el jugador)
     if (p.money >= 1000 && p.shield < 25) { p.shield = 50; p.money -= 1000 }
@@ -562,9 +582,81 @@ export class GameSim {
       }
       p.money -= item.price
       p.smokes++
+    } else if (item.equip === 'vest') {
+      // v8: chaleco antibalas — dura toda la partida (no se pierde al morir)
+      if (p.vest) {
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'You already wear a vest' }, p.id)
+      }
+      p.money -= item.price
+      p.vest = true
+      this.announce(`${p.name} is now wearing a BALLISTIC VEST`, 'info')
+    } else if (item.equip === 'helmet') {
+      if (p.helmet) {
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'You already wear a helmet' }, p.id)
+      }
+      p.money -= item.price
+      p.helmet = true
+    } else if (item.equip === 'flare') {
+      if (p.flares >= EQUIPMENT.FLARE_MAX) {
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Max 2 flares' }, p.id)
+      }
+      p.money -= item.price
+      p.flares++
+    } else if (item.equip === 'medkit') {
+      p.money -= item.price
+      p.hp = 100
+      this.emit('healed', { hp: p.hp }, p.id)
+    } else if (item.equip === 'stim') {
+      if (p.stims >= EQUIPMENT.STIM_MAX) {
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Max 2 stims' }, p.id)
+      }
+      p.money -= item.price
+      p.stims++
+    } else if (item.equip === 'ammo') {
+      p.money -= item.price
+      // repone la reserva de TODAS las armas del arsenal
+      for (const wid of p.armory) {
+        if (WEAPONS[wid] && WEAPONS[wid].mag > 0) this.emit('refillAmmo', { weapon: wid }, p.id)
+      }
     }
     this.emit('buyResult', { ok: true, itemId, money: p.money }, p.id)
-    this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
+    this.emit('econ', this.econData(p), p.id)
+  }
+
+  /** v8: datos de economía completos (equipo táctico incluido) */
+  private econData(p: SimPlayer): { money: number; frags: number; smokes: number; vest: number; helmet: number; flares: number; stims: number; stimUntil: number } {
+    return {
+      money: p.money, frags: p.frags, smokes: p.smokes,
+      vest: p.vest ? 1 : 0, helmet: p.helmet ? 1 : 0,
+      flares: p.flares, stims: p.stims, stimUntil: p.stimUntil,
+    }
+  }
+
+  /** v8: usar una bengala localizadora desde el cliente */
+  handleUseFlare(p: SimPlayer): void {
+    if (p.dead || p.flares <= 0) {
+      if (!p.dead) this.emit('buyResult', { ok: false, itemId: 'flare:none', money: p.money, error: 'No flares — buy them at your base' }, p.id)
+      return
+    }
+    p.flares--
+    const until = now() + EQUIPMENT.FLARE_DURATION * 1000
+    // efecto visual de la bengala para TODOS (sube al cielo y arde)
+    this.emit('flareFx', { x: p.x, y: p.y, z: p.z, team: p.team })
+    // la revelación solo la ve el jugador que la usó
+    this.emit('flareUsed', { until, flares: p.flares }, p.id)
+    this.emit('econ', this.econData(p), p.id)
+  }
+
+  /** v8: usar un estímulo de adrenalina */
+  handleUseStim(p: SimPlayer): void {
+    if (p.dead || p.stims <= 0) {
+      if (!p.dead) this.emit('buyResult', { ok: false, itemId: 'stim:none', money: p.money, error: 'No stims — buy them at your base' }, p.id)
+      return
+    }
+    p.stims--
+    p.stimUntil = now() + EQUIPMENT.STIM_DURATION * 1000
+    this.emit('stimUsed', { until: p.stimUntil, stims: p.stims }, p.id)
+    this.emit('econ', this.econData(p), p.id)
   }
 
   /** v6.1: equipar un arma del arsenal en el hueco elegido (desde la tienda) */
@@ -673,6 +765,11 @@ export class GameSim {
     if (now() < victim.protectUntil) return
     if (attacker.id !== victim.id && !this.isEnemy(attacker, victim)) return
 
+    // v8: armadura pasiva — el chaleco protege cuerpo/piernas, el casco la
+    // cabeza. Se aplica ANTES del escudo para que ambas capas cuenten.
+    if (part !== 'head' && victim.vest) dmg *= 1 - EQUIPMENT.VEST_REDUCTION
+    if (part === 'head' && victim.helmet) dmg *= 1 - EQUIPMENT.HELMET_REDUCTION
+
     // escudo primero (estilo Fortnite): absorbe todo el daño hasta agotarse
     const total = dmg
     const absorbed = Math.min(victim.shield, dmg)
@@ -737,7 +834,7 @@ export class GameSim {
       // v6.1: el dinero del asesino se sincroniza AL INSTANTE con su cliente
       // (antes la tienda mostraba el saldo viejo y parecía que no podías
       // comprar la segunda arma)
-      this.emit('econ', { money: killer.money, frags: killer.frags, smokes: killer.smokes }, killer.id)
+      this.emit('econ', this.econData(killer), killer.id)
       if (this.mode !== 'ffa') {
         if (killer.team === 'A') this.round.scoresA++; else this.round.scoresB++
       }
@@ -799,7 +896,7 @@ export class GameSim {
 
     for (const p of this.players.values()) {
       p.money = Math.min(GAME.MAX_MONEY, p.money + (p.team === winner ? GAME.WIN_REWARD : GAME.LOSE_REWARD))
-      this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
+      this.emit('econ', this.econData(p), p.id)
     }
   }
 
@@ -854,7 +951,7 @@ export class GameSim {
         p.weapon = 'p9'
         this.syncLoadout(p)
       }
-      this.emit('econ', { money: p.money }, p.id)
+      this.emit('econ', this.econData(p), p.id)
     }
     this.announce('NEW MATCH — ROUND 1', 'round')
     this.emit('roundStart', { roundNumber: 1 })
@@ -908,7 +1005,7 @@ export class GameSim {
             else this.round.scoresB++
             c.flag = null
             c.money = Math.min(GAME.MAX_MONEY, c.money + 1000)
-            this.emit('econ', { money: c.money, frags: c.frags, smokes: c.smokes }, c.id)
+            this.emit('econ', this.econData(c), c.id)
             f.status = 'home'
             f.carrier = null
             f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
@@ -1414,7 +1511,7 @@ export class GameSim {
     }
     this.grenades.set(id, g)
     this.emit('grenadeSpawn', { id, owner: p.id, kind, pos, vel })
-    this.emit('econ', { money: p.money, frags: p.frags, smokes: p.smokes }, p.id)
+    this.emit('econ', this.econData(p), p.id)
   }
 
   private updateGrenades(dt: number): void {
@@ -1567,7 +1664,7 @@ export class GameSim {
       team: p.team,
       players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
       round: this.netRound(),
-      econ: { money: p.money, frags: p.frags, smokes: p.smokes },
+      econ: this.econData(p),
     }
   }
 
