@@ -12,8 +12,8 @@ import { useGame } from '@/game/store'
 import { getGame } from '@/game/game-instance'
 import { getAudio } from '@/game/audio'
 import { ASSET_BASE, GAME } from '@/game/shared'
-import { useAuth, getProfile, fmtKD, type CareerProfile } from '@/game/auth'
-import { useBr } from '@/game/br-store'
+import { useAuth, getProfile, fmtKD, addFriend, removeFriend, createGroup, deleteGroup, toggleGroupMember, useSquad, syncSquadFromProfile, type CareerProfile, type SquadGroup } from '@/game/auth'
+import { useBr, BR_RARITIES } from '@/game/br-store'
 import { teamSlotsFor, roomCapacity, type RoomKind } from '@/game/net'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,7 +24,7 @@ import {
   Heart, Plane,
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
-  User, Skull, Medal, Crown, Activity, Rocket, X,
+  User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
@@ -288,8 +288,6 @@ export function KeybindsPanel() {
 export function SettingsPanel() {
   const settings = useGame(s => s.settings)
   const setSettings = useGame(s => s.setSettings)
-  // v9: dentro del Battle Royale los gráficos se limitan a BAJA/MEDIA
-  const brActive = useBr(s => s.active)
   return (
     <div className="space-y-7 max-w-xl">
       {/* ---- AUDIO ---- */}
@@ -367,45 +365,32 @@ export function SettingsPanel() {
           <Gauge className="w-4 h-4" /> Graphics
         </h4>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {(['baja', 'media', 'alta', 'ultra'] as const).map(q => {
-            // v9: dentro del Battle Royale solo BAJA/MEDIA (estabilidad)
-            const locked = brActive && (q === 'alta' || q === 'ultra')
-            return (
-              <button
-                key={q}
-                onClick={() => !locked && setSettings({ quality: q })}
-                disabled={locked}
-                className={`rounded-md py-2.5 font-tac-md text-[11px] border uppercase transition-colors relative ${
-                  settings.quality === q && !locked
-                    ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
-                    : locked
-                      ? 'bg-stone-900/40 border-stone-800 text-stone-700 cursor-not-allowed'
-                      : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
-                }`}
-              >
-                {q === 'baja' ? 'LOW' : q === 'media' ? 'MEDIUM' : q === 'alta' ? 'HIGH' : 'ULTRA'}
-                {q === 'ultra' && !locked && (
-                  <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-amber-500 text-stone-900 rounded-sm px-1 py-px">
-                    OPTIONAL
-                  </span>
-                )}
-                {locked && (
-                  <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-stone-700 text-stone-300 rounded-sm px-1 py-px">
-                    BR LOCKED
-                  </span>
-                )}
-              </button>
-            )
-          })}
+          {(['baja', 'media', 'alta', 'ultra'] as const).map(q => (
+            <button
+              key={q}
+              onClick={() => setSettings({ quality: q })}
+              className={`rounded-md py-2.5 font-tac-md text-[11px] border uppercase transition-colors relative ${
+                settings.quality === q
+                  ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
+                  : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              {q === 'baja' ? 'LOW' : q === 'media' ? 'MEDIUM' : q === 'alta' ? 'HIGH' : 'ULTRA'}
+              {q === 'ultra' && (
+                <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-amber-500 text-stone-900 rounded-sm px-1 py-px">
+                  OPTIONAL
+                </span>
+              )}
+            </button>
+          ))}
         </div>
         <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-          {brActive
-            ? <><b className="text-amber-200/80">Battle Royale:</b> only <b className="text-stone-300">LOW</b> and <b className="text-stone-300">MEDIUM</b> are available in this mode — the map is huge and we cap the quality so the frame rate never collapses.</>
-            : <><b className="text-stone-300">Applies INSTANTLY</b>, even mid-match (you will notice it in the FPS counter).
-            <b className="text-stone-300"> Low</b>: no shadows, no bloom, tight fog and 30 % less resolution → max FPS.
-            <b className="text-stone-300"> Medium</b>: 1K shadows, 2 lamps. <b className="text-stone-300"> High</b>: 2K shadows, bloom, dust &amp; birds (recommended).
-            <b className="text-amber-200/70"> ULTRA</b>: real lights (muzzle flashes that light up the scene), sun with lens flare,
-            crisp 4K shadows, wet streets and <b className="text-amber-200/70">real-time water reflection</b>. Off by default — and if your rig struggles, it auto-scales so it never lags.</>}
+          <b className="text-stone-300">Applies INSTANTLY</b>, even mid-match (you will notice it in the FPS counter).
+          <b className="text-stone-300"> Low</b>: no shadows, no bloom, tight fog and 30 % less resolution → max FPS.
+          <b className="text-stone-300"> Medium</b>: 1K shadows, 2 lamps. <b className="text-stone-300"> High</b>: 2K shadows, bloom, dust &amp; birds (recommended).
+          <b className="text-amber-200/70"> ULTRA</b>: real lights (muzzle flashes that light up the scene), sun with lens flare,
+          crisp 4K shadows, wet streets and <b className="text-amber-200/70">real-time water reflection</b>. Off by default — and if your rig struggles, it auto-scales so it never lags.
+          <b className="text-stone-300"> Battle Royale</b> honors the same profiles now — including <b className="text-stone-300">HIGH</b> and <b className="text-amber-200/70">ULTRA</b> (sharper resolution, richer dusk sky, drifting clouds).
         </p>
       </section>
     </div>
@@ -484,6 +469,8 @@ function rankOf(p: CareerProfile): { label: string; color: string } {
 
 function UserWidget({ onOpen }: { onOpen: () => void }) {
   const user = useAuth(s => s.user)
+  const squadName = useSquad(s => s.name)
+  const squadMembers = useSquad(s => s.members)
   if (!user) return null
   const p = getProfile()
   const rank = rankOf(p)
@@ -492,7 +479,7 @@ function UserWidget({ onOpen }: { onOpen: () => void }) {
     <button
       onClick={onOpen}
       className="relative flex items-center gap-3 bg-[#0b0e11]/92 border border-stone-700/70 rounded-lg pl-2 pr-4 py-2 shadow-xl hover:border-amber-500/60 transition-colors tac-corner group"
-      title="Career profile"
+      title="Career profile · friends & groups"
     >
       <span
         className="w-9 h-9 rounded-md flex items-center justify-center font-tac text-sm border shrink-0"
@@ -509,6 +496,11 @@ function UserWidget({ onOpen }: { onOpen: () => void }) {
         <span className="font-tac-md text-[9px] tracking-widest" style={{ color: rank.color }}>
           {rank.label} · K/D {fmtKD(p)}
         </span>
+        {squadMembers.length > 0 && (
+          <span className="font-tac-md text-[9px] text-amber-300/80 block truncate max-w-[130px]">
+            SQUAD: {squadName} ({squadMembers.length})
+          </span>
+        )}
       </span>
       <Trophy className="w-3.5 h-3.5 text-stone-600 group-hover:text-amber-300/80 transition-colors" />
     </button>
@@ -520,6 +512,198 @@ function StatCell({ icon, label, value }: { icon: React.ReactNode; label: string
     <div className="bg-stone-950/70 border border-stone-800 rounded-md p-3 tac-corner">
       <div className="flex items-center gap-2 text-stone-500 text-[10px] font-tac-md mb-1.5">{icon} {label}</div>
       <div className="font-tac text-lg text-stone-100 tabular-nums leading-none">{value}</div>
+    </div>
+  )
+}
+
+// ============================================================
+// v10 — SQUAD manager (friends & groups) inside the profile
+// ============================================================
+function SquadSection(): React.ReactElement | null {
+  const user = useAuth(s => s.user)
+  const squad = useSquad(s => s.groupId)
+  const squadSet = useSquad(s => s.set)
+  const squadClear = useSquad(s => s.clear)
+  const [friendName, setFriendName] = useState('')
+  const [groupName, setGroupName] = useState('')
+  const [picked, setPicked] = useState<string[]>([])
+  const [err, setErr] = useState('')
+  const [rev, setRev] = useState(0)
+  if (!user) return null
+  const p = getProfile()
+
+  const refresh = (): void => { syncSquadFromProfile(); setRev(v => v + 1) }
+
+  const doAddFriend = (): void => {
+    const r = addFriend(friendName)
+    if (!r.ok) { setErr(r.error ?? ''); return }
+    setErr(''); setFriendName('')
+    getAudio().uiClick()
+    refresh()
+  }
+  const doCreateGroup = (): void => {
+    const r = createGroup(groupName, picked)
+    if (!r.ok) { setErr(r.error ?? ''); return }
+    setErr(''); setGroupName(''); setPicked([])
+    getAudio().uiClick()
+    refresh()
+  }
+
+  return (
+    <div className="mt-5 border-t border-stone-800 pt-4 space-y-4" data-rev={rev}>
+      <div className="flex items-center justify-between">
+        <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2">
+          <Users className="w-4 h-4" /> SQUAD · FRIENDS &amp; GROUPS
+        </h4>
+        <span className="font-tac-md text-[9px] text-stone-600">BR is always SOLOS</span>
+      </div>
+
+      {/* friends */}
+      <div>
+        <div className="flex gap-2 mb-2">
+          <Input
+            value={friendName}
+            onChange={e => { setFriendName(e.target.value); setErr('') }}
+            onKeyDown={e => { if (e.key === 'Enter') doAddFriend() }}
+            placeholder="Friend's operator name"
+            maxLength={16}
+            className="bg-stone-950/80 border-stone-600 text-white h-9 text-sm"
+          />
+          <Button
+            onClick={doAddFriend}
+            className="h-9 px-4 bg-stone-100 text-stone-900 hover:bg-amber-200 font-bold text-xs shrink-0"
+          >
+            <UserPlus className="w-3.5 h-3.5 mr-1" /> ADD
+          </Button>
+        </div>
+        {err && <p className="text-red-400 text-[11px] mb-1.5 font-bold">{err}</p>}
+        <div className="flex flex-wrap gap-1.5">
+          {p.friends.length === 0 && (
+            <p className="text-stone-600 text-[11px]">No friends yet — add operators by name to build your squad.</p>
+          )}
+          {p.friends.map(f => (
+            <div key={f} className="flex items-center gap-1.5 bg-stone-900/70 border border-stone-700 rounded pl-2.5 pr-1 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              <span className="font-tac-md text-[11px] text-stone-200">{f}</span>
+              <button
+                onClick={() => { removeFriend(f); refresh() }}
+                className="text-stone-600 hover:text-red-300 transition-colors p-0.5"
+                title="Remove friend"
+              >
+                <UserMinus className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* create group */}
+      {p.friends.length > 0 && (
+        <div className="bg-stone-900/50 border border-stone-800 rounded-md p-3.5 space-y-2.5">
+          <p className="font-tac-md text-stone-400 text-[10px] uppercase tracking-widest">Create group</p>
+          <div className="flex gap-2">
+            <Input
+              value={groupName}
+              onChange={e => { setGroupName(e.target.value); setErr('') }}
+              placeholder="Group name (e.g. Night Owls)"
+              maxLength={22}
+              className="bg-stone-950/80 border-stone-600 text-white h-9 text-sm"
+            />
+            <Button
+              onClick={doCreateGroup}
+              disabled={picked.length === 0}
+              className="h-9 px-4 bg-emerald-500/90 text-stone-950 hover:bg-emerald-400 font-bold text-xs shrink-0 disabled:opacity-30"
+            >
+              CREATE
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {p.friends.map(f => {
+              const on = picked.includes(f)
+              return (
+                <button
+                  key={f}
+                  onClick={() => setPicked(on ? picked.filter(x => x !== f) : [...picked, f])}
+                  className={`font-tac-md text-[11px] rounded px-2.5 py-1 border transition-colors ${
+                    on ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-200' : 'bg-stone-950/60 border-stone-700 text-stone-400 hover:text-stone-200'
+                  }`}
+                >
+                  {f}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* groups */}
+      {p.groups.length > 0 && (
+        <div className="space-y-2">
+          {p.groups.map((g: SquadGroup) => {
+            const active = squad === g.id
+            return (
+              <div
+                key={g.id}
+                className={`rounded-md border p-3 ${active ? 'border-amber-500/60 bg-amber-500/[0.06]' : 'border-stone-800 bg-stone-950/60'}`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Users className={`w-4 h-4 shrink-0 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
+                    <span className="font-tac-md text-[12px] text-stone-100 truncate">{g.name}</span>
+                    <span className="font-tac-md text-[9px] text-stone-600 shrink-0">{g.members.length}/9</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={() => {
+                        if (active) squadClear()
+                        else squadSet({ groupId: g.id, name: g.name, members: [...g.members] })
+                        getAudio().uiClick()
+                      }}
+                      className={`font-tac-md text-[10px] tracking-widest rounded px-2.5 py-1 border transition-colors ${
+                        active
+                          ? 'bg-amber-500/20 border-amber-400/70 text-amber-200'
+                          : 'bg-stone-900 border-stone-700 text-stone-300 hover:border-amber-500/60 hover:text-amber-200'
+                      }`}
+                    >
+                      {active ? '★ ACTIVE' : 'DEPLOY WITH'}
+                    </button>
+                    <button
+                      onClick={() => { deleteGroup(g.id); refresh() }}
+                      className="text-stone-600 hover:text-red-300 transition-colors p-1"
+                      title="Delete group"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {g.members.map(m => (
+                    <button
+                      key={m}
+                      onClick={() => { toggleGroupMember(g.id, m); refresh() }}
+                      className={`font-tac-md text-[11px] rounded px-2 py-0.5 border transition-colors ${
+                        active ? 'bg-stone-950/70 border-stone-700 text-stone-300' : 'bg-stone-900/70 border-stone-700 text-stone-400'
+                      } hover:border-red-400/50 hover:text-red-200`}
+                      title="Toggle member"
+                    >
+                      {m} ×
+                    </button>
+                  ))}
+                  {g.members.length === 0 && (
+                    <span className="text-stone-600 text-[10px]">Empty group — pick members from your friends above.</span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <p className="text-stone-600 text-[10px] leading-relaxed">
+        Set a group <b className="text-amber-200/80">ACTIVE</b> and it deploys with you in EVERY mode (team
+        deathmatch, FFA, capture the flag, domination and the campaign): your friends fight at your side as
+        named operators. <b className="text-stone-300">Battle Royale is always solos</b> — the squad waits at the menu.
+      </p>
     </div>
   )
 }
@@ -581,6 +765,9 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
           <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST BR PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
         </div>
 
+        {/* v10: amigos + grupos (despliegue en escuadra) */}
+        <SquadSection />
+
         <div className="mt-5 flex items-center justify-between gap-3 border-t border-stone-800 pt-4">
           <p className="text-stone-600 text-[10px] leading-relaxed max-w-[300px]">
             Stats persist on this device and are recorded after every match — PvP,
@@ -611,6 +798,8 @@ export function MainMenu() {
   const setHud = useGame(s => s.setHud)
   const authUser = useAuth(s => s.user)
   const brSet = useBr(s => s.set)
+  const squadName = useSquad(s => s.name)
+  const squadMembers = useSquad(s => s.members)
   const [profileOpen, setProfileOpen] = useState(false)
   const [tab, setTab] = useState<MenuTab>('deploy')
   const [name, setName] = useState('')
@@ -876,6 +1065,37 @@ export function MainMenu() {
                   </div>
                 )}
 
+                {/* v10: escuadra activa (grupo de amigos) */}
+                {mode !== 'guest' && (
+                  <div className={`rounded-lg border p-3 flex items-center gap-3 tac-corner ${
+                    squadMembers.length > 0
+                      ? 'border-amber-500/50 bg-amber-500/[0.05]'
+                      : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                  }`}>
+                    <div className={`w-10 h-10 rounded-md border flex items-center justify-center shrink-0 ${
+                      squadMembers.length > 0 ? 'border-amber-700/50 bg-amber-950/40' : 'border-stone-700 bg-stone-900'
+                    }`}>
+                      <Users className={`w-5 h-5 ${squadMembers.length > 0 ? 'text-amber-300' : 'text-stone-500'}`} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className={`font-tac-md text-[11px] ${squadMembers.length > 0 ? 'text-white' : 'text-stone-300'}`}>
+                        {squadMembers.length > 0 ? `SQUAD "${squadName}" — deploying with you` : 'NO ACTIVE SQUAD'}
+                      </div>
+                      <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                        {squadMembers.length > 0
+                          ? `${squadMembers.join(' · ')} join your side in every mode — Battle Royale stays SOLOS`
+                          : 'Add friends and create groups in your profile (top right) to deploy together'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { getAudio().uiClick(); setProfileOpen(true) }}
+                      className="font-tac-md text-[10px] tracking-widest rounded px-3 py-2 border border-stone-600 bg-stone-900 text-stone-300 hover:border-amber-500/60 hover:text-amber-200 transition-colors shrink-0"
+                    >
+                      MANAGE
+                    </button>
+                  </div>
+                )}
+
                 {/* deploy button */}
                 <button
                   onClick={() => launch(mode, mode === 'guest' ? code : '')}
@@ -1099,17 +1319,40 @@ export function MainMenu() {
                   <ol className="space-y-2 text-stone-400 text-xs leading-relaxed">
                     <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">01</span> Matchmaking on the lobby island — the countdown starts once 4 players are connected.</li>
                     <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">02</span> Board the plane, pick your drop with <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">SPACE</kbd> and glide down.</li>
-                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">03</span> Loot weapons, drive vehicles, fight inside the shrinking storm circle.</li>
+                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">03</span> Loot weapons, drive vehicles, fight inside the shrinking storm circle — press <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">T</kbd> to chat.</li>
                     <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">04</span> Survive everyone — the storm does not forgive. #1 or nothing.</li>
                   </ol>
                 </div>
 
-                <div className="bg-stone-900/50 border border-amber-900/40 rounded-md p-3.5 flex gap-3">
+                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4 space-y-2.5">
+                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-1 flex items-center gap-2">
+                    <Swords className="w-3.5 h-3.5" /> Same arsenal, Fortnite rarities
+                  </h4>
+                  <p className="text-stone-400 text-[11px] leading-relaxed">
+                    Every weapon from the normal modes spawns as loot — P9, MP-9, Breacher-12, AR-47,
+                    CR-4, Eagle .50 and the FR-338 — each rolling a rarity tier:
+                  </p>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {BR_RARITIES.map(r => (
+                      <div key={r.id} className="text-center rounded border py-1.5" style={{ borderColor: `${r.css}66`, background: `${r.css}14` }}>
+                        <div className="font-tac-md text-[8px] tracking-wider" style={{ color: r.css }}>{r.label}</div>
+                        <div className="font-tac text-[11px] text-stone-200 tabular-nums">{Math.round(r.dmgMult * 100)}%</div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-stone-500 text-[10px] leading-relaxed">
+                    Supply crates always drop RARE or better. Higher tiers hit harder and burn brighter —
+                    chase the golden beams.
+                  </p>
+                </div>
+
+                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-3.5 flex gap-3">
                   <Gauge className="w-4 h-4 text-amber-400/70 shrink-0 mt-0.5" />
                   <p className="text-stone-400 text-[11px] leading-relaxed">
-                    <b className="text-stone-200">Stability first:</b> Battle Royale runs on a fully isolated module
-                    loaded only while you play it, and its graphics are capped to the
-                    <b className="text-amber-200"> LOW and MEDIUM</b> profiles to keep the frames steady.
+                    <b className="text-stone-200">Isolated module, full graphics:</b> Battle Royale loads only
+                    while you play it — and now honors every graphics profile up to
+                    <b className="text-amber-200"> HIGH and ULTRA</b>: sharper resolution, 4K shadows,
+                    richer dusk sky with sun and drifting clouds.
                   </p>
                 </div>
 
@@ -1128,6 +1371,7 @@ export function MainMenu() {
                       hp: 100,
                       qualityNote: '',
                       loadingMap: true,
+                      weaponRarity: -1,
                     })
                   }}
                   className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all

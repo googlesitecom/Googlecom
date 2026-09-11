@@ -19,6 +19,43 @@ export interface BrFeedEntry {
   mine: boolean
 }
 
+// ------------------------------------------------------------
+// v10 — WEAPON RARITIES (Fortnite-style tiers)
+// BR uses the SAME arsenal as the normal modes (shared.ts WEAPONS);
+// each looted weapon rolls a rarity tier that colors it and boosts
+// its damage. Loot beams, interaction hints, the HUD and the kill
+// feed all speak this color language.
+// ------------------------------------------------------------
+export interface BrRarity {
+  id: string
+  label: string
+  color: number     // three.js color (beams / rings)
+  css: string       // HUD color
+  dmgMult: number   // damage multiplier
+  weight: number    // spawn probability (weapon floor loot)
+}
+
+export const BR_RARITIES: BrRarity[] = [
+  { id: 'common',    label: 'COMMON',    color: 0xb9c2cc, css: '#b9c2cc', dmgMult: 1.0,  weight: 0.40 },
+  { id: 'uncommon',  label: 'UNCOMMON',  color: 0x57d867, css: '#57d867', dmgMult: 1.10, weight: 0.26 },
+  { id: 'rare',      label: 'RARE',      color: 0x52a8ff, css: '#52a8ff', dmgMult: 1.22, weight: 0.18 },
+  { id: 'epic',      label: 'EPIC',      color: 0xb266ff, css: '#b266ff', dmgMult: 1.38, weight: 0.11 },
+  { id: 'legendary', label: 'LEGENDARY', color: 0xffb347, css: '#ffb347', dmgMult: 1.55, weight: 0.05 },
+]
+
+/** weighted rarity roll; minTier crates supply drops floor */
+export function rollBrRarity(minTier = 0): number {
+  const pool = BR_RARITIES.slice(Math.max(0, Math.min(BR_RARITIES.length - 1, minTier)))
+  let total = 0
+  for (const r of pool) total += r.weight
+  let roll = Math.random() * total
+  for (let i = 0; i < pool.length; i++) {
+    roll -= pool[i].weight
+    if (roll <= 0) return BR_RARITIES.length - pool.length + i
+  }
+  return BR_RARITIES.length - 1
+}
+
 interface BrState {
   active: boolean
   phase: BrPhase
@@ -35,6 +72,8 @@ interface BrState {
   shield: number
   weapon: string
   weaponLabel: string
+  /** v10: índice de rareza del arma actual (-1 = sin arma) */
+  weaponRarity: number
   mag: number
   reserve: number
   stormPhase: number
@@ -72,6 +111,7 @@ const initial = {
   shield: 0,
   weapon: '',
   weaponLabel: '',
+  weaponRarity: -1,
   mag: 0,
   reserve: 0,
   stormPhase: 0,

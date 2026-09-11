@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { Game } from '@/game/engine'
 import { setGame, getGame } from '@/game/game-instance'
 import { useGame } from '@/game/store'
+import { useChat, startAmbientChat } from '@/game/chat'
 
 export function GameMount() {
   const canvas3dRef = useRef<HTMLCanvasElement>(null)
@@ -38,8 +39,15 @@ export function GameMount() {
       ;(window as unknown as Record<string, unknown>).__game = game
     }
 
+    // v10: chat de partida (canal PvP + conversación ambiente del escuadrón)
+    useChat.getState().setMode('pvp')
+    useChat.getState().reset()
+    const stopChat = startAmbientChat()
+
     return () => {
       initRef.current = false
+      stopChat()
+      useChat.getState().reset()
       game.dispose()
       setGame(null)
     }

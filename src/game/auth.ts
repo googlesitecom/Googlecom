@@ -3,9 +3,17 @@
 // Local account system with persistent profiles:
 //  - unique operator name + password (salted SHA-256 via WebCrypto)
 //  - career stats (kills, wins, best win streak, BR record...)
+//  - FRIENDS & GROUPS (v10): add friends by name, build groups and
+//    deploy together in any mode — Battle Royale is always SOLOS
 //  - persisted in localStorage (es-accounts / es-session / es-profile-<n>)
 // ============================================================
 import { create } from 'zustand'
+
+export interface SquadGroup {
+  id: string
+  name: string
+  members: string[]   // friend names (without the local operator)
+}
 
 export interface CareerProfile {
   kills: number
@@ -24,12 +32,17 @@ export interface CareerProfile {
   timePlayed: number       // seconds
   createdAt: number
   lastPlayed: number
+  /** v10: social graph (names of friends on this device) */
+  friends: string[]
+  /** v10: deploy groups */
+  groups: SquadGroup[]
 }
 
 export const EMPTY_PROFILE: CareerProfile = {
   kills: 0, deaths: 0, headshots: 0, wins: 0, losses: 0, matches: 0,
   winStreak: 0, bestWinStreak: 0, brPlays: 0, brWins: 0, brTop: 0, brKills: 0,
   storyWins: 0, timePlayed: 0, createdAt: 0, lastPlayed: 0,
+  friends: [], groups: [],
 }
 
 interface AccountRow {
@@ -57,6 +70,7 @@ export const useAuth = create<AuthState>((set) => ({
   login: (name) => set({ user: name, ready: true }),
   logout: () => {
     try { localStorage.removeItem(K_SESSION) } catch { /* ignore */ }
+    useSquad.getState().clear()   // v10: sin grupo al cerrar sesión
     set({ user: null })
   },
   setReady: () => set({ ready: true }),
@@ -143,6 +157,7 @@ export function restoreSession(): void {
     const accounts = readJSON<Record<string, AccountRow>>(K_ACCOUNTS) ?? {}
     if (accounts[s.name.toLowerCase()]) {
       useAuth.getState().login(s.name)
+      restoreSquad()   // v10: también el último grupo activo
       return
     }
   }
@@ -242,3 +257,124 @@ export const liveTally = {
 
 export const fmtKD = (p: CareerProfile): string =>
   p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills > 0 ? p.kills.toFixed(2) : '0.00'
+
+// ------------------------------------------------------------
+// v10 — FRIENDS & GROUPS (per profile, persisted)
+// ------------------------------------------------------------
+const socialProfile = (): CareerProfile => getProfile()
+
+export function addFriend(name: string): { ok: boolean; error?: string } {
+  const clean = name.trim().slice(0, 16)
+  if (clean.length < 2) return { ok: false, error: 'Name must be at least 2 characters' }
+  const me = useAuth.getState().user
+  if (me && clean.toLowerCase() === me.toLowerCase()) return { ok: false, error: 'That is you' }
+  const p = socialProfile()
+  if (p.friends.some(f => f.toLowerCase() === clean.toLowerCase())) return { ok: false, error: 'Already in your friends' }
+  p.friends = [...p.friends, clean].slice(0, 40)
+  saveProfile(p)
+  return { ok: true }
+}
+
+export function removeFriend(name: string): void {
+  const p = socialProfile()
+  p.friends = p.friends.filter(f => f !== name)
+  // also pull them out of any group
+  p.groups = p.groups.map(g => ({ ...g, members: g.members.filter(m => m !== name) }))
+  saveProfile(p)
+  syncSquadFromProfile()
+}
+
+export function createGroup(name: string, members: string[]): { ok: boolean; error?: string } {
+  const clean = name.trim().slice(0, 22)
+  if (clean.length < 2) return { ok: false, error: 'Group name must be at least 2 characters' }
+  const p = socialProfile()
+  if (p.groups.some(g => g.name.toLowerCase() === clean.toLowerCase())) return { ok: false, error: 'You already have a group with that name' }
+  const validMembers = members.filter(m => p.friends.includes(m)).slice(0, 9)
+  if (validMembers.length === 0) return { ok: false, error: 'Pick at least one friend' }
+  const g: SquadGroup = { id: `g${Date.now().toString(36)}`, name: clean, members: validMembers }
+  p.groups = [...p.groups, g]
+  saveProfile(p)
+  return { ok: true }
+}
+
+export function deleteGroup(id: string): void {
+  const p = socialProfile()
+  p.groups = p.groups.filter(g => g.id !== id)
+  saveProfile(p)
+  syncSquadFromProfile()
+}
+
+export function toggleGroupMember(id: string, member: string): void {
+  const p = socialProfile()
+  const g = p.groups.find(x => x.id === id)
+  if (!g) return
+  g.members = g.members.includes(member)
+    ? g.members.filter(m => m !== member)
+    : [...g.members, member].slice(0, 9)
+  p.groups = [...p.groups]
+  saveProfile(p)
+  syncSquadFromProfile()
+}
+
+// ---------------- active squad (the group you deploy with) ----------------
+interface SquadState {
+  groupId: string | null
+  name: string
+  members: string[]
+  /** BR is ALWAYS solos — the squad never enters the island with you */
+  set: (s: { groupId: string | null; name: string; members: string[] }) => void
+  clear: () => void
+}
+
+export const useSquad = create<SquadState>((set) => ({
+  groupId: null,
+  name: '',
+  members: [],
+  set: (s) => {
+    set(s)
+    const user = useAuth.getState().user
+    if (user) {
+      try { localStorage.setItem(`es-squad-${user.toLowerCase()}`, JSON.stringify(s)) } catch { /* ignore */ }
+    }
+  },
+  clear: () => {
+    set({ groupId: null, name: '', members: [] })
+    const user = useAuth.getState().user
+    if (user) {
+      try { localStorage.removeItem(`es-squad-${user.toLowerCase()}`) } catch { /* ignore */ }
+    }
+  },
+}))
+
+/** keeps the active squad valid when groups change / on login */
+export function syncSquadFromProfile(): void {
+  const cur = useSquad.getState()
+  if (!cur.groupId) return
+  const g = socialProfile().groups.find(x => x.id === cur.groupId)
+  if (!g || g.members.length === 0) useSquad.getState().clear()
+  else useSquad.getState().set({ groupId: g.id, name: g.name, members: [...g.members] })
+}
+
+/** restores the persisted squad selection (called on session restore) */
+export function restoreSquad(): void {
+  const user = useAuth.getState().user
+  if (!user) return
+  try {
+    const raw = localStorage.getItem(`es-squad-${user.toLowerCase()}`)
+    if (!raw) return
+    const s = JSON.parse(raw) as { groupId: string | null; name: string; members: string[] }
+    if (s?.groupId) {
+      const g = socialProfile().groups.find(x => x.id === s.groupId)
+      if (g && g.members.length > 0) {
+        useSquad.setState({ groupId: g.id, name: g.name, members: [...g.members] })
+        return
+      }
+    }
+  } catch { /* ignore */ }
+  useSquad.getState().clear()
+}
+
+/** members of the active group, ready to deploy (empty = no group) */
+export function activeSquadMembers(): string[] {
+  return useSquad.getState().members.slice(0, 4)
+}

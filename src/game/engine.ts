@@ -25,6 +25,7 @@ import { RemotePlayers, buildCineSoldier } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
 import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture, makeCloudTexture, makeWaterNoiseTexture, makeBirdTexture } from './textures'
 import { useGame } from './store'
+import { useChat } from './chat'
 import { NetClient } from './net'
 import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
 import { StoryDirector, type StorySyncData, type StoryRemoteMsg } from './story'
@@ -2094,6 +2095,8 @@ export class Game {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     const s = useGame.getState()
+    // v10: con el chat abierto, el teclado pertenece al input de texto
+    if (useChat.getState().open) return
     if (this.cine.active) { this.endCinematic(); return }
     if (e.code === 'Tab') {
       e.preventDefault()

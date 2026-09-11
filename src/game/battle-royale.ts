@@ -1,5 +1,5 @@
 // ============================================================
-// EMERGENCY STRIKE — BATTLE ROYALE (v9.1)
+// EMERGENCY STRIKE — BATTLE ROYALE (v10)
 // Standalone 20-operator battle royale module.
 //
 // ISOLATION BY DESIGN (per requirement): this module is only
@@ -15,21 +15,33 @@
 // in hands + viewmodel, Pared/Piso.jpg on buildings and Arbol.glb
 // forests — with per-instance loading so nothing leaks on exit.
 //
+// v10: — SAME ARSENAL as the normal modes (shared WEAPONS) with
+// FORTNITE-STYLE RARITIES: every looted weapon rolls a tier
+// (common → legendary) that colors its beam and boosts damage.
+// — FULL graphics profiles: LOW / MEDIUM / HIGH / ULTRA (no more
+// cap): per-tier pixel ratio, AA, shadow map size, fog distance,
+// sun disc + drifting clouds on HIGH/ULTRA.
+// — REBUILT visuals: detailed multi-floor buildings with framed
+// windows, balconies, awnings, rooftop props, textured roads
+// with lane markings + sidewalks, terrain micro-detail texture,
+// richer dusk sky.
+// — MATCH CHAT ([T]) with operator chatter.
+//
 // Map: 280×280 (twice the 140×140 Team Deathmatch city) with
 // 2 cities, mountains, 2 lakes, forests, drivable vehicles,
 // weapon loot, supply crates and a progressive storm.
 // Flow: lobby island (matchmaking) → plane drop → glider →
 // live → last operator standing.
-// Graphics: capped to LOW / MEDIUM for stability.
 // ============================================================
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { GAME, WEAPONS, ASSET_BASE, type WeaponId } from './shared'
-import { useBr, type BrQueuePlayer } from './br-store'
+import { useBr, BR_RARITIES, rollBrRarity, type BrQueuePlayer } from './br-store'
 import { useGame } from './store'
-import { useAuth, recordBr } from './auth'
+import { useAuth, recordBr, useSquad } from './auth'
+import { useChat, startAmbientChat } from './chat'
 import { getAudio } from './audio'
 import {
   getRepoTextures, getTreeTemplate, preloadAssets,
@@ -153,6 +165,63 @@ const rand = (a: number, b: number): number => a + Math.random() * (b - a)
 const smooth = (t: number): number => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x) }
 
 // ------------------------------------------------------------
+// v10 — procedural detail textures (canvas, one-shot per match)
+// ------------------------------------------------------------
+/** malla de manchas suaves en escala de grises para multiplicar sobre
+ *  el color por vértice del terreno: grano sin coste de red */
+function makeNoiseDetailTexture(repeat: number): THREE.Texture {
+  const c = document.createElement('canvas')
+  c.width = 128; c.height = 128
+  const ctx = c.getContext('2d')!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, 128, 128)
+  for (let i = 0; i < 260; i++) {
+    const x = Math.random() * 128
+    const y = Math.random() * 128
+    const r = 2 + Math.random() * 7
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+    const v = Math.random() < 0.5 ? '210,205,190' : '120,118,105'
+    g.addColorStop(0, `rgba(${v},0.28)`)
+    g.addColorStop(1, `rgba(${v},0)`)
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.arc(x, y, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  const tex = new THREE.CanvasTexture(c)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.repeat.set(repeat, repeat)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
+/** asfalto con línea central discontinua y bordes marcados */
+function makeAsphaltTexture(): THREE.Texture {
+  const c = document.createElement('canvas')
+  c.width = 128; c.height = 128
+  const ctx = c.getContext('2d')!
+  ctx.fillStyle = '#3c4046'
+  ctx.fillRect(0, 0, 128, 128)
+  // grain
+  for (let i = 0; i < 420; i++) {
+    const v = 40 + Math.floor(Math.random() * 36)
+    ctx.fillStyle = `rgba(${v},${v + 2},${v + 6},0.5)`
+    ctx.fillRect(Math.random() * 128, Math.random() * 128, 1.5, 1.5)
+  }
+  // edge lines
+  ctx.fillStyle = 'rgba(215,210,190,0.75)'
+  ctx.fillRect(6, 0, 3, 128)
+  ctx.fillRect(119, 0, 3, 128)
+  // dashed center line
+  ctx.fillStyle = 'rgba(230,200,90,0.8)'
+  for (let y = 6; y < 128; y += 32) ctx.fillRect(62, y, 4, 18)
+  const tex = new THREE.CanvasTexture(c)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
+// ------------------------------------------------------------
 // Terrain height (analytic — player, bots, vehicles, meshes)
 // ------------------------------------------------------------
 function terrainH(x: number, z: number): number {
@@ -189,6 +258,8 @@ interface LootSpot {
   x: number; z: number
   kind: 'weapon' | 'ammo' | 'med' | 'crate'
   weapon: WeaponId
+  /** v10: índice de rareza (BR_RARITIES) para loot de armas/cajas */
+  rarity: number
   taken: boolean
   mesh: THREE.Group | null
   /** v9.1: objeto flotante (para reemplazarlo por el arma GLB real) */
@@ -218,6 +289,8 @@ interface BrBot {
   mesh: THREE.Group | null
   /** v9.1: cuerpo articulado (soldado GLB o low-poly) */
   rig: BodyRig | null
+  /** v10: rareza del arma que porta (multiplicador de daño) */
+  rarity: number
   /** uniforme distinto por operador (FFA) */
   tint: number
   legPhase: number
@@ -277,6 +350,8 @@ export class BattleRoyaleGame {
   private onGround = true
   private hp = 100
   private weapon: WeaponId | null = null
+  /** v10: rareza del arma actual (índice en BR_RARITIES, -1 = sin arma) */
+  private weaponRarity = -1
   private mag = 0
   private reserve = 0
   private nextShotAt = 0
@@ -341,14 +416,15 @@ export class BattleRoyaleGame {
   private endTime = 0
 
   // ---- v9.1: real assets (soldier1.glb, GLB weapons, Pared/Piso, Arbol) ----
-  private effQuality: 'baja' | 'media' = 'media'
+  /** v10: perfil gráfico COMPLETO (baja/media/alta/ultra) — sin tope */
+  private effQuality: 'baja' | 'media' | 'alta' | 'ultra' = 'media'
   private soldierTemplate: THREE.Group | null = null
   private soldierLoading = false
   /** materiales teñidos por variante de uniforme (compartidos entre clones) */
   private tintCache: Map<THREE.Material, THREE.Material>[] = BR_TINTS.map(() => new Map())
   private weaponGLBUnsub: (() => void) | null = null
   /** muros/tejados creados sin textura aún — se parchean al llegar Pared/Piso */
-  private texMats: { mat: THREE.MeshStandardMaterial; kind: 'wall' | 'roof' }[] = []
+  private texMats: { mat: THREE.MeshStandardMaterial; kind: 'wall' | 'roof'; rx: number; ry: number }[] = []
   private repoTexTries = 0
   private forestIsProcedural = false
   private procForestMeshes: THREE.Mesh[] = []
@@ -357,6 +433,11 @@ export class BattleRoyaleGame {
   private vmBase = new THREE.Vector3(0.2, -0.24, -0.5)
   private vmBaseRot = new THREE.Euler()
   private vmIsProcedural = true
+
+  // ---- v10: chat de partida + atmósfera (sol, nubes) ----
+  private chatStop: (() => void) | null = null
+  private clouds: THREE.Sprite[] = []
+  private sunSprite: THREE.Sprite | null = null
 
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -368,18 +449,27 @@ export class BattleRoyaleGame {
   // ----------------------------------------------------------
   init(): void {
     const brSet = useBr.getState().set
-    // v9: BR allows LOW/MEDIUM only — cap the profile for stability
+    // v10: perfil gráfico COMPLETO — HIGH y ULTRA ya están disponibles
+    // en Battle Royale (por-tier: pixelRatio, AA, sombras, niebla, extras)
     const q = useGame.getState().settings.quality
-    const eff = (q === 'alta' || q === 'ultra') ? 'media' : q
-    if (eff !== q) brSet({ qualityNote: 'Graphics profile capped to MEDIUM in Battle Royale for stability' })
-    this.effQuality = eff as 'baja' | 'media'
+    this.effQuality = q
+    brSet({
+      qualityNote: q === 'alta' || q === 'ultra'
+        ? `Graphics profile ${q === 'ultra' ? 'ULTRA' : 'HIGH'} active — Battle Royale looks its best`
+        : '',
+    })
 
-    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: eff === 'media' })
-    this.renderer.setPixelRatio(eff === 'baja' ? 0.75 : Math.min(devicePixelRatio, 1))
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: q !== 'baja' })
+    this.renderer.setPixelRatio(
+      q === 'baja' ? 0.75
+        : q === 'media' ? Math.min(devicePixelRatio, 1)
+          : q === 'alta' ? Math.min(devicePixelRatio, 1.5)
+            : Math.min(devicePixelRatio, 2),
+    )
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.02
+    this.renderer.toneMappingExposure = q === 'baja' ? 1.0 : q === 'media' ? 1.04 : q === 'alta' ? 1.09 : 1.12
 
     this.camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 0.1, 900)
 
@@ -389,10 +479,13 @@ export class BattleRoyaleGame {
     // ---- MAP SCENE (built progressively) ----
     this.mapScene = new THREE.Scene()
     this.mapScene.background = new THREE.Color(0x0c1420)
-    this.mapScene.fog = new THREE.FogExp2(0x0c1420, eff === 'baja' ? 0.0032 : 0.0024)
+    this.mapScene.fog = new THREE.FogExp2(
+      0x0c1420,
+      q === 'baja' ? 0.0032 : q === 'media' ? 0.0024 : q === 'alta' ? 0.0016 : 0.0013,
+    )
     this.buildMapSky(this.mapScene)
-    this.buildMapLights(this.mapScene, eff)
-    this.enqueueMapBuild(eff)
+    this.buildMapLights(this.mapScene, q)
+    this.enqueueMapBuild(q)
 
     this.scene = this.lobbyScene
     // spawn on the island
@@ -414,9 +507,20 @@ export class BattleRoyaleGame {
       hp: 100,
       kills: 0,
       placement: 0,
+      weaponRarity: -1,
     })
 
     getAudio().setDuck(true)   // music ducks down during BR
+
+    // ---- v10: chat de partida (modo BR, canal propio) ----
+    useChat.getState().setMode('br')
+    useChat.getState().reset()
+    this.chatStop = startAmbientChat()
+    // el BR es SIEMPRE solos: si tienes grupo activo, se queda en el menú
+    const squad = useSquad.getState()
+    if (squad.members.length > 0) {
+      useBr.getState().addFeed('BATTLE ROYALE IS ALWAYS SOLOS — your squad stays at the menu', false)
+    }
 
     // ---- v9.1: the user's real assets (models + textures) in BR too ----
     // texturas Pared/Piso + plantilla de Arbol.glb (caché compartida; si ya
@@ -440,6 +544,8 @@ export class BattleRoyaleGame {
   // INPUT
   // ----------------------------------------------------------
   private onKeyDown = (e: KeyboardEvent): void => {
+    // v10: mientras el chat está abierto, las teclas son del input
+    if (useChat.getState().open) return
     this.keys.add(e.code)
     if (e.code === 'Space') {
       e.preventDefault()
@@ -584,15 +690,15 @@ export class BattleRoyaleGame {
   // MAP SCENE — sky, lights, then progressive build
   // ----------------------------------------------------------
   private buildMapSky(scene: THREE.Scene): void {
-    // gradient sky dome (dusk)
+    // v10: dusk gradient, más rico (azul profundo → resplandor cálido)
     const skyGeo = new THREE.SphereGeometry(820, 24, 12)
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
       uniforms: {
-        top: { value: new THREE.Color(0x1c2c47) },
-        mid: { value: new THREE.Color(0x8f6a4a) },
-        bot: { value: new THREE.Color(0x2a2018) },
+        top: { value: new THREE.Color(0x24375c) },
+        mid: { value: new THREE.Color(0xc27a3f) },
+        bot: { value: new THREE.Color(0x2a1c10) },
       },
       vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
       fragmentShader: `varying vec3 vP;
@@ -605,20 +711,78 @@ export class BattleRoyaleGame {
     })
     const sky = new THREE.Mesh(skyGeo, skyMat)
     scene.add(sky)
+    // v10: disco solar con halo (media+) — ancla visual del atardecer
+    const q = this.effQuality
+    if (q !== 'baja') {
+      const c = document.createElement('canvas')
+      c.width = 256; c.height = 256
+      const ctx = c.getContext('2d')!
+      const g = ctx.createRadialGradient(128, 128, 8, 128, 128, 128)
+      g.addColorStop(0, 'rgba(255,238,200,1)')
+      g.addColorStop(0.12, 'rgba(255,205,140,0.95)')
+      g.addColorStop(0.35, 'rgba(255,150,80,0.35)')
+      g.addColorStop(1, 'rgba(255,120,60,0)')
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, 256, 256)
+      const tex = new THREE.CanvasTexture(c)
+      tex.colorSpace = THREE.SRGBColorSpace
+      const sun = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: tex, transparent: true, depthWrite: false, fog: false,
+      }))
+      sun.scale.setScalar(190)
+      sun.position.set(-560, 210, -280)
+      scene.add(sun)
+      this.sunSprite = sun
+    }
+    // v10: nubes a la deriva (alta/ultra)
+    if (q === 'alta' || q === 'ultra') {
+      const cc = document.createElement('canvas')
+      cc.width = 256; cc.height = 128
+      const cx = cc.getContext('2d')!
+      for (let i = 0; i < 16; i++) {
+        const px = 30 + Math.random() * 196
+        const py = 40 + Math.random() * 48
+        const rg = cx.createRadialGradient(px, py, 4, px, py, 18 + Math.random() * 30)
+        rg.addColorStop(0, 'rgba(236,220,205,0.55)')
+        rg.addColorStop(1, 'rgba(236,220,205,0)')
+        cx.fillStyle = rg
+        cx.fillRect(0, 0, 256, 128)
+      }
+      const ctex = new THREE.CanvasTexture(cc)
+      ctex.colorSpace = THREE.SRGBColorSpace
+      for (let i = 0; i < 8; i++) {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: ctex, transparent: true, depthWrite: false, fog: false,
+          opacity: 0.34 + Math.random() * 0.3,
+        }))
+        sp.scale.set(180 + Math.random() * 170, 60 + Math.random() * 50, 1)
+        sp.position.set(rand(-MAP * 1.2, MAP * 1.2), 150 + Math.random() * 90, rand(-MAP * 1.2, MAP * 1.2))
+        scene.add(sp)
+        this.clouds.push(sp)
+      }
+    }
   }
 
   private buildMapLights(scene: THREE.Scene, eff: string): void {
-    const sun = new THREE.DirectionalLight(0xffcf9e, 1.35)
+    const sun = new THREE.DirectionalLight(0xffcf9e, eff === 'baja' ? 1.25 : 1.5)
     sun.position.set(-120, 150, -60)
     scene.add(sun)
-    scene.add(new THREE.HemisphereLight(0x9db8d0, 0x4a4636, 0.62))
-    if (eff === 'media') {
+    scene.add(new THREE.HemisphereLight(0x9db8d0, 0x4a4636, eff === 'baja' ? 0.55 : eff === 'media' ? 0.68 : 0.8))
+    if (eff !== 'baja') {
       sun.castShadow = true
-      sun.shadow.mapSize.set(1024, 1024)
+      const size = eff === 'media' ? 1024 : eff === 'alta' ? 2048 : 4096
+      sun.shadow.mapSize.set(size, size)
       const c = sun.shadow.camera
-      c.left = -90; c.right = 90; c.top = 90; c.bottom = -90
-      c.far = 420
+      const span = eff === 'media' ? 90 : 130
+      c.left = -span; c.right = span; c.top = span; c.bottom = -span
+      c.far = 520
       sun.shadow.bias = -0.0004
+    }
+    if (eff === 'alta' || eff === 'ultra') {
+      // relleno cálido del atardecer para que los muros no queden planos
+      const fill = new THREE.DirectionalLight(0xff9a5e, 0.28)
+      fill.position.set(140, 90, 120)
+      scene.add(fill)
     }
     // muzzle light for the player
     this.muzzle = new THREE.PointLight(0xffd9a0, 0, 24)
@@ -671,13 +835,24 @@ export class BattleRoyaleGame {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
     geo.computeVertexNormals()
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96 }))
+    // v10: micro-detalle procedural multiplicado sobre el color por vértice
+    // (malla de manchas suaves: mata el aspecto plástico del terreno)
+    const groundMat = new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.96,
+      ...(this.effQuality !== 'baja' ? { map: makeNoiseDetailTexture(72) } : {}),
+    })
+    const mesh = new THREE.Mesh(geo, groundMat)
     this.mapScene.add(mesh)
 
     // ocean plane around the island (to the horizon)
+    const hiQ = this.effQuality === 'alta' || this.effQuality === 'ultra'
     const ocean = new THREE.Mesh(
       new THREE.PlaneGeometry(1600, 1600),
-      new THREE.MeshStandardMaterial({ color: 0x27435c, roughness: 0.3, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({
+        color: 0x27435c,
+        roughness: hiQ ? 0.12 : 0.3,
+        metalness: hiQ ? 0.45 : 0.1,
+      }),
     )
     ocean.rotation.x = -Math.PI / 2
     ocean.position.y = -2.2
@@ -685,10 +860,13 @@ export class BattleRoyaleGame {
   }
 
   private buildWater(): void {
+    const hiQ = this.effQuality === 'alta' || this.effQuality === 'ultra'
     const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x3d7a9e, roughness: 0.18, metalness: 0.25,
+      color: 0x3d7a9e,
+      roughness: hiQ ? 0.08 : 0.18,
+      metalness: hiQ ? 0.5 : 0.25,
       transparent: true, opacity: 0.92,
-      emissive: 0x0c2432, emissiveIntensity: 0.35,
+      emissive: 0x0c2432, emissiveIntensity: hiQ ? 0.22 : 0.35,
     })
     for (const l of LAKES) {
       const w = new THREE.Mesh(new THREE.CircleGeometry(l.r, 36), waterMat)
@@ -696,6 +874,62 @@ export class BattleRoyaleGame {
       w.position.set(l.x, -0.75, l.z)
       this.mapScene.add(w)
     }
+  }
+
+  /** v10: réplicas de la textura Pared con repeats por cubo de tamaño
+   *  (compartidas entre edificios: 6 texturas máximo, no una por muro) */
+  private wallTexCache = new Map<string, THREE.Texture>()
+  private roofTexCache = new Map<string, THREE.Texture>()
+
+  /** material de muro por cubo de tamaño + tinte suave (variación) */
+  private cityWallMat(w: number, h: number, seed: number): THREE.MeshStandardMaterial {
+    const bw = w < 9 ? 's' : w < 11 ? 'm' : 'l'
+    const bh = h < 8 ? 'lo' : h < 12 ? 'mi' : 'ta'
+    const rx = bw === 's' ? 2.2 : bw === 'm' ? 3.2 : 4.2
+    const ry = bh === 'lo' ? 1.8 : bh === 'mi' ? 2.8 : 4.0
+    const tints = [0xffffff, 0xece6d9, 0xdcd5c6, 0xd2cbc0]
+    const tint = tints[seed % tints.length]
+    const repo = getRepoTextures()
+    if (repo.pared) {
+      let tex = this.wallTexCache.get(`${bw}${bh}`)
+      if (!tex) {
+        tex = repo.pared.clone()
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+        tex.repeat.set(rx, ry)
+        tex.needsUpdate = true
+        this.wallTexCache.set(`${bw}${bh}`, tex)
+      }
+      const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.92, color: tint })
+      mat.userData.sharedMap = true
+      return mat
+    }
+    // sin textura aún → material neutro registrado para parcheo en vivo
+    const mat = new THREE.MeshStandardMaterial({ color: 0x9a8f7d, roughness: 0.92 })
+    this.texMats.push({ mat, kind: 'wall', rx, ry })
+    return mat
+  }
+
+  /** material de tejado/losa por cubo (Piso con repeat propio) */
+  private cityRoofMat(w: number, d: number): THREE.MeshStandardMaterial {
+    const bk = w < 11 && d < 11 ? 's' : 'l'
+    const r = bk === 's' ? 2.4 : 3.6
+    const repo = getRepoTextures()
+    if (repo.piso) {
+      let tex = this.roofTexCache.get(bk)
+      if (!tex) {
+        tex = repo.piso.clone()
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+        tex.repeat.set(r, r)
+        tex.needsUpdate = true
+        this.roofTexCache.set(bk, tex)
+      }
+      const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 })
+      mat.userData.sharedMap = true
+      return mat
+    }
+    const mat = new THREE.MeshStandardMaterial({ color: 0x6b6257, roughness: 0.95 })
+    this.texMats.push({ mat, kind: 'roof', rx: r, ry: r })
+    return mat
   }
 
   /** building material set — the user's own Pared1/Piso1 textures.
@@ -717,22 +951,31 @@ export class BattleRoyaleGame {
     // el mapa es de la textura COMPARTIDA (caché global): no liberarla al salir
     wall.userData.sharedMap = true
     roof.userData.sharedMap = true
-    this.texMats.push({ mat: wall, kind: 'wall' }, { mat: roof, kind: 'roof' })
+    this.texMats.push({ mat: wall, kind: 'wall', rx: 2.4, ry: 1.9 }, { mat: roof, kind: 'roof', rx: 2.4, ry: 2.4 })
     return { wall, roof }
   }
 
-  /** v9.1: aplica Pared/Piso a los materiales creados sin textura */
+  /** v9.1: aplica Pared/Piso a los materiales creados sin textura
+   *  (v10: clona por repeat — cada cubo de tamaño conserva su escala) */
   private applyRepoTexToBr(): boolean {
     const repo = getRepoTextures()
     if (!repo.pared || !repo.piso) return false
-    for (const { mat, kind } of this.texMats) {
-      const tex = kind === 'wall' ? repo.pared : repo.piso
-      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-      if (mat.map !== tex) {
-        mat.map = tex
-        mat.color.set(0xffffff)
-        mat.needsUpdate = true
+    const cloneCache = new Map<string, THREE.Texture>()
+    for (const { mat, kind, rx, ry } of this.texMats) {
+      if (mat.map) continue
+      const key = `${kind}:${rx}x${ry}`
+      let t = cloneCache.get(key)
+      if (!t) {
+        t = (kind === 'wall' ? repo.pared : repo.piso).clone()
+        t.wrapS = t.wrapT = THREE.RepeatWrapping
+        t.repeat.set(rx, ry)
+        t.needsUpdate = true
+        cloneCache.set(key, t)
       }
+      mat.map = t
+      mat.color.set(0xffffff)
+      mat.userData.sharedMap = true
+      mat.needsUpdate = true
     }
     return true
   }
@@ -751,29 +994,51 @@ export class BattleRoyaleGame {
 
   private buildCity(idx: number): void {
     const city = CITIES[idx]
-    const mats = this.buildingMats()
-    const windowMat = new THREE.MeshStandardMaterial({
-      color: 0x18202a, roughness: 0.4, metalness: 0.3,
+    // ---- shared detail materials ----
+    const winGlass = new THREE.MeshStandardMaterial({
+      color: 0x1a2230, roughness: 0.35, metalness: 0.3,
       emissive: 0xffb45e, emissiveIntensity: 0.55,
     })
-    const roadMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.95 })
+    const winFrame = new THREE.MeshStandardMaterial({ color: 0x2c323a, roughness: 0.7, metalness: 0.25 })
+    const concrete = new THREE.MeshStandardMaterial({ color: 0x8f8a80, roughness: 0.95 })
+    const roofPropMat = new THREE.MeshStandardMaterial({ color: 0x71706b, roughness: 0.6, metalness: 0.45 })
+    const doorMat = new THREE.MeshStandardMaterial({ color: 0x33302a, roughness: 0.8 })
+    const awningMat = new THREE.MeshStandardMaterial({ color: 0x8f3b2f, roughness: 0.85, side: THREE.DoubleSide })
+    const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x9d988e, roughness: 0.95 })
 
-    // roads: a cross + ring
+    // ---- v10: textured roads (asphalt + lane markings) + sidewalks ----
+    const asphalt = makeAsphaltTexture()
     const road = (w: number, d: number, x: number, z: number, ry: number): void => {
-      const r = new THREE.Mesh(new THREE.PlaneGeometry(w, d), roadMat)
+      const t = asphalt.clone()
+      t.wrapS = t.wrapT = THREE.RepeatWrapping
+      t.repeat.set(Math.max(1, Math.round(w / 8)), Math.max(1, Math.round(d / 8)))
+      t.needsUpdate = true
+      const r = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ map: t, roughness: 0.94 }))
       r.rotation.x = -Math.PI / 2
       r.rotation.z = ry
       r.position.set(x, terrainH(x, z) + 0.05, z)
       this.mapScene.add(r)
     }
-    road(3 * city.r / 2, 7, city.x, city.z, 0)
-    road(7, 3 * city.r / 2, city.x, city.z, 0)
-    road(3 * city.r / 2, 7, city.x, city.z, Math.PI / 2)
+    const half = 3 * city.r / 2
+    road(half, 7, city.x, city.z, 0)
+    road(7, half, city.x, city.z, 0)
+    road(half, 7, city.x, city.z, Math.PI / 2)
+    // sidewalks flanking the two main avenues
+    for (const off of [-4.6, 4.6]) {
+      const swA = new THREE.Mesh(new THREE.BoxGeometry(half, 0.16, 1.7), sidewalkMat)
+      swA.position.set(city.x, terrainH(city.x, city.z + off) + 0.12, city.z + off)
+      swA.receiveShadow = true
+      this.mapScene.add(swA)
+      const swB = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.16, half), sidewalkMat)
+      swB.position.set(city.x + off, terrainH(city.x + off, city.z) + 0.12, city.z)
+      swB.receiveShadow = true
+      this.mapScene.add(swB)
+    }
 
-    // buildings: 10-12 per city, non overlapping
+    // ---- buildings: 11-13 per city, richly detailed ----
     const placed: { x: number; z: number; w: number; d: number }[] = []
     let tries = 0
-    while (placed.length < 11 && tries < 220) {
+    while (placed.length < 12 && tries < 260) {
       tries++
       const w = rand(7, 13), d = rand(7, 13)
       const ang = rand(0, Math.PI * 2)
@@ -786,34 +1051,9 @@ export class BattleRoyaleGame {
 
       const h = rand(5, 17)
       const gy = terrainH(x, z)
-      const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats.wall)
-      b.position.set(x, gy + h / 2, z)
-      b.castShadow = true
-      b.receiveShadow = true
-      this.mapScene.add(b)
-      // roof slab
-      const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.5, 0.35, d + 0.5), mats.roof)
-      roof.position.set(x, gy + h + 0.17, z)
-      this.mapScene.add(roof)
-      // parapet
-      const par = new THREE.MeshStandardMaterial({ color: 0x8a8378, roughness: 0.9 })
-      for (const [ox, oz, sw, sd] of [
-        [0, d / 2, w, 0.35], [0, -d / 2, w, 0.35], [w / 2, 0, 0.35, d], [-w / 2, 0, 0.35, d],
-      ] as const) {
-        const p = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.85, sd), par)
-        p.position.set(x + ox, gy + h + 0.6, z + oz)
-        this.mapScene.add(p)
-      }
-      // emissive window strips (2-3 per face, only on ±z faces for cheapness)
-      const rows = Math.max(1, Math.floor(h / 4.5))
-      for (let rI = 0; rI < rows; rI++) {
-        for (const s of [-1, 1]) {
-          const win = new THREE.Mesh(new THREE.BoxGeometry(w * 0.72, 1.15, 0.18), windowMat)
-          win.position.set(x, gy + 2.6 + rI * 4.2, z + s * (d / 2 + 0.12))
-          this.mapScene.add(win)
-        }
-      }
-      this.aabbs.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, h: gy + h })
+      this.buildDetailedBuilding(x, z, w, d, h, gy, placed.length, {
+        winGlass, winFrame, concrete, roofPropMat, doorMat, awningMat,
+      })
 
       // street lamp glow near the door
       if (placed.length % 3 === 0) {
@@ -842,8 +1082,147 @@ export class BattleRoyaleGame {
     }
   }
 
+  /** v10: edificio urbano detallado — muros con Pared por cubo de tamaño,
+   *  bandas de forjado, ventanas ENMARCADAS (fusionadas: 2 draw calls),
+   *  puerta con escalón, balcones, toldos de tienda y azotea con depósito /
+   *  climatizadora / antena. La colisión sigue siendo la caja principal. */
+  private buildDetailedBuilding(
+    x: number, z: number, w: number, d: number, h: number, gy: number, seed: number,
+    mats: {
+      winGlass: THREE.MeshStandardMaterial
+      winFrame: THREE.MeshStandardMaterial
+      concrete: THREE.MeshStandardMaterial
+      roofPropMat: THREE.MeshStandardMaterial
+      doorMat: THREE.MeshStandardMaterial
+      awningMat: THREE.MeshStandardMaterial
+    },
+  ): void {
+    const shop = Math.random() < 0.34
+    const floors = Math.max(1, Math.floor(h / 4.2))
+    const floorH = h / floors
+
+    // main box (collision)
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), this.cityWallMat(w, h, seed))
+    b.position.set(x, gy + h / 2, z)
+    b.castShadow = true
+    b.receiveShadow = true
+    this.mapScene.add(b)
+
+    // roof slab + parapet
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.5, 0.35, d + 0.5), this.cityRoofMat(w, d))
+    roof.position.set(x, gy + h + 0.17, z)
+    roof.castShadow = true
+    this.mapScene.add(roof)
+    const parGeos: THREE.BufferGeometry[] = []
+    for (const [ox, oz, sw, sd] of [
+      [0, d / 2, w, 0.35], [0, -d / 2, w, 0.35], [w / 2, 0, 0.35, d], [-w / 2, 0, 0.35, d],
+    ] as const) {
+      const g = new THREE.BoxGeometry(sw, 0.85, sd)
+      g.translate(x + ox, gy + h + 0.6, z + oz)
+      parGeos.push(g)
+    }
+
+    // floor bands (slabs between floors) + balcony slabs
+    const slabGeos: THREE.BufferGeometry[] = []
+    for (let f = 1; f <= floors; f++) {
+      const g = new THREE.BoxGeometry(w + 0.25, 0.24, d + 0.25)
+      g.translate(x, gy + f * floorH - 0.12, z)
+      slabGeos.push(g)
+    }
+    const hasBalconies = h > 8.5 && Math.random() < 0.6
+    if (hasBalconies) {
+      const bFaces = Math.random() < 0.5 ? [-1, 1] : [1, -1]
+      for (const s of bFaces) {
+        for (let f = 1; f < floors; f++) {
+          const bg = new THREE.BoxGeometry(w * 0.5, 0.16, 1.05)
+          bg.translate(x, gy + f * floorH + 0.08, z + s * (d / 2 + 0.55))
+          slabGeos.push(bg)
+          const rail = new THREE.BoxGeometry(w * 0.5, 0.55, 0.09)
+          rail.translate(x, gy + f * floorH + 0.42, z + s * (d / 2 + 1.05))
+          slabGeos.push(rail)
+        }
+      }
+    }
+
+    // windows: framed + emissive glass on ±z AND ±x faces (merged → 2 meshes)
+    const frameGeos: THREE.BufferGeometry[] = []
+    const glassGeos: THREE.BufferGeometry[] = []
+    for (let f = 0; f < floors; f++) {
+      const wy = gy + 2.1 + f * floorH
+      for (const s of [-1, 1]) {
+        const fr = new THREE.BoxGeometry(w * 0.74, 1.4, 0.28)
+        fr.translate(x, wy, z + s * (d / 2 + 0.08))
+        frameGeos.push(fr)
+        const gl = new THREE.BoxGeometry(w * 0.6, 1.05, 0.2)
+        gl.translate(x, wy, z + s * (d / 2 + 0.16))
+        glassGeos.push(gl)
+        const fr2 = new THREE.BoxGeometry(0.28, 1.4, d * 0.62)
+        fr2.translate(x + s * (w / 2 + 0.08), wy, z)
+        frameGeos.push(fr2)
+        const gl2 = new THREE.BoxGeometry(0.2, 1.05, d * 0.5)
+        gl2.translate(x + s * (w / 2 + 0.16), wy, z)
+        glassGeos.push(gl2)
+      }
+    }
+
+    // door + stoop on the face towards the city center
+    const toCenter = z >= CITIES[0].z ? 1 : -1
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.3, 0.3), mats.doorMat)
+    door.position.set(x, gy + 1.15, z + toCenter * (d / 2 + 0.12))
+    door.castShadow = true
+    this.mapScene.add(door)
+    const stoop = new THREE.BoxGeometry(2.1, 0.18, 1.1)
+    stoop.translate(x, gy + 0.09, z + toCenter * (d / 2 + 0.62))
+    slabGeos.push(stoop)
+
+    // awning over the door for shops
+    if (shop) {
+      const aw = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.12, 1.6), mats.awningMat)
+      aw.position.set(x, gy + 2.75, z + toCenter * (d / 2 + 0.85))
+      aw.rotation.x = toCenter * 0.18
+      aw.castShadow = true
+      this.mapScene.add(aw)
+    }
+
+    // rooftop props: water tank / AC unit + antenna (merged)
+    const propGeos: THREE.BufferGeometry[] = []
+    const tank = new THREE.CylinderGeometry(0.75, 0.75, 1.5, 10)
+    tank.translate(x + w * 0.28, gy + h + 1.3, z + d * 0.26)
+    propGeos.push(tank)
+    const ac = new THREE.BoxGeometry(1.15, 0.8, 0.95)
+    ac.translate(x - w * 0.3, gy + h + 0.75, z - d * 0.22)
+    propGeos.push(ac)
+    const mast = new THREE.CylinderGeometry(0.06, 0.09, 3.6 + Math.random() * 2.4, 6)
+    mast.translate(x - w * 0.05, gy + h + 2.4, z + d * 0.05)
+    propGeos.push(mast)
+
+    // merge + add (few draw calls per building)
+    const mergeAdd = (geos: THREE.BufferGeometry[], mat: THREE.Material, shadow: boolean): void => {
+      if (!geos.length) return
+      const merged = mergeGeometries(geos, false)
+      for (const g of geos) g.dispose()
+      if (!merged) return
+      const m = new THREE.Mesh(merged, mat)
+      m.castShadow = shadow
+      this.mapScene.add(m)
+    }
+    mergeAdd(parGeos, mats.concrete, false)
+    mergeAdd(slabGeos, mats.concrete, true)
+    mergeAdd(frameGeos, mats.winFrame, false)
+    mergeAdd(glassGeos, mats.winGlass, false)
+    mergeAdd(propGeos, mats.roofPropMat, true)
+
+    this.aabbs.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, h: gy + h })
+  }
+
   private buildPois(): void {
     const mats = this.buildingMats()
+    const winGlass = new THREE.MeshStandardMaterial({
+      color: 0x1a2230, roughness: 0.35, metalness: 0.3,
+      emissive: 0xffb45e, emissiveIntensity: 0.5,
+    })
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.9 })
+    const metalMat = new THREE.MeshStandardMaterial({ color: 0x707a82, roughness: 0.5, metalness: 0.6 })
     for (const poi of POIS) {
       const count = poi.name === 'SERENE LAKE' ? 3 : 4
       for (let i = 0; i < count; i++) {
@@ -854,14 +1233,107 @@ export class BattleRoyaleGame {
         const gy = terrainH(x, z)
         if (gy < -0.8) continue    // don't build in the water
         const w = rand(5, 8), d = rand(5, 8), h = rand(3.2, 5.2)
+        // main box with the user's Pared texture
         const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats.wall)
         b.position.set(x, gy + h / 2, z)
         b.castShadow = true
+        b.receiveShadow = true
         this.mapScene.add(b)
-        const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.4, 0.3, d + 0.4), mats.roof)
-        roof.position.set(x, gy + h + 0.15, z)
-        this.mapScene.add(roof)
+        // v10: pitched roof (two tilted Piso slabs + ridge)
+        const slope = 0.62
+        const rH = Math.hypot(w / 2 + 0.55, 1.15)
+        for (const s of [-1, 1]) {
+          const slab = new THREE.Mesh(new THREE.BoxGeometry(rH, 0.16, d + 1.0), mats.roof)
+          slab.position.set(x + s * (w / 4 + 0.22), gy + h + 0.62, z)
+          slab.rotation.z = s * slope
+          slab.castShadow = true
+          this.mapScene.add(slab)
+        }
+        // gable ends (triangles read as boxes for cheapness — chimney instead)
+        const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.3, 0.55), woodMat)
+        chimney.position.set(x + w * 0.28, gy + h + 1.15, z - d * 0.2)
+        chimney.castShadow = true
+        this.mapScene.add(chimney)
+        // door + lit window
+        const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.0, 0.22), woodMat)
+        door.position.set(x, gy + 1.0, z + d / 2 + 0.1)
+        this.mapScene.add(door)
+        const win = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 0.2), winGlass)
+        win.position.set(x + w * 0.25, gy + 1.9, z + d / 2 + 0.12)
+        this.mapScene.add(win)
+        // small porch slab
+        const porch = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.14, 1.2), woodMat)
+        porch.position.set(x, gy + 0.07, z + d / 2 + 0.7)
+        porch.receiveShadow = true
+        this.mapScene.add(porch)
         this.aabbs.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, h: gy + h })
+      }
+      // ---- POI-specific landmarks (v10) ----
+      if (poi.name === 'MILL FARM') {
+        // grain silo + barn door frame
+        const silo = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 7.5, 14), mats.wall)
+        silo.position.set(poi.x + 9, terrainH(poi.x + 9, poi.z) + 3.75, poi.z - 6)
+        silo.castShadow = true
+        this.mapScene.add(silo)
+        const cap = new THREE.Mesh(new THREE.ConeGeometry(2.3, 1.4, 14), metalMat)
+        cap.position.set(poi.x + 9, terrainH(poi.x + 9, poi.z) + 8.2, poi.z - 6)
+        cap.castShadow = true
+        this.mapScene.add(cap)
+        this.aabbs.push({ minX: poi.x + 7, maxX: poi.x + 11, minZ: poi.z - 8, maxZ: poi.z - 4, h: terrainH(poi.x + 9, poi.z) + 7.5 })
+      } else if (poi.name === 'SERENE LAKE') {
+        // wooden pier over the water
+        const px = poi.x, pz = poi.z + 14
+        for (let s = 0; s < 6; s++) {
+          const plank = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.14, 2.0), woodMat)
+          plank.position.set(px, -0.35, pz + s * 2.0)
+          plank.castShadow = true
+          this.mapScene.add(plank)
+        }
+        for (const [ox, oz] of [[-0.85, 1], [0.85, 1], [-0.85, 9], [0.85, 9]] as const) {
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 2.6, 8), woodMat)
+          post.position.set(px + ox, -1.2, pz + oz)
+          this.mapScene.add(post)
+        }
+      } else if (poi.name === 'PUMP STATION') {
+        // two horizontal fuel tanks + pipe
+        for (const off of [-4.5, 4.5]) {
+          const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 7, 12), metalMat)
+          tank.rotation.z = Math.PI / 2
+          tank.position.set(poi.x + off, terrainH(poi.x + off, poi.z) + 1.7, poi.z)
+          tank.castShadow = true
+          this.mapScene.add(tank)
+          this.aabbs.push({ minX: poi.x + off - 3.6, maxX: poi.x + off + 3.6, minZ: poi.z - 1.6, maxZ: poi.z + 1.6, h: terrainH(poi.x + off, poi.z) + 3.2 })
+        }
+      } else if (poi.name === 'RIDGE COMPOUND') {
+        // watchtower
+        const ty = terrainH(poi.x, poi.z)
+        for (const [ox, oz] of [[-1.6, -1.6], [1.6, -1.6], [-1.6, 1.6], [1.6, 1.6]] as const) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.3, 7, 0.3), woodMat)
+          leg.position.set(poi.x + ox, ty + 3.5, poi.z + oz)
+          leg.castShadow = true
+          this.mapScene.add(leg)
+        }
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.3, 4.4), woodMat)
+        deck.position.set(poi.x, ty + 7.0, poi.z)
+        deck.castShadow = true
+        this.mapScene.add(deck)
+        const hut = new THREE.Mesh(new THREE.BoxGeometry(3.0, 2.0, 3.0), mats.wall)
+        hut.position.set(poi.x, ty + 8.2, poi.z)
+        hut.castShadow = true
+        this.mapScene.add(hut)
+      } else if (poi.name === 'SOUTH DOCKS') {
+        // cargo crane silhouette + stacked crates
+        const cy = terrainH(poi.x, poi.z)
+        for (const s of [-1, 1]) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.4, 9, 0.4), metalMat)
+          leg.position.set(poi.x + s * 3.2, cy + 4.5, poi.z + 4)
+          leg.castShadow = true
+          this.mapScene.add(leg)
+        }
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(12, 0.5, 0.6), metalMat)
+        beam.position.set(poi.x, cy + 9, poi.z + 4)
+        beam.castShadow = true
+        this.mapScene.add(beam)
       }
     }
   }
@@ -871,7 +1343,7 @@ export class BattleRoyaleGame {
    *  reemplazan en cuanto llega (onRepoAssetsReady → rebuildForests) */
   private buildForests(eff: string): void {
     // clustered woods read as forests from a distance + scattered singles
-    const count = eff === 'baja' ? 50 : 82
+    const count = eff === 'baja' ? 50 : eff === 'media' ? 84 : 116
     const spots = this.pickTreeSpots(count)
     this.trees = spots
     const tree = getTreeTemplate()
@@ -903,7 +1375,7 @@ export class BattleRoyaleGame {
       m.compose(v, q, s)
       leaves.setMatrixAt(i, m)
     })
-    leaves.castShadow = eff === 'media'
+    leaves.castShadow = eff !== 'baja'
     this.mapScene.add(trunks, leaves)
     this.procForestMeshes.push(trunks, leaves)
   }
@@ -1029,11 +1501,17 @@ export class BattleRoyaleGame {
   // LOOT
   // ----------------------------------------------------------
   private buildLoot(): void {
-    const addSpot = (x: number, z: number, kind: LootSpot['kind'], weapon: WeaponId): void => {
+    const addSpot = (x: number, z: number, kind: LootSpot['kind'], weapon: WeaponId, rarity = 0): void => {
       const gy = terrainH(x, z)
       if (gy < -0.8) return
-      this.loot.push({ x, z, kind, weapon, taken: false, mesh: null, item: null })
+      this.loot.push({ x, z, kind, weapon, rarity, taken: false, mesh: null, item: null })
     }
+    // v10: las armas del BR son EXACTAMENTE las del modo normal (mismo
+    // arsenal de shared.ts); cada una tira su rareza estilo Fortnite
+    const rollWeapon = (minTier = 0): { wid: WeaponId; rar: number } => ({
+      wid: WEAPON_POOL[Math.floor(rand(0, WEAPON_POOL.length))],
+      rar: rollBrRarity(minTier),
+    })
     // cities: dense floor loot
     for (const c of CITIES) {
       for (let i = 0; i < 10; i++) {
@@ -1042,19 +1520,27 @@ export class BattleRoyaleGame {
         const x = c.x + Math.cos(ang) * rr
         const z = c.z + Math.sin(ang) * rr
         const roll = Math.random()
-        addSpot(x, z, roll < 0.5 ? 'weapon' : roll < 0.75 ? 'ammo' : 'med', WEAPON_POOL[Math.floor(rand(0, WEAPON_POOL.length))])
+        if (roll < 0.5) {
+          const { wid, rar } = rollWeapon()
+          addSpot(x, z, 'weapon', wid, rar)
+        } else if (roll < 0.75) addSpot(x, z, 'ammo', 'p9')
+        else addSpot(x, z, 'med', 'p9')
       }
-      // 2 supply crates per city
+      // 2 supply crates per city — weapon guaranteed RARE+ (Fortnite chest rule)
       for (let i = 0; i < 2; i++) {
-        addSpot(c.x + rand(-20, 20), c.z + rand(-20, 20), 'crate', WEAPON_POOL[Math.floor(rand(3, WEAPON_POOL.length))])
+        const { wid, rar } = rollWeapon(2)
+        addSpot(c.x + rand(-20, 20), c.z + rand(-20, 20), 'crate', wid, rar)
       }
     }
     // POIs
     for (const p of POIS) {
       for (let i = 0; i < 3; i++) {
         const roll = Math.random()
-        addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r),
-          roll < 0.45 ? 'weapon' : roll < 0.75 ? 'ammo' : 'med', WEAPON_POOL[Math.floor(rand(0, WEAPON_POOL.length))])
+        if (roll < 0.45) {
+          const { wid, rar } = rollWeapon()
+          addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r), 'weapon', wid, rar)
+        } else if (roll < 0.75) addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r), 'ammo', 'p9')
+        else addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r), 'med', 'p9')
       }
     }
     // scattered countryside loot
@@ -1069,7 +1555,12 @@ export class BattleRoyaleGame {
   private buildLootMesh(s: LootSpot): THREE.Group {
     const group = new THREE.Group()
     const gy = terrainH(s.x, s.z)
-    const color = s.kind === 'crate' ? 0xf59e0b : s.kind === 'med' ? 0x38d9a9 : s.kind === 'ammo' ? 0x8f8f5a : 0x9fd4ff
+    // v10: el color del haz/anillo lo manda la RAREZA del arma
+    // (cajas de suministro: ámbar propio; bots/municiones: colores de tipo)
+    const rarity = BR_RARITIES[Math.max(0, Math.min(BR_RARITIES.length - 1, s.rarity))]
+    const color = s.kind === 'weapon' ? rarity.color
+      : s.kind === 'crate' ? 0xf59e0b
+        : s.kind === 'med' ? 0x38d9a9 : 0x8f8f5a
     // ground ring
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(0.55, 0.8, 24),
@@ -1081,10 +1572,20 @@ export class BattleRoyaleGame {
     // vertical beam
     const beam = new THREE.Mesh(
       new THREE.CylinderGeometry(0.14, 0.3, 7, 8, 1, true),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: s.kind === 'weapon' || s.kind === 'crate' ? 0.2 : 0.16, side: THREE.DoubleSide, depthWrite: false }),
     )
     beam.position.y = 3.5
     group.add(beam)
+    // v10: doble anillo interior para rarezas altas (se lee desde lejos)
+    if ((s.kind === 'weapon' || s.kind === 'crate') && s.rarity >= 3) {
+      const ring2 = new THREE.Mesh(
+        new THREE.RingGeometry(0.86, 1.05, 24),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }),
+      )
+      ring2.rotation.x = -Math.PI / 2
+      ring2.position.y = 0.06
+      group.add(ring2)
+    }
     // floating item
     const item = new THREE.Group()
     if (s.kind === 'weapon') {
@@ -1259,6 +1760,8 @@ export class BattleRoyaleGame {
         yaw: rand(0, Math.PI * 2),
         hp: 100,
         weapon: WEAPON_POOL[Math.floor(rand(0, WEAPON_POOL.length))],
+        // v10: los operadores también portan armas con rareza (daño escalado)
+        rarity: rollBrRarity(0),
         destX: anchor.x + rand(-8, 8),
         destZ: anchor.z + rand(-8, 8),
         thinkAt: 0,
@@ -1302,7 +1805,7 @@ export class BattleRoyaleGame {
           template.position.y = -box.min.y * scale
           template.traverse(o => {
             if (!(o instanceof THREE.Mesh)) return
-            o.castShadow = this.effQuality === 'media'
+            o.castShadow = this.effQuality !== 'baja'
             o.receiveShadow = false
             o.frustumCulled = false   // la piel se anima: no dejar que el frustum la descarte
             const mats = Array.isArray(o.material) ? o.material : [o.material]
@@ -1354,7 +1857,7 @@ export class BattleRoyaleGame {
         return v
       })
       o.material = Array.isArray(o.material) ? out : out[0]
-      o.castShadow = this.effQuality === 'media'
+      o.castShadow = this.effQuality !== 'baja'
       o.frustumCulled = false
     })
     // pose de reposo por si algo va sin animar
@@ -1663,7 +2166,9 @@ export class BattleRoyaleGame {
             this.pings.push({ x: b.x, z: b.z, t: 2 })
             const hitChance = b.accuracy * (1 - d / 78) * (this.movingFast() ? 0.7 : 1)
             if (Math.random() < hitChance) {
-              const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34)
+              // v10: el daño del bot escala con la rareza de SU arma
+              const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
+              const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult
               this.damagePlayer(dmg, b.name)
             }
           } else {
@@ -1672,7 +2177,8 @@ export class BattleRoyaleGame {
             if (victim && victim.alive) {
               const hitChance = b.accuracy * (1 - d / 78)
               if (Math.random() < hitChance) {
-                victim.hp -= rand(9, 16)
+                const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
+                victim.hp -= rand(9, 16) * rarMult
                 if (victim.hp <= 0) this.killBot(victim, b.name, false)
               }
             }
@@ -1759,9 +2265,24 @@ export class BattleRoyaleGame {
       getAudio().killConfirm()
     }
     // drop ammo where they fell
-    this.loot.push({ x: b.x, z: b.z, kind: 'ammo', weapon: b.weapon, taken: false, mesh: null, item: null })
+    this.loot.push({ x: b.x, z: b.z, kind: 'ammo', weapon: b.weapon, rarity: 0, taken: false, mesh: null, item: null })
     const spot = this.loot[this.loot.length - 1]
     spot.mesh = this.buildLootMesh(spot)
+    // v10: reacción en el chat de partida (los rivales tienen personalidad)
+    if (byPlayer && Math.random() < 0.34 && this.phase === 'live') {
+      const taunts = [
+        'Nice shot, operator',
+        'That was my Legendary you just earned',
+        'I dropped my weapon, take it',
+        'Good fight',
+        'Top 10 incoming, watch out',
+      ]
+      useChat.getState().push(
+        SIM_NAMES[Math.floor(rand(0, SIM_NAMES.length))],
+        taunts[Math.floor(rand(0, taunts.length))],
+        'br',
+      )
+    }
   }
 
   // ----------------------------------------------------------
@@ -2022,8 +2543,9 @@ export class BattleRoyaleGame {
     }
     if (bestLoot) {
       const label = bestLoot.kind === 'weapon'
-        ? WEAPONS[bestLoot.weapon].name.toUpperCase()
-        : bestLoot.kind === 'crate' ? 'SUPPLY CRATE'
+        ? `${BR_RARITIES[bestLoot.rarity]?.label ?? 'COMMON'} · ${WEAPONS[bestLoot.weapon].name.toUpperCase()}`
+        : bestLoot.kind === 'crate'
+          ? `SUPPLY CRATE · ${BR_RARITIES[bestLoot.rarity]?.label ?? 'RARE'} ${WEAPONS[bestLoot.weapon].name.toUpperCase()}`
           : bestLoot.kind === 'med' ? 'MEDKIT' : 'AMMO BOX'
       hint = `[E]  ${label}`
       if (this.wantJump) this.takeLoot(bestLoot)
@@ -2054,6 +2576,7 @@ export class BattleRoyaleGame {
     if (s.kind === 'weapon' || s.kind === 'crate') {
       const wid = s.weapon
       this.weapon = wid
+      this.weaponRarity = s.rarity
       this.mag = WEAPONS[wid].mag
       this.reserve = WEAPONS[wid].mag * 2
       this.reloading = false
@@ -2064,7 +2587,8 @@ export class BattleRoyaleGame {
         this.hp = Math.min(100, this.hp + 45)
         getAudio().pickup(true)
       }
-      useBr.getState().addFeed(`PICKED UP ${WEAPONS[wid].name.toUpperCase()}`, true)
+      const rar = BR_RARITIES[s.rarity]
+      useBr.getState().addFeed(`PICKED UP [${rar?.label ?? 'COMMON'}] ${WEAPONS[wid].name.toUpperCase()} — ${rar ? Math.round((rar.dmgMult - 1) * 100) : 0}% DMG`, true)
     } else if (s.kind === 'med') {
       if (this.hp >= 100) { this.wantJump = false; return }
       this.hp = Math.min(100, this.hp + 55)
@@ -2259,9 +2783,10 @@ export class BattleRoyaleGame {
     this.spawnTracer(origin.clone().addScaledVector(dir, 1.2), hitPoint)
 
     if (hitBot) {
-      // damage with weapon stats + falloff
+      // damage with weapon stats + falloff (+ v10 rarity multiplier)
       const w2 = WEAPONS[this.weapon]
       let dmg = w2.damage * (headshot ? w2.headMult : 1)
+      dmg *= BR_RARITIES[this.weaponRarity]?.dmgMult ?? 1
       if (bestT > w2.falloffStart) {
         const f = clamp((bestT - w2.falloffStart) / Math.max(1, w2.falloffEnd - w2.falloffStart), 0, 1)
         dmg *= 1 - f * (1 - w2.falloffMin)
@@ -2496,6 +3021,7 @@ export class BattleRoyaleGame {
       hp: Math.max(0, Math.round(this.hp)),
       weapon: this.weapon ?? '',
       weaponLabel: w ? w.name.toUpperCase() : 'UNARMED — LOOT A WEAPON',
+      weaponRarity: this.weaponRarity,
       mag: this.mag,
       reserve: this.reserve,
       alive: this.aliveCount(),
@@ -2587,6 +3113,12 @@ export class BattleRoyaleGame {
     // ping decay
     for (const p of this.pings) p.t -= dt
     this.pings = this.pings.filter(p => p.t > 0)
+    // v10: las nubes derivan despacio (solo alta/ultra las crean)
+    for (const c of this.clouds) {
+      c.position.x += dt * 1.1
+      if (c.position.x > MAP * 1.35) c.position.x = -MAP * 1.35
+    }
+    // v10: el sol cuelga del cielo, no de la cámara (posición fija ya puesta)
 
     this.syncHud()
     this.drawMinimap()
@@ -2633,6 +3165,13 @@ export class BattleRoyaleGame {
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
 
     getAudio().setDuck(false)
+    // v10: cortar el chat ambiente y vaciar el canal
+    this.chatStop?.()
+    this.chatStop = null
+    useChat.getState().reset()
+    useChat.getState().setMode('pvp')
+    this.clouds.length = 0
+    this.sunSprite = null
     // v9.1: no seguir escuchando llegadas de armas GLB
     this.weaponGLBUnsub?.()
     this.weaponGLBUnsub = null

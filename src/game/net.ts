@@ -12,7 +12,7 @@
 import { Peer, type DataConnection } from 'peerjs'
 import type { Game } from './engine'
 import { useGame } from './store'
-import { liveTally, recordMatch } from './auth'
+import { liveTally, recordMatch, activeSquadMembers, useSquad } from './auth'
 import {
   GAME, generateRoomCode, peerIdForRoom,
   type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId, type Team,
@@ -191,6 +191,14 @@ export class NetClient {
     const bots = gameMode === 'historia' ? 5 : Math.floor(GAME.BOT_COUNT / 2)
     this.startSimWorker(difficulty, bots, gameMode)
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
+    // v10: el GRUPO activo de amigos entra contigo en CUALQUIER modo
+    // (los miembros juegan con IA y aparecen como operadores humanos).
+    // Battle Royale es SIEMPRE solos — nunca se llama desde ahí.
+    const squad = activeSquadMembers()
+    if (squad.length > 0) {
+      this.sendToSim({ e: 'joinSquad', d: { id: HOST_ID, team: 'A', members: squad } })
+      useGame.getState().addAnnouncement(`SQUAD "${useSquad.getState().name}" DEPLOYED — ${squad.length} operator${squad.length > 1 ? 's' : ''} joined your side`, 'team')
+    }
     useGame.getState().setHud({ netStatus: 'connected' })
   }
 

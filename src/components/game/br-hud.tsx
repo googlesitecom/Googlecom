@@ -7,9 +7,10 @@
 // from the tiny br-store (the heavy BR module feeds it).
 // ============================================================
 import { useEffect, useState } from 'react'
-import { useBr } from '@/game/br-store'
+import { useBr, BR_RARITIES } from '@/game/br-store'
 import { getBrGame } from '@/game/br-instance'
 import { Button } from '@/components/ui/button'
+import { ChatBox } from './chat-box'
 import {
   Users, Skull, Wind, Rocket, Crosshair, Plane, Heart, LogOut, Crown,
   Timer, Gauge, Loader2, Eye, Car,
@@ -183,6 +184,7 @@ function LiveHud() {
   const alive = useBr(s => s.alive)
   const kills = useBr(s => s.kills)
   const weaponLabel = useBr(s => s.weaponLabel)
+  const weaponRarity = useBr(s => s.weaponRarity)
   const mag = useBr(s => s.mag)
   const reserve = useBr(s => s.reserve)
   const stormLabel = useBr(s => s.stormLabel)
@@ -192,6 +194,8 @@ function LiveHud() {
   const inStorm = useBr(s => s.inStorm)
   const inVehicle = useBr(s => s.inVehicle)
   const showCrosshair = phase === 'live' && !inVehicle
+  // v10: rareza estilo Fortnite del arma equipada
+  const rar = weaponRarity >= 0 && weaponRarity < BR_RARITIES.length ? BR_RARITIES[weaponRarity] : null
 
   return (
     <>
@@ -217,6 +221,9 @@ function LiveHud() {
           </div>
         </div>
       </div>
+
+      {/* v10: chat de partida ([T]) — mismo canal en BR */}
+      {phase === 'live' && <ChatBox />}
 
       {/* killfeed top right */}
       <div className="absolute top-4 right-4 space-y-1.5 w-[min(300px,44vw)]">
@@ -272,9 +279,20 @@ function LiveHud() {
 
       {/* bottom right: weapon */}
       <div className="absolute bottom-6 right-6">
-        <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-md px-5 py-3 text-right shadow-xl tac-corner">
+        <div
+          className="bg-stone-950/85 backdrop-blur-sm border rounded-md px-5 py-3 text-right shadow-xl tac-corner"
+          style={rar ? { borderColor: `${rar.css}99` } : undefined}
+        >
           <p className="font-tac-md text-stone-400 text-[10px] mb-1">WEAPON</p>
-          <p className={`font-tac text-base ${weaponLabel.includes('UNARMED') ? 'text-red-300 animate-pulse' : 'text-amber-200'}`}>
+          {rar && (
+            <p className="font-tac-md text-[10px] tracking-[0.18em] mb-0.5" style={{ color: rar.css }}>
+              {rar.label} · {Math.round(rar.dmgMult * 100)}% DMG
+            </p>
+          )}
+          <p
+            className={`font-tac text-base ${weaponLabel.includes('UNARMED') ? 'text-red-300 animate-pulse' : 'text-amber-200'}`}
+            style={rar ? { color: rar.css } : undefined}
+          >
             {weaponLabel}
           </p>
           {mag !== 0 || reserve !== 0 ? (

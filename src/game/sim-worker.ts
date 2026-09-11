@@ -57,6 +57,18 @@ self.onmessage = (ev: MessageEvent) => {
       post('welcome', sim.getWelcomeData(j.id), j.id)
       break
     }
+    case 'joinSquad': {
+      // v10: miembro del grupo de amigos del jugador (IA con nombre real)
+      const j = d as JoinCmd & { members?: string[] }
+      if (!sim) return
+      const members = (j.members ?? []) as string[]
+      members.forEach((m, i) => {
+        const sid = `squad-${j.id}-${i}`
+        const p = sim!.getPlayer(sid)
+        if (!p) sim!.joinSquad(sid, m, j.team ?? 'A')
+      })
+      break
+    }
     case 'input': {
       const c = d as InputCmd
       const p = sim?.getPlayer(c.id)

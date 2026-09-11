@@ -13,6 +13,7 @@ import { WEAPONS, TEAM_INFO, keyLabel, type Team } from '@/game/shared'
 import { getGame } from '@/game/game-instance'
 import { Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target, Crosshair, ShieldCheck, HardHat, Flame, Syringe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { ChatBox } from './chat-box'
 
 export function Hud() {
   const hp = useGame(s => s.hp)
@@ -62,6 +63,9 @@ export function Hud() {
 
   return (
     <div className="fixed inset-0 z-30 pointer-events-none" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
+      {/* v10: chat de partida ([T]) */}
+      <ChatBox />
+
       {/* ===== Top bar: mode, objective and score ===== */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3">
         {gameMode === 'escaramuza' && (

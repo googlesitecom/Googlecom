@@ -89,6 +89,9 @@ interface SimPlayer {
   flares: number           // bengalas localizadoras disponibles
   stims: number            // estímulos de adrenalina disponibles
   stimUntil: number        // marca de tiempo (ms) hasta la que corre el estímulo
+  /** v10: miembro de TU GRUPO de amigos — juega con IA pero se muestra
+   *  como operador humano (sin etiqueta BOT) con su nombre real */
+  squad?: boolean
   ai?: BotAI
 }
 
@@ -340,6 +343,19 @@ export class GameSim {
     if (!name) name = `BOT-${100 + this.botSeq}`
     const p = this.createPlayer(id, name, team, true)
     this.players.set(id, p)
+    return p
+  }
+
+  /** v10: un miembro de tu grupo de amigos entra a la partida — cuerpo
+   *  con IA (pelea de verdad) pero presentado como operador humano con
+   *  su nombre. Cualquier modo de juego; en BR nunca se llama (SOLOS). */
+  joinSquad(id: string, name: string, team: Team): SimPlayer {
+    const clean = String(name).slice(0, 16).trim() || 'Operator'
+    const p = this.createPlayer(id, clean, team, true)
+    p.squad = true
+    this.players.set(id, p)
+    this.emit('playerJoined', { id, name: clean, team })
+    this.announce(`${clean} joined ${team === 'A' ? 'AMBER' : 'GREEN'} — your squad`, 'info', team)
     return p
   }
 
@@ -1811,7 +1827,7 @@ export class GameSim {
 
   private netPlayer(p: SimPlayer): NetPlayerState {
     return {
-      id: p.id, name: p.name, team: p.team, bot: p.bot,
+      id: p.id, name: p.name, team: p.team, bot: p.bot && !p.squad,
       x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100, z: Math.round(p.z * 100) / 100,
       yaw: Math.round(p.yaw * 1000) / 1000,
       pitch: Math.round(p.pitch * 1000) / 1000,
