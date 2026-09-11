@@ -339,7 +339,7 @@ export class GameSim {
     this.players.set(id, p)
     if (announce) {
       this.emit('playerJoined', { id, name: p.name, team: t })
-      this.emit('announce', { text: `${p.name} se unió al ${t === 'A' ? 'ÁMBAR' : 'VERDE'}`, kind: 'info' })
+      this.emit('announce', { text: `${p.name} joined ${t === 'A' ? 'AMBER' : 'GREEN'}`, kind: 'info' })
     }
     return p
   }
@@ -349,7 +349,7 @@ export class GameSim {
     if (!p) return
     this.players.delete(id)
     this.emit('playerLeft', { id, name: p.name })
-    this.emit('announce', { text: `${p.name} abandonó`, kind: 'info' })
+    this.emit('announce', { text: `${p.name} left the match`, kind: 'info' })
   }
 
   private createPlayer(id: string, name: string, team: Team, bot: boolean): SimPlayer {
@@ -529,10 +529,10 @@ export class GameSim {
 
   handleBuy(p: SimPlayer, itemId: string): void {
     const item = BUY_ITEMS.find(i => i.id === itemId)
-    if (!item) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Artículo desconocido' }, p.id)
-    if (p.dead) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Estás eliminado' }, p.id)
-    if (!this.inBuyZone(p)) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Compra solo en tu base' }, p.id)
-    if (p.money < item.price) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Fondos insuficientes' }, p.id)
+    if (!item) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Unknown item' }, p.id)
+    if (p.dead) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'You are dead' }, p.id)
+    if (!this.inBuyZone(p)) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Buy only inside your base' }, p.id)
+    if (p.money < item.price) return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Not enough funds' }, p.id)
 
     if (item.weapon) {
       const w = WEAPONS[item.weapon]
@@ -552,13 +552,13 @@ export class GameSim {
       p.shield = 100
     } else if (item.equip === 'frag') {
       if (p.frags >= 2) {
-        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Máximo 2 granadas' }, p.id)
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Max 2 grenades' }, p.id)
       }
       p.money -= item.price
       p.frags++
     } else if (item.equip === 'smoke') {
       if (p.smokes >= 2) {
-        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Máximo 2 granadas de humo' }, p.id)
+        return void this.emit('buyResult', { ok: false, itemId, money: p.money, error: 'Max 2 smoke grenades' }, p.id)
       }
       p.money -= item.price
       p.smokes++
@@ -571,13 +571,13 @@ export class GameSim {
   handleEquip(p: SimPlayer, weapon: WeaponId, slot: number): void {
     const s = slot === 1 ? 1 : 0
     if (!WEAPONS[weapon] || weapon === 'knife') {
-      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Artículo desconocido' }, p.id)
+      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Unknown item' }, p.id)
     }
     if (!p.armory.includes(weapon)) {
-      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Aún no tienes esa arma' }, p.id)
+      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'You do not own that weapon yet' }, p.id)
     }
     if (p.dead) {
-      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'Estás eliminado' }, p.id)
+      return void this.emit('buyResult', { ok: false, itemId: `equip:${String(weapon)}`, money: p.money, error: 'You are dead' }, p.id)
     }
     // quitarla del otro hueco si la llevabas puesta y colocarla en el elegido
     if (p.slots[0] === weapon) p.slots[0] = null
@@ -600,7 +600,7 @@ export class GameSim {
         // sin id explícito: el primer bot del bando B
         for (const q of this.players.values()) {
           if (q.bot && q.team === 'B') {
-            q.name = 'Cnel. Vega'; q.hp = 400; q.shield = 150; q.weapon = 'cr4'
+            q.name = 'Col. Vega'; q.hp = 400; q.shield = 150; q.weapon = 'cr4'
             if (!q.armory.includes('cr4')) q.armory.push('cr4')
             q.slots[0] = 'cr4'
             this.recomputeOwned(q)
@@ -608,7 +608,7 @@ export class GameSim {
           }
         }
       } else {
-        p.name = 'Cnel. Vega'
+        p.name = 'Col. Vega'
         p.hp = 400
         p.shield = 150
         p.weapon = 'cr4'
@@ -664,8 +664,8 @@ export class GameSim {
   // ------------------------------------------------------------
   // Daño y muerte
   // ------------------------------------------------------------
-  private announce(text: string, kind: 'kill' | 'round' | 'info' = 'info', team?: Team): void {
-    this.emit('announce', { text, kind, team })
+  private announce(text: string, kind: 'kill' | 'round' | 'info' | 'multi' = 'info', team?: Team, to?: string): void {
+    this.emit('announce', { text, kind, team }, to)
   }
 
   private applyDamage(attacker: SimPlayer, victim: SimPlayer, dmg: number, part: BodyPart, weapon: WeaponId, dirHint: [number, number]): void {
@@ -715,7 +715,7 @@ export class GameSim {
         f.z = victim.z
         f.returnAt = now() + GAME.FLAG_RETURN_TIME * 1000
         this.emit('flagEvent', { flag: victim.flag, type: 'drop', x: f.x, z: f.z })
-        this.announce(`¡LA BANDERA ${victim.flag === 'A' ? 'ÁMBAR' : 'VERDE'} HA CAÍDO!`, 'round')
+        this.announce(`THE ${victim.flag === 'A' ? 'AMBER' : 'GREEN'} FLAG HAS DROPPED!`, 'round')
       }
       victim.flag = null
     }
@@ -752,16 +752,18 @@ export class GameSim {
     }
     this.emit('kill', ev)
 
-    const msgs: string[] = []
-    if (killer.multi === 2) msgs.push('¡DOBLE MUERTE!')
-    else if (killer.multi === 3) msgs.push('¡TRIPLE MUERTE!')
-    else if (killer.multi === 4) msgs.push('¡FURIA LETAL!')
-    else if (killer.multi >= 5) msgs.push('¡MASACRE!')
-    if (killer.streak === 5) msgs.push(`${killer.name}: RACHA DE 5`)
-    else if (killer.streak === 8) msgs.push(`${killer.name}: RACHA DE 8`)
-    else if (killer.streak === 10) msgs.push(`${killer.name}: ¡IMPARABLE!`)
-    if (killer.streak === 12) msgs.push(`${killer.name}: ¡DIOS DE LA GUERRA!`)
-    for (const m of msgs) this.announce(m, 'kill', killer.team)
+    // v7: multi-kill and streak banners are PRIVATE — only the player
+    // who earns them sees them (no more bot "double kill" spam)
+    const msgs: { text: string; multi: boolean }[] = []
+    if (killer.multi === 2) msgs.push({ text: 'DOUBLE KILL', multi: true })
+    else if (killer.multi === 3) msgs.push({ text: 'TRIPLE KILL', multi: true })
+    else if (killer.multi === 4) msgs.push({ text: 'FURY KILL', multi: true })
+    else if (killer.multi >= 5) msgs.push({ text: 'MASSACRE', multi: true })
+    if (killer.streak === 5) msgs.push({ text: 'KILLSTREAK x5', multi: false })
+    else if (killer.streak === 8) msgs.push({ text: 'KILLSTREAK x8', multi: false })
+    else if (killer.streak === 10) msgs.push({ text: 'UNSTOPPABLE', multi: false })
+    else if (killer.streak === 12) msgs.push({ text: 'WAR GOD', multi: false })
+    for (const m of msgs) this.announce(m.text, m.multi ? 'multi' : 'kill', killer.team, killer.id)
 
     this.emit('deathEvent', { killer: killer.id, killerName: killer.name, weapon, respawnIn: GAME.RESPAWN_TIME }, victim.id)
 
@@ -792,7 +794,7 @@ export class GameSim {
     this.round.phase = 'ended'
     this.round.intermissionEndsAt = now() + 6000
     if (winner === 'A') this.round.roundWinsA++; else this.round.roundWinsB++
-    this.announce(`RONDA ${this.round.roundNumber} PARA ${winner === 'A' ? 'ÁMBAR' : 'VERDE'}`, 'round')
+    this.announce(`ROUND ${this.round.roundNumber} GOES TO ${winner === 'A' ? 'AMBER' : 'GREEN'}`, 'round')
     this.emit('roundEnd', { winner, scoresA: this.round.scoresA, scoresB: this.round.scoresB, roundWinsA: this.round.roundWinsA, roundWinsB: this.round.roundWinsB })
 
     for (const p of this.players.values()) {
@@ -808,7 +810,7 @@ export class GameSim {
     this.round.scoresA = 0
     this.round.scoresB = 0
     this.resetObjectives()
-    this.announce(`RONDA ${this.round.roundNumber} — ¡EN COMBATE!`, 'round')
+    this.announce(`ROUND ${this.round.roundNumber} — FIGHT!`, 'round')
     for (const p of this.players.values()) {
       p.respawnAt = now() + rand(200, 900)
       p.multi = 0
@@ -829,7 +831,7 @@ export class GameSim {
   private endMatch(winner: Team): void {
     this.round.phase = 'matchend'
     this.round.intermissionEndsAt = now() + 12000
-    this.announce(`¡VICTORIA FINAL PARA ${winner === 'A' ? 'ESCUADRÓN ÁMBAR' : 'ESCUADRÓN VERDE'}!`, 'round')
+    this.announce(`FINAL VICTORY FOR ${winner === 'A' ? 'AMBER SQUAD' : 'GREEN SQUAD'}!`, 'round')
     this.emit('matchEnd', { winner, roundWinsA: this.round.roundWinsA, roundWinsB: this.round.roundWinsB })
   }
 
@@ -854,7 +856,7 @@ export class GameSim {
       }
       this.emit('econ', { money: p.money }, p.id)
     }
-    this.announce('NUEVA PARTIDA — RONDA 1', 'round')
+    this.announce('NEW MATCH — ROUND 1', 'round')
     this.emit('roundStart', { roundNumber: 1 })
   }
 
@@ -881,7 +883,7 @@ export class GameSim {
             f.carrier = p.id
             p.flag = f.team
             this.emit('flagEvent', { flag: key, type: 'carried', carrier: p.id, x: p.x, z: p.z })
-            this.announce(`¡${p.name} ROBÓ LA BANDERA ${f.team === 'A' ? 'ÁMBAR' : 'VERDE'}!`, 'round', enemyTeam)
+            this.announce(`${p.name} STOLE THE ${f.team === 'A' ? 'AMBER' : 'GREEN'} FLAG!`, 'round', enemyTeam)
             break
           }
         }
@@ -912,7 +914,7 @@ export class GameSim {
             f.x = (f.team === 'A' ? FLAG_A : FLAG_B)[0]
             f.z = (f.team === 'A' ? FLAG_A : FLAG_B)[1]
             this.emit('flagEvent', { flag: key, type: 'home' })
-            this.announce(`¡${c.name} CAPTURA LA BANDERA! (${this.round.scoresA}–${this.round.scoresB})`, 'round', c.team)
+            this.announce(`${c.name} CAPTURED THE FLAG! (${this.round.scoresA}–${this.round.scoresB})`, 'round', c.team)
             this.emit('captureFX', { x: c.x, z: c.z, team: c.team })
             this.checkRoundEnd()
           }
@@ -928,7 +930,7 @@ export class GameSim {
             f.carrier = p.id
             p.flag = f.team
             this.emit('flagEvent', { flag: key, type: 'carried', carrier: p.id, x: p.x, z: p.z })
-            this.announce(`¡${p.name} RECOGIÓ LA BANDERA!`, 'round', enemyTeam)
+            this.announce(`${p.name} PICKED UP THE FLAG!`, 'round', enemyTeam)
           } else {
             // el dueño la devuelve a casa
             f.status = 'home'
@@ -967,7 +969,7 @@ export class GameSim {
         z.prog += dt / GAME.DOM_CAP_TIME
         if (z.prog >= 1) {
           z.owner = 'A'; z.prog = 0; z.by = null
-          this.announce(`ZONA ${z.name} CAPTURADA POR ÁMBAR`, 'round', 'A')
+          this.announce(`ZONE ${z.name} CAPTURED BY AMBER`, 'round', 'A')
           this.emit('zoneEvent', { zone: z.id, owner: 'A' })
         }
       } else if (b > 0 && a === 0 && z.owner !== 'B') {
@@ -975,7 +977,7 @@ export class GameSim {
         z.prog += dt / GAME.DOM_CAP_TIME
         if (z.prog >= 1) {
           z.owner = 'B'; z.prog = 0; z.by = null
-          this.announce(`ZONA ${z.name} CAPTURADA POR VERDE`, 'round', 'B')
+          this.announce(`ZONE ${z.name} CAPTURED BY GREEN`, 'round', 'B')
           this.emit('zoneEvent', { zone: z.id, owner: 'B' })
         }
       } else if (a === 0 && b === 0) {

@@ -25,14 +25,14 @@ export function GameMount() {
     game.audio.setVolume(useGame.getState().settings.volume)
     game.init(canvas3dRef.current!, overlayRef.current!, minimapRef.current!)
     const st = useGame.getState()
-    game.net.connect(playerName || 'Operador', {
+    game.net.connect(playerName || 'Operator', {
       mode: st.mode,
       roomCode: st.roomCode,
       fillBots: st.fillBots,
       difficulty: st.botDifficulty,
       gameMode: st.gameMode,
-      roomKind: st.roomKind,          // v6.2: 1v1 clásico o 2v2 con lobby
-      fillEmpty: st.fillEmptyWithBots, // v6.2: huecos vacíos con bots
+      roomKind: st.roomKind,          // classic 1v1 or 2v2 with lobby
+      fillEmpty: st.fillEmptyWithBots,// fill empty slots with bots
     })
     if (process.env.NODE_ENV === 'development') {
       ;(window as unknown as Record<string, unknown>).__game = game
@@ -45,8 +45,8 @@ export function GameMount() {
     }
   }, [])
 
-  // v6.4: la calidad se aplica EN VIVO — cambiarla en AJUSTES (incluso
-  // desde el menú de pausa) reconfigura el render al instante
+  // quality applies LIVE — changing it in SETTINGS (even from the
+  // pause menu) reconfigures the renderer on the spot
   useEffect(() => {
     getGame()?.applyQuality(quality)
   }, [quality])
@@ -61,19 +61,26 @@ export function GameMount() {
         className="absolute inset-0 w-full h-full pointer-events-none"
         style={{ width: '100%', height: '100%' }}
       />
-      {/* viñeta cinematográfica (v5): coste cero en el GPU */}
+      {/* cinematic vignette (cheap: no GPU cost) */}
       <div
         className="absolute inset-0 pointer-events-none z-10"
         style={{
           background: 'radial-gradient(ellipse 82% 74% at 50% 46%, transparent 58%, rgba(0,0,0,0.42) 100%)',
         }}
       />
-      {/* minimapa (dibujado por el motor) */}
+      {/* tactical minimap (drawn by the engine) — v7: circular frame */}
       <canvas
         ref={minimapRef}
         width={240}
         height={240}
-        className="absolute top-4 left-4 rounded-lg border-2 border-stone-600/70 shadow-2xl z-20 pointer-events-none"
+        className="absolute top-4 left-4 z-20 pointer-events-none"
+        style={{
+          width: '216px',
+          height: '216px',
+          borderRadius: '50%',
+          border: '1px solid rgba(160,168,158,0.45)',
+          boxShadow: '0 10px 32px rgba(0,0,0,0.55), inset 0 0 24px rgba(0,0,0,0.45)',
+        }}
       />
       {showClickToPlay && <ClickToPlay />}
     </div>
@@ -89,9 +96,9 @@ function ClickToPlay() {
       onClick={() => getGame()?.requestLock()}
     >
       <div className="text-center space-y-3">
-        <p className="text-3xl font-black tracking-widest text-amber-400">EN PAUSA</p>
-        <p className="text-stone-300 text-lg">Haz clic para volver al combate</p>
-        <p className="text-stone-500 text-sm">ESC para pausar · Tab marcador · B comprar</p>
+        <p className="font-tac text-3xl tracking-widest text-amber-400 uppercase">Paused</p>
+        <p className="text-stone-300 text-lg">Click to get back into the fight</p>
+        <p className="text-stone-500 text-sm font-tac-md">ESC pause · Tab scoreboard · B shop</p>
       </div>
     </div>
   )

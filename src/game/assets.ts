@@ -111,14 +111,17 @@ export function getTreeTemplate(): TreeTemplate | null {
 let preloadStarted = false
 let preloadDone = false
 const weaponListeners: Array<() => void> = []
+/** archivos de arma cuya carga diferida ya está en marcha */
+const pendingFiles = new Set<string>()
 
 export function areWeaponGLBsReady(): boolean {
   return weaponCache.size > 0
 }
 
-/** Registra un callback para cuando las armas GLB estén listas (refresco de modelos) */
+/** Registra un callback persistente: se dispara cada vez que llega un
+ *  nuevo GLB de arma (la carga es PEREZOSA y por arma desde v7) */
 export function onWeaponGLBsReady(cb: () => void): () => void {
-  if (preloadDone && weaponCache.size > 0) {
+  if (weaponCache.size > 0) {
     cb()
     return () => undefined
   }
@@ -129,16 +132,58 @@ export function onWeaponGLBsReady(cb: () => void): () => void {
   }
 }
 
+/** avisa a los suscriptores de que hay un GLB nuevo disponible */
+function notifyWeaponReady(): void {
+  for (const cb of [...weaponListeners]) {
+    try { cb() } catch { /* listener propio */ }
+  }
+}
+
 /**
- * Precarga los assets del usuario. No lanza si ya está en curso.
- * `opts.trees = false` omite Arbol.glb (el mapa de la misión no tiene
- * árboles → carga perezosa según el modo de juego).
+ * v7 — CARGA PEREZOSA DEL ARMA QUE SE USA: el GLB de un arma se descarga
+ * solo cuando esa arma aparece (en mano o en un remoto). Antes se bajaban
+ * los 4 GLB (~18 MB) al entrar; ahora el modo que juegas carga solo lo
+ * que necesita y cuando lo necesita (fallback procedural mientras llega).
+ * `ensureWeaponGLB('ar47')` inicia la descarga si falta y avisará a los
+ * suscriptores (onWeaponGLBsReady) al integrarla.
+ */
+export function ensureWeaponGLB(id: WeaponId): void {
+  const spec = WEAPON_FILES[id]
+  if (!spec) return
+  if (weaponCache.has(spec.file) || pendingFiles.has(spec.file)) return
+  pendingFiles.add(spec.file)
+  const loader = new GLTFLoader()
+  loader.load(
+    `${ASSET_BASE}/models/${spec.file}`,
+    gltf => {
+      try {
+        const entry = buildWeaponCacheEntry(gltf.scene, spec.cal)
+        if (entry && !weaponCache.has(spec.file)) {
+          weaponCache.set(spec.file, entry)
+          notifyWeaponReady()
+        }
+      } catch (e) {
+        console.warn('EMERGENCY STRIKE: no se pudo preparar', spec.file, e)
+      }
+    },
+    undefined,
+    () => { /* sin archivo → fallback procedural */ },
+  )
+}
+
+/**
+ * Precarga los assets base del usuario. No lanza si ya está en curso.
+ * v7: texturas SIEMPRE · árboles solo si el mapa los usa (ciudad) ·
+ * armas GLB YA NO se precargan: carga perezosa por arma
+ * (ensureWeaponGLB) — el modo que juegas baja solo lo que usa.
+ * `opts.weapons = true` restaura el comportamiento clásico.
  * Resuelve siempre (los fallos dejan fallbacks procedurales).
  */
-export function preloadAssets(opts?: { trees?: boolean }): Promise<void> {
+export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean }): Promise<void> {
   if (preloadStarted) return Promise.resolve()
   preloadStarted = true
   const loadTrees = opts?.trees !== false
+  const loadWeapons = opts?.weapons === true
 
   const loader = new GLTFLoader()
   const texLoader = new THREE.TextureLoader()
@@ -168,28 +213,30 @@ export function preloadAssets(opts?: { trees?: boolean }): Promise<void> {
     loadTex(`${ASSET_BASE}/textures/Cielo.jpg`, null).then(t => { repoTextures.cielo = t }),
   )
 
-  // ---- armas (una entrada por archivo distinto) ----
-  const files = [...new Set(Object.values(WEAPON_FILES).map(w => w.file))]
-  for (const file of files) {
-    tasks.push(
-      new Promise<void>(resolve => {
-        loader.load(
-          `${ASSET_BASE}/models/${file}`,
-          gltf => {
-            try {
-              const specs = Object.values(WEAPON_FILES).filter(w => w.file === file)
-              const entry = buildWeaponCacheEntry(gltf.scene, specs[0].cal)
-              if (entry) weaponCache.set(file, entry)
-            } catch (e) {
-              console.warn('EMERGENCY STRIKE: no se pudo preparar', file, e)
-            }
-            resolve()
-          },
-          undefined,
-          () => resolve(),   // sin archivo → fallback procedural
-        )
-      }),
-    )
+  // ---- armas: solo con opts.weapons (v7: por defecto perezosas) ----
+  if (loadWeapons) {
+    const files = [...new Set(Object.values(WEAPON_FILES).map(w => w.file))]
+    for (const file of files) {
+      tasks.push(
+        new Promise<void>(resolve => {
+          loader.load(
+            `${ASSET_BASE}/models/${file}`,
+            gltf => {
+              try {
+                const specs = Object.values(WEAPON_FILES).filter(w => w.file === file)
+                const entry = buildWeaponCacheEntry(gltf.scene, specs[0].cal)
+                if (entry && !weaponCache.has(file)) weaponCache.set(file, entry)
+              } catch (e) {
+                console.warn('EMERGENCY STRIKE: no se pudo preparar', file, e)
+              }
+              resolve()
+            },
+            undefined,
+            () => resolve(),   // sin archivo → fallback procedural
+          )
+        }),
+      )
+    }
   }
 
   // ---- árbol (solo si el mapa lo usa; la misión no tiene) ----
@@ -215,11 +262,7 @@ export function preloadAssets(opts?: { trees?: boolean }): Promise<void> {
 
   return Promise.allSettled(tasks).then(() => {
     preloadDone = true
-    if (weaponCache.size > 0) {
-      for (const cb of weaponListeners.splice(0)) {
-        try { cb() } catch { /* listener propio */ }
-      }
-    }
+    if (weaponCache.size > 0) notifyWeaponReady()
   })
 }
 
@@ -333,6 +376,7 @@ export function buildGLBWeapon(id: WeaponId): { group: THREE.Group; muzzle: THRE
   if (!spec) return null
   const entry = weaponCache.get(spec.file)
   if (!entry) return null
+  // v7: asegurar que las variantes del mismo archivo ya están cubiertas
 
   const group = new THREE.Group()
   // escala: del tamaño bruto al objetivo en metros

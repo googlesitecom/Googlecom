@@ -156,7 +156,7 @@ export class NetClient {
   private connectSolo(name: string, difficulty: BotDifficulty, gameMode: GameMode): void {
     this.id = HOST_ID
     // modo historia: 7 enemigos del bando B en el mapa instalación
-    const bots = gameMode === 'historia' ? 7 : Math.floor(GAME.BOT_COUNT / 2)
+    const bots = gameMode === 'historia' ? 5 : Math.floor(GAME.BOT_COUNT / 2)
     this.startSimWorker(difficulty, bots, gameMode)
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
     useGame.getState().setHud({ netStatus: 'connected' })
@@ -199,7 +199,7 @@ export class NetClient {
     peer.on('open', () => {
       if (this.disposed) return
       useGame.getState().addAnnouncement(
-        kind === '2v2' ? `SALA 2v2 ${code} CREADA — comparte el código (hasta 3 operadores)` : `SALA ${code} CREADA — comparte el código`,
+        kind === '2v2' ? `2v2 ROOM ${code} CREATED — share the code (up to 3 more operators)` : `ROOM ${code} CREATED — share the code`,
         'info',
       )
     })
@@ -208,7 +208,7 @@ export class NetClient {
     // siga admitiendo invitados (v5: fiabilidad del multijugador)
     peer.on('disconnected', () => {
       if (this.disposed || !this.peer) return
-      useGame.getState().addAnnouncement('Reconectando la sala con el servidor…', 'info')
+      useGame.getState().addAnnouncement('Reconnecting room to signaling server…', 'info')
       try { this.peer.reconnect() } catch { /* el peer se recrea abajo si falla */ }
     })
 
@@ -259,7 +259,7 @@ export class NetClient {
           this.guestOutbox.length = 0
           this.sendToSim({ e: 'leave', d: { id: GUEST_ID } })
           useGame.getState().setHud({ netStatus: 'waiting' })
-          useGame.getState().addAnnouncement('El rival abandonó la sala', 'info')
+          useGame.getState().addAnnouncement('The rival left the room', 'info')
         }
       })
       conn.on('error', () => { /* silencioso */ })
@@ -276,12 +276,12 @@ export class NetClient {
         useGame.getState().setHud({ roomCode: newCode })
         this.connectHost(name, newCode, fill, difficulty, attempt + 1, gameMode, kind, fillEmpty)
       } else if (type === 'unavailable-id') {
-        useGame.getState().addAnnouncement('No se pudo crear la sala, inténtalo de nuevo', 'info')
+        useGame.getState().addAnnouncement('Could not create the room, try again', 'info')
       } else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
         // v5: el servidor de salas falló → reintentar hasta 3 veces antes
         // de rendirse (el juego local con bots sigue funcionando)
         if (attempt < 3) {
-          useGame.getState().addAnnouncement(`Servidor de salas ocupado, reintentando (${attempt + 1}/3)…`, 'info')
+          useGame.getState().addAnnouncement(`Room server busy, retrying (${attempt + 1}/3)…`, 'info')
           peer.destroy()
           this.peer = null
           setTimeout(() => {
@@ -289,11 +289,11 @@ export class NetClient {
             this.connectHost(name, code, fill, difficulty, attempt + 1, gameMode, kind, fillEmpty)
           }, 2500)
         } else {
-          useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS) — juega contra bots', 'info')
+          useGame.getState().addAnnouncement('Room server unavailable (PeerJS) — playing against bots', 'info')
           useGame.getState().setHud({ netStatus: 'connected' })
         }
       } else {
-        useGame.getState().addAnnouncement('Servidor de salas no disponible (PeerJS)', 'info')
+        useGame.getState().addAnnouncement('Room server unavailable (PeerJS)', 'info')
         useGame.getState().setHud({ netStatus: 'connected' }) // el juego local sigue funcionando
       }
     })
@@ -335,7 +335,7 @@ export class NetClient {
         // confirmación inmediata al invitado (cancela su tiempo de espera)
         this.sendToPeer(conn, { e: 'lobbyAck', d: { id: slot.id, kind: '2v2', players: this.lobbyPlayers() } })
         this.pushLobby()
-        useGame.getState().addAnnouncement(`${slot.name} entró en la sala (equipo ${slot.team === 'A' ? 'ÁMBAR' : 'VERDE'})`, 'info')
+        useGame.getState().addAnnouncement(`${slot.name} joined the room (team ${slot.team === 'A' ? 'AMBER' : 'GREEN'})`, 'info')
         // sala llena (4/4) → inicio automático con cuenta atrás breve
         if (this.duoSlots.every(s => s.conn && s.joined) && !this.worker) {
           useGame.getState().addAnnouncement('SALA COMPLETA — la partida 2v2 inicia…', 'info')
@@ -372,7 +372,7 @@ export class NetClient {
         // durante la partida: baja + bot de reemplazo (2v2 siempre equilibrado)
         this.sendToSim({ e: 'leave', d: { id: slot.id } })
         if (this.fillEmpty) this.sendToSim({ e: 'fillBot', d: { team: slot.team } })
-        useGame.getState().addAnnouncement('Un operador abandonó — un bot cubre su hueco', 'info')
+        useGame.getState().addAnnouncement('An operator left — a bot fills their slot', 'info')
       }
     })
     conn.on('error', () => { /* silencioso: close() lo gestiona */ })
@@ -431,7 +431,7 @@ export class NetClient {
     for (const s of this.duoSlots) {
       if (s.conn) this.sendToSlot(s, { e: 'lobbyStart', d: { players } })
     }
-    useGame.getState().addAnnouncement(`PARTIDA 2v2 INICIADA — ÁMBAR ${humansA + botsA} · VERDE ${humansB + botsB}`, 'info')
+    useGame.getState().addAnnouncement(`2v2 MATCH STARTED — AMBER ${humansA + botsA} · GREEN ${humansB + botsB}`, 'info')
   }
 
   private guestJoined = false
@@ -456,7 +456,7 @@ export class NetClient {
     this.mode = 'guest'
     const clean = code.trim().toUpperCase()
     if (clean.length < 4 || clean.length > 8) {
-      this.fail('Código de sala inválido')
+      this.fail('Invalid room code')
       return
     }
     useGame.getState().setHud({ roomCode: clean })
@@ -468,7 +468,7 @@ export class NetClient {
     // tiempo límite del intento (12 s): cubre la señalización + ICE
     const attemptTimer = setTimeout(() => {
       if (useGame.getState().netStatus === 'connected') return
-      this.retryGuest(name, clean, 'El enlace no llegó a abrirse')
+      this.retryGuest(name, clean, 'The link failed to open')
     }, 12000)
     this.welcomeTimeout = attemptTimer
 
@@ -524,7 +524,7 @@ export class NetClient {
           return
         }
         if (msg.e === 'roomFull') {
-          this.fail('La sala está completa (4/4). Pide otro código.')
+          this.fail('The room is full (4/4). Ask for a new code.')
           return
         }
         if (msg.e === 'pong') {
@@ -538,7 +538,7 @@ export class NetClient {
       conn.on('close', () => {
         if (this.disposed) return
         useGame.getState().setConnected(false)
-        useGame.getState().setHud({ netStatus: 'error', netError: 'Se perdió la conexión con el anfitrión' })
+        useGame.getState().setHud({ netStatus: 'error', netError: 'Lost connection to the host' })
       })
       conn.on('error', () => retryOnce('Fallo del canal de datos'))
     })
@@ -546,13 +546,13 @@ export class NetClient {
     peer.on('error', (err: unknown) => {
       if (this.disposed) return
       const type = (err as { type?: string })?.type
-      if (type === 'peer-unavailable') this.fail('Sala no encontrada. Revisa el código.')
+      if (type === 'peer-unavailable') this.fail('Room not found. Check the code.')
       else if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
         retryOnce('No se puede alcanzar el servidor de salas (PeerJS)')
       } else if (type === 'unavailable-id') {
         retryOnce('Id de sala ocupada, reintentando')
       } else {
-        retryOnce(`Error de conexión (${type ?? 'desconocido'})`)
+        retryOnce(`Connection error (${type ?? 'unknown'})`)
       }
     })
   }
@@ -564,7 +564,7 @@ export class NetClient {
     try { this.peer?.destroy() } catch { /* ok */ }
     this.peer = null
     if (this.guestAttempt >= 3) {
-      this.fail(`${motivo}. Revisa el código o tu conexión.`)
+      this.fail(`${motivo}. Check the code or your connection.`)
       return
     }
     useGame.getState().setHud({ netStatus: 'connecting' })
@@ -791,10 +791,11 @@ export class NetClient {
       }
       case 'announce': {
         const d = data as { text: string; kind: string; team?: 'A' | 'B' }
-        store.addAnnouncement(d.text, d.kind as 'kill' | 'round' | 'info')
-        if (d.kind === 'kill' || d.kind === 'round') game.audio.announceDing()
+        store.addAnnouncement(d.text, d.kind as 'kill' | 'round' | 'info' | 'multi')
+        if (d.kind === 'multi') game.audio.killConfirm()
+        else if (d.kind === 'round') game.audio.announceDing()
         if (d.kind === 'round') {
-          if (d.text.includes('RONDA') && d.text.includes('COMBATE')) game.audio.roundStart()
+          if (d.text.includes('ROUND') && d.text.includes('FIGHT')) game.audio.roundStart()
           else game.audio.roundEnd()
         }
         break
@@ -802,7 +803,7 @@ export class NetClient {
       case 'roundEnd': {
         const d = data as { winner: 'A' | 'B'; scoresA: number; scoresB: number }
         store.addAnnouncement(
-          `RONDA GANADA POR ${d.winner === 'A' ? 'ÁMBAR' : 'VERDE'} (${d.scoresA}–${d.scoresB})`,
+          `ROUND WON BY ${d.winner === 'A' ? 'AMBER' : 'GREEN'} (${d.scoresA}–${d.scoresB})`,
           'round', d.winner,
         )
         break
@@ -810,7 +811,7 @@ export class NetClient {
       case 'matchEnd': {
         const d = data as { winner: 'A' | 'B'; roundWinsA: number; roundWinsB: number }
         store.addAnnouncement(
-          `VICTORIA FINAL: ${d.winner === 'A' ? 'ÁMBAR' : 'VERDE'} ${d.roundWinsA}–${d.roundWinsB}`,
+          `FINAL VICTORY: ${d.winner === 'A' ? 'AMBER' : 'GREEN'} ${d.roundWinsA}–${d.roundWinsB}`,
           'round', d.winner,
         )
         break
@@ -848,12 +849,12 @@ export class NetClient {
       }
       case 'playerJoined': {
         const d = data as { name: string; team: 'A' | 'B' }
-        store.addAnnouncement(`${d.name} se unió al ${d.team === 'A' ? 'ÁMBAR' : 'VERDE'}`, 'info')
+        store.addAnnouncement(`${d.name} joined ${d.team === 'A' ? 'AMBER' : 'GREEN'}`, 'info')
         break
       }
       case 'playerLeft': {
         const d = data as { name: string }
-        store.addAnnouncement(`${d.name} abandonó`, 'info')
+        store.addAnnouncement(`${d.name} left the match`, 'info')
         break
       }
       case 'flagEvent': {

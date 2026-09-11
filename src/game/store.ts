@@ -32,7 +32,7 @@ export interface LobbyState {
 export interface Announcement {
   id: number
   text: string
-  kind: 'kill' | 'round' | 'info' | 'team'
+  kind: 'kill' | 'round' | 'info' | 'team' | 'multi'
   team?: Team
 }
 
@@ -234,9 +234,10 @@ export const useGame = create<GameState>((set) => ({
   addAnnouncement: (text, kind, team) => {
     const a: Announcement = { id: ++annId, text, kind, team }
     set((s) => ({ announcements: [...s.announcements.slice(-3), a] }))
+    // v7: multi-kill banners live a bit longer on screen
     setTimeout(() => {
       set((s) => ({ announcements: s.announcements.filter(x => x.id !== a.id) }))
-    }, kind === 'round' ? 4200 : 2800)
+    }, kind === 'round' ? 4200 : kind === 'multi' ? 3400 : 2800)
   },
   setSettings: (s) => {
     const next = { ...useGame.getState().settings, ...s }

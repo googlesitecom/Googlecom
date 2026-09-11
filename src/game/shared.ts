@@ -66,28 +66,28 @@ export interface ModeInfo {
 
 export const MODES: Record<GameMode, ModeInfo> = {
   escaramuza: {
-    id: 'escaramuza', name: 'COMBATE DE EQUIPOS', short: 'EQUIPOS',
-    desc: '4 vs 4 · la primera escuadra en llegar al objetivo gana la ronda',
+    id: 'escaramuza', name: 'TEAM DEATHMATCH', short: 'TEAMS',
+    desc: '4 vs 4 · first squad to hit the target wins the round',
     target: GAME.ROUND_KILLS, time: GAME.ROUND_TIME, teams: true,
   },
   ffa: {
-    id: 'ffa', name: 'TODOS CONTRA TODOS', short: 'LIBRE',
-    desc: 'Operador contra operador · la primera racha individual gana',
+    id: 'ffa', name: 'FREE FOR ALL', short: 'FFA',
+    desc: 'Operator vs operator · first personal streak wins',
     target: GAME.FFA_KILLS, time: GAME.ROUND_TIME, teams: false,
   },
   bandera: {
-    id: 'bandera', name: 'CAPTURAR LA BANDERA', short: 'BANDERA',
-    desc: 'Roba la bandera rival y llévala a tu base · primero a 3 capturas',
+    id: 'bandera', name: 'CAPTURE THE FLAG', short: 'CTF',
+    desc: 'Steal the enemy flag and run it home · first to 3 captures',
     target: GAME.FLAG_CAPTURES, time: 300, teams: true,
   },
   dominacion: {
-    id: 'dominacion', name: 'DOMINACIÓN', short: 'DOMINACIÓN',
-    desc: 'Toma y conserva las 3 zonas del mapa · primero a 150 puntos',
+    id: 'dominacion', name: 'DOMINATION', short: 'DOM',
+    desc: 'Hold all 3 zones on the map · first to 150 points',
     target: GAME.DOM_TARGET, time: 300, teams: true,
   },
   historia: {
-    id: 'historia', name: 'OPERACIÓN CENIZA', short: 'HISTORIA',
-    desc: 'Misión de 4 capítulos contra la instalación militar · 15-20 min',
+    id: 'historia', name: 'OPERATION ASHFALL', short: 'CAMPAIGN',
+    desc: 'A full 6-chapter campaign against the military installation',
     target: 0, time: 1260, teams: true,
   },
 }
@@ -115,7 +115,7 @@ export const BOT_SKILL: Record<BotDifficulty, {
 }
 
 export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
-  facil: 'FÁCIL', normal: 'NORMAL', dificil: 'DIFÍCIL', experto: 'EXPERTO',
+  facil: 'EASY', normal: 'NORMAL', dificil: 'HARD', experto: 'EXPERT',
 }
 
 export type Team = 'A' | 'B'
@@ -125,8 +125,8 @@ export type BodyPart = 'head' | 'body' | 'legs'
 export type HitPart = BodyPart
 
 export const TEAM_INFO: Record<Team, { name: string; color: string; accent: string }> = {
-  A: { name: 'ESCUADRÓN ÁMBAR', color: '#f59e0b', accent: '#fbbf24' },
-  B: { name: 'ESCUADRÓN VERDE', color: '#22c55e', accent: '#4ade80' },
+  A: { name: 'AMBER SQUAD', color: '#f59e0b', accent: '#fbbf24' },
+  B: { name: 'GREEN SQUAD', color: '#22c55e', accent: '#4ade80' },
 }
 
 // ------------------------------------------------------------
@@ -166,7 +166,7 @@ export interface WeaponConfig {
 // la mira ya no "se va mucho" al disparar y la retícula apenas se abre.
 export const WEAPONS: Record<WeaponId, WeaponConfig> = {
   knife: {
-    id: 'knife', name: 'Cuchillo Táctico', slot: 'melee', price: 0,
+    id: 'knife', name: 'Tactical Knife', slot: 'melee', price: 0,
     damage: 55, headMult: 2.0, legMult: 1.0,
     rpm: 120, auto: false, pellets: 1, mag: 0, reserve: 0, reloadTime: 0,
     spreadBase: 0, spreadMove: 0, spreadAir: 0,
@@ -175,7 +175,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     falloffStart: 100, falloffEnd: 100, falloffMin: 1, sound: 'pistol',
   },
   p9: {
-    id: 'p9', name: 'P9 Compacto', slot: 'secondary', price: 0,
+    id: 'p9', name: 'P9 Compact', slot: 'secondary', price: 0,
     damage: 33, headMult: 4.0, legMult: 0.75,
     rpm: 400, auto: false, pellets: 1, mag: 15, reserve: 90, reloadTime: 2.2,
     spreadBase: 0.3, spreadMove: 1.0, spreadAir: 2.6,
@@ -184,7 +184,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     falloffStart: 18, falloffEnd: 55, falloffMin: 0.68, sound: 'pistol',
   },
   aguila: {
-    id: 'aguila', name: 'Águila .50', slot: 'secondary', price: 700,
+    id: 'aguila', name: 'Eagle .50', slot: 'secondary', price: 700,
     damage: 58, headMult: 4.0, legMult: 0.80,
     rpm: 267, auto: false, pellets: 1, mag: 7, reserve: 35, reloadTime: 2.2,
     spreadBase: 0.45, spreadMove: 1.5, spreadAir: 3.6,
@@ -211,7 +211,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     falloffStart: 8, falloffEnd: 22, falloffMin: 0.28, sound: 'shotgun',
   },
   ar47: {
-    id: 'ar47', name: "AR-47 «Cóndor»", slot: 'primary', price: 2700,
+    id: 'ar47', name: 'AR-47 "Condor"', slot: 'primary', price: 2700,
     damage: 36, headMult: 4.0, legMult: 0.75,
     rpm: 600, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 2.5,
     spreadBase: 0.28, spreadMove: 1.7, spreadAir: 4.4,
@@ -220,7 +220,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     falloffStart: 25, falloffEnd: 70, falloffMin: 0.75, sound: 'rifle',
   },
   cr4: {
-    id: 'cr4', name: 'Carabina CR-4', slot: 'primary', price: 2900,
+    id: 'cr4', name: 'CR-4 Carbine', slot: 'primary', price: 2900,
     damage: 33, headMult: 4.0, legMult: 0.75,
     rpm: 666, auto: true, pellets: 1, mag: 30, reserve: 90, reloadTime: 3.1,
     spreadBase: 0.24, spreadMove: 1.4, spreadAir: 3.8,
@@ -229,7 +229,7 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     falloffStart: 28, falloffEnd: 75, falloffMin: 0.78, sound: 'rifle',
   },
   awp338: {
-    id: 'awp338', name: 'FR-338 Tirador', slot: 'primary', price: 4750,
+    id: 'awp338', name: 'FR-338 Marksman', slot: 'primary', price: 4750,
     damage: 115, headMult: 2.5, legMult: 0.85,
     rpm: 41, auto: false, pellets: 1, mag: 5, reserve: 30, reloadTime: 3.7,
     spreadBase: 0.15, spreadMove: 3.4, spreadAir: 6,
@@ -240,15 +240,15 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
 }
 
 export const BUY_ITEMS: { id: string; weapon?: WeaponId; equip?: 'shield' | 'frag' | 'smoke'; name: string; price: number; desc: string; cat: string }[] = [
-  { id: 'w:aguila', weapon: 'aguila', name: 'Águila .50', price: 700, desc: 'Pistola de alto calibre', cat: 'Pistolas' },
-  { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'SMG rápida y ágil', cat: 'SMG' },
-  { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Escopeta de caño corto', cat: 'Escopetas' },
-  { id: 'w:ar47', weapon: 'ar47', name: 'AR-47 «Cóndor»', price: 2700, desc: 'Rifle de asalto 7.62', cat: 'Rifles' },
-  { id: 'w:cr4', weapon: 'cr4', name: 'Carabina CR-4', price: 2900, desc: 'Rifle de asalto 5.56', cat: 'Rifles' },
-  { id: 'w:awp338', weapon: 'awp338', name: 'FR-338 Tirador', price: 4750, desc: 'Francotirador letal', cat: 'Francotirador' },
-  { id: 'e:shield', equip: 'shield', name: 'Escudo Completo', price: 1000, desc: 'Sube el escudo a 100', cat: 'Equipamiento' },
-  { id: 'e:frag', equip: 'frag', name: 'Granada MOLO', price: 300, desc: 'Máx. 2 unidades', cat: 'Equipamiento' },
-  { id: 'e:smoke', equip: 'smoke', name: 'Granada de Humo', price: 200, desc: 'Cortina de humo 12 s · máx. 2', cat: 'Equipamiento' },
+  { id: 'w:aguila', weapon: 'aguila', name: 'Eagle .50', price: 700, desc: 'High-caliber sidearm', cat: 'Pistols' },
+  { id: 'w:mp9', weapon: 'mp9', name: 'MP-9 Vecto', price: 1250, desc: 'Fast, agile SMG', cat: 'SMG' },
+  { id: 'w:breacher', weapon: 'breacher', name: 'Breacher-12', price: 1800, desc: 'Short-barrel shotgun', cat: 'Shotguns' },
+  { id: 'w:ar47', weapon: 'ar47', name: 'AR-47 "Condor"', price: 2700, desc: '7.62 assault rifle', cat: 'Rifles' },
+  { id: 'w:cr4', weapon: 'cr4', name: 'CR-4 Carbine', price: 2900, desc: '5.56 assault rifle', cat: 'Rifles' },
+  { id: 'w:awp338', weapon: 'awp338', name: 'FR-338 Marksman', price: 4750, desc: 'Lethal sniper rifle', cat: 'Sniper' },
+  { id: 'e:shield', equip: 'shield', name: 'Full Shield', price: 1000, desc: 'Restores shield to 100', cat: 'Equipment' },
+  { id: 'e:frag', equip: 'frag', name: 'MOLO Grenade', price: 300, desc: 'Max. 2 units', cat: 'Equipment' },
+  { id: 'e:smoke', equip: 'smoke', name: 'Smoke Grenade', price: 200, desc: '12 s smoke curtain · max. 2', cat: 'Equipment' },
 ]
 
 // ------------------------------------------------------------
@@ -286,24 +286,24 @@ export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
 }
 
 export const ACTION_LABELS: Record<ActionId, string> = {
-  fwd: 'Avanzar',
-  back: 'Retroceder',
-  left: 'Izquierda',
-  right: 'Derecha',
-  sprint: 'Esprintar',
-  crouch: 'Agacharse',
-  jump: 'Saltar',
-  reload: 'Recargar',
-  grenadeFrag: 'Granada MOLO',
-  grenadeSmoke: 'Granada de humo',
-  buy: 'Tienda',
-  lastWeapon: 'Arma anterior',
-  zipline: 'Interactuar / Tirolina',
-  slot1: 'Arma principal',
-  slot2: 'Arma secundaria',
-  slot3: 'Cuchillo',
-  shoot: 'Disparar',
-  aim: 'Apuntar (ADS)',
+  fwd: 'Move forward',
+  back: 'Move backward',
+  left: 'Strafe left',
+  right: 'Strafe right',
+  sprint: 'Sprint',
+  crouch: 'Crouch',
+  jump: 'Jump',
+  reload: 'Reload',
+  grenadeFrag: 'MOLO grenade',
+  grenadeSmoke: 'Smoke grenade',
+  buy: 'Shop',
+  lastWeapon: 'Previous weapon',
+  zipline: 'Interact / Zipline',
+  slot1: 'Weapon slot 1',
+  slot2: 'Weapon slot 2',
+  slot3: 'Knife',
+  shoot: 'Fire',
+  aim: 'Aim (ADS)',
 }
 
 /** ¿El código corresponde a un botón del ratón? */
@@ -322,7 +322,7 @@ export function mouseButtonIndex(code: string): number | null {
 export function keyLabel(code: string): string {
   if (!code) return '—'
   if (code.startsWith('Mouse')) {
-    const names = ['CLIC IZQ', 'CLIC MED', 'CLIC DER', 'CLIC 4', 'CLIC 5', 'CLIC 6']
+    const names = ['LMB', 'MMB', 'RMB', 'CLICK 4', 'CLICK 5', 'CLICK 6']
     const n = Number(code.slice(5))
     return names[n] ?? `CLIC ${n + 1}`
   }
@@ -334,10 +334,10 @@ export function keyLabel(code: string): string {
     return names[code.slice(5)] ?? code
   }
   const names: Record<string, string> = {
-    Space: 'ESPACIO', ShiftLeft: 'MAYÚS IZQ', ShiftRight: 'MAYÚS DER',
-    ControlLeft: 'CTRL IZQ', ControlRight: 'CTRL DER',
+    Space: 'SPACE', ShiftLeft: 'L SHIFT', ShiftRight: 'R SHIFT',
+    ControlLeft: 'L CTRL', ControlRight: 'R CTRL',
     AltLeft: 'ALT', AltRight: 'ALT GR', Enter: 'ENTER', Tab: 'TAB',
-    CapsLock: 'BLOQ MAYÚS', Backquote: '`', Minus: '-', Equal: '=',
+    CapsLock: 'CAPS LOCK', Backquote: '`', Minus: '-', Equal: '=',
     BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
     Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
   }
@@ -367,18 +367,18 @@ export const DEFAULT_PAD_BINDS: Record<PadAction, number> = {
 }
 
 export const PAD_ACTION_LABELS: Record<PadAction, string> = {
-  shoot: 'Disparar',
-  aim: 'Apuntar (ADS)',
-  sprint: 'Esprintar (L3)',
-  jump: 'Saltar',
-  crouch: 'Agacharse',
-  reload: 'Recargar',
-  weaponNext: 'Cambiar arma',
-  grenadeFrag: 'Granada MOLO',
-  grenadeSmoke: 'Granada de humo',
-  buy: 'Tienda',
-  scoreboard: 'Marcador (mantener)',
-  pause: 'Pausa',
+  shoot: 'Fire',
+  aim: 'Aim (ADS)',
+  sprint: 'Sprint (L3)',
+  jump: 'Jump',
+  crouch: 'Crouch',
+  reload: 'Reload',
+  weaponNext: 'Switch weapon',
+  grenadeFrag: 'MOLO grenade',
+  grenadeSmoke: 'Smoke grenade',
+  buy: 'Shop',
+  scoreboard: 'Scoreboard (hold)',
+  pause: 'Pause',
 }
 
 /** Etiqueta de botón estándar Xbox (PS: A=Cruz, B=Círculo…) */
@@ -420,10 +420,10 @@ export function computeDamage(w: WeaponConfig, part: BodyPart, distance: number)
 export type PickupKind = 'medkit' | 'bandage' | 'shieldSmall' | 'shieldBig'
 
 export const PICKUP_INFO: Record<PickupKind, { name: string; hp: number; shield: number; color: number }> = {
-  medkit:      { name: 'Botiquín',            hp: 50, shield: 0,  color: 0xef4444 },
-  bandage:     { name: 'Vendaje',             hp: 15, shield: 0,  color: 0xfca5a5 },
-  shieldSmall: { name: 'Poción de Escudo S',  hp: 0,  shield: 25, color: 0x38bdf8 },
-  shieldBig:   { name: 'Poción de Escudo G',  hp: 0,  shield: 50, color: 0x0ea5e9 },
+  medkit:      { name: 'Medkit',              hp: 50, shield: 0,  color: 0xef4444 },
+  bandage:     { name: 'Bandage',             hp: 15, shield: 0,  color: 0xfca5a5 },
+  shieldSmall: { name: 'Small Shield Potion', hp: 0,  shield: 25, color: 0x38bdf8 },
+  shieldBig:   { name: 'Big Shield Potion',   hp: 0,  shield: 50, color: 0x0ea5e9 },
 }
 
 export interface PickupSpot { kind: PickupKind; x: number; z: number }
@@ -1240,7 +1240,7 @@ export const FLAG_B: [number, number] = [58, 0]
 // --- Zonas de dominación ---
 export interface DomZoneSpec { id: 'A' | 'B' | 'C'; name: string; x: number; z: number }
 export const DOM_ZONES: DomZoneSpec[] = [
-  { id: 'A', name: 'ALFA', x: 0, z: 0 },         // rotonda central
+  { id: 'A', name: 'ALPHA', x: 0, z: 0 },         // rotonda central
   { id: 'B', name: 'BRAVO', x: -19.5, z: -19.5 },// interior del almacén norte
   { id: 'C', name: 'CHARLIE', x: 46, z: 58 },    // parque SE
 ]
@@ -1421,13 +1421,13 @@ export const WAYPOINT_EDGES: number[][] = WAYPOINTS.map(() => [])
 export interface NeonSpec { text: string; x: number; y: number; z: number; ry: number; color: string; w: number }
 export const NEONS: NeonSpec[] = [
   { text: 'HOTEL', x: 19.5, y: 4.2, z: -12.2, ry: 0, color: '#f472b6', w: 4.5 },
-  { text: 'TORRE ÁMBAR', x: 50, y: 5.2, z: -12.8, ry: 0, color: '#fbbf24', w: 5.5 },
-  { text: 'MERCADO', x: 19.5, y: 3.8, z: -41.9, ry: 0, color: '#22d3ee', w: 5 },
-  { text: 'TIENDAS', x: 50, y: 2.8, z: -53.9, ry: Math.PI, color: '#4ade80', w: 4 },
+  { text: 'AMBER TOWER', x: 50, y: 5.2, z: -12.8, ry: 0, color: '#fbbf24', w: 5.5 },
+  { text: 'MARKET', x: 19.5, y: 3.8, z: -41.9, ry: 0, color: '#22d3ee', w: 5 },
+  { text: 'STORES', x: 50, y: 2.8, z: -53.9, ry: Math.PI, color: '#4ade80', w: 4 },
   { text: 'GAS', x: -42.2, y: 4.0, z: 19.5, ry: Math.PI / 2, color: '#f87171', w: 3 },
   { text: 'RADAR', x: -38.8, y: 2.1, z: 51, ry: Math.PI / 2, color: '#4ade80', w: 4.5 },
-  { text: 'ALMACÉN', x: -19.5, y: 3.4, z: -27.6, ry: Math.PI, color: '#fbbf24', w: 4.5 },
-  { text: 'DEPÓSITO', x: -19, y: 3.2, z: -38.6, ry: 0, color: '#fbbf24', w: 4.5 },
+  { text: 'WAREHOUSE', x: -19.5, y: 3.4, z: -27.6, ry: Math.PI, color: '#fbbf24', w: 4.5 },
+  { text: 'DEPOT', x: -19, y: 3.2, z: -38.6, ry: 0, color: '#fbbf24', w: 4.5 },
 ]
 
 export interface PuddleSpec { x: number; z: number; r: number }
@@ -1515,7 +1515,7 @@ export interface NetKillEvent {
   multi?: number
 }
 
-export const BOT_NAMES = ['Cóndor', 'Víbora', 'Lobo', 'Halcón', 'Zorro', 'Puma', 'Oso', 'Jaguar', 'Serpiente', 'Tigre', 'Águila', 'Coyote', 'León', 'Pantera', 'Búho', 'Araña']
+export const BOT_NAMES = ['Condor', 'Viper', 'Wolf', 'Hawk', 'Fox', 'Puma', 'Bear', 'Jaguar', 'Snake', 'Tiger', 'Eagle', 'Coyote', 'Lion', 'Panther', 'Owl', 'Spider']
 
 // ------------------------------------------------------------
 // SALAS P2P (PeerJS)
@@ -1833,18 +1833,18 @@ const STORY_EDGES: number[][] = STORY_WAYPOINTS.map(() => [])
 // --- Objetivos de la misión (los usa el director del modo historia) ---
 export interface StoryObjective { x: number; z: number; label: string }
 export const STORY_INTEL: StoryObjective[] = [
-  { x: 20, z: 14, label: 'MOLINO' },
-  { x: -34, z: 8, label: 'CAPILLA' },
-  { x: 42, z: 10, label: 'VIGÍA' },
+  { x: 20, z: 14, label: 'MILL' },
+  { x: -34, z: 8, label: 'CHAPEL' },
+  { x: 42, z: 10, label: 'WATCHTOWER' },
 ]
-export const STORY_UPLINK: StoryObjective = { x: 0, z: 8, label: 'ENLACE' }
+export const STORY_UPLINK: StoryObjective = { x: 0, z: 8, label: 'UPLINK' }
 export const STORY_ANTENNAS: StoryObjective[] = [
-  { x: 36, z: -18, label: 'ANTENA ALFA' },
-  { x: -36, z: -24, label: 'ANTENA BRAVO' },
-  { x: 30, z: -50, label: 'ANTENA CHARLIE' },
+  { x: 36, z: -18, label: 'ANTENNA ALPHA' },
+  { x: -36, z: -24, label: 'ANTENNA BRAVO' },
+  { x: 30, z: -50, label: 'ANTENNA CHARLIE' },
 ]
-export const STORY_PRISONER: StoryObjective = { x: 20, z: -44, label: 'PRISIONERO' }
-export const STORY_EXTRACTION: StoryObjective = { x: 0, z: -60, label: 'EXTRACCIÓN' }
+export const STORY_PRISONER: StoryObjective = { x: 20, z: -44, label: 'PRISONER' }
+export const STORY_EXTRACTION: StoryObjective = { x: 0, z: -60, label: 'EXTRACTION' }
 
 const STORY_MAP_SPawn_A: [number, number, number] = [0, 0, 54]
 const STORY_SPAWN_B: [number, number, number] = [0, 0, -21]
@@ -1950,12 +1950,12 @@ export const MAPS: Record<MapId, MapData> = {
       { kind: 'medkit', x: 0, z: -58 },
     ],
     neons: [
-      { text: 'PUEBLO ALBA', x: 0, y: 2.9, z: 21.2, ry: 0, color: '#fbbf24', w: 5 },
-      { text: 'EXTRACCIÓN', x: 0, y: 2.4, z: -65.4, ry: 0, color: '#22d3ee', w: 5 },
-      { text: 'COMPLEJO CENIZA', x: 0, y: 3.2, z: -15.4, ry: 0, color: '#f87171', w: 5.5 },
+      { text: 'ALBA VILLAGE', x: 0, y: 2.9, z: 21.2, ry: 0, color: '#fbbf24', w: 5 },
+      { text: 'EXTRACTION', x: 0, y: 2.4, z: -65.4, ry: 0, color: '#22d3ee', w: 5 },
+      { text: 'ASHFALL COMPLEX', x: 0, y: 3.2, z: -15.4, ry: 0, color: '#f87171', w: 5.5 },
       { text: 'RADAR', x: -14.4, y: 2.0, z: -34, ry: Math.PI / 2, color: '#4ade80', w: 4 },
-      { text: 'COMBUSTIBLE', x: 17.6, y: 2.0, z: -22, ry: -Math.PI / 2, color: '#f87171', w: 4.5 },
-      { text: 'PRISIÓN', x: 20, y: 2.2, z: -41.4, ry: 0, color: '#f472b6', w: 4 },
+      { text: 'FUEL DEPOT', x: 17.6, y: 2.0, z: -22, ry: -Math.PI / 2, color: '#f87171', w: 4.5 },
+      { text: 'PRISON', x: 20, y: 2.2, z: -41.4, ry: 0, color: '#f472b6', w: 4 },
     ],
     puddles: [
       { x: -4, z: 24, r: 1.2 }, { x: 10, z: -36, r: 1.4 }, { x: -20, z: -30, r: 1.3 },

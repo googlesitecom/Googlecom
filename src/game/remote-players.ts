@@ -9,7 +9,7 @@ import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { makeNameTag } from './textures'
 import { type Team, type WeaponId, type NetPlayerState, ASSET_BASE } from './shared'
 import { buildWeaponModel } from './viewmodel'
-import { buildGLBWeapon } from './assets'
+import { buildGLBWeapon, ensureWeaponGLB } from './assets'
 
 interface BufferEntry {
   t: number
@@ -466,6 +466,8 @@ export class RemotePlayers {
     // cambio de arma → regenerar modelo (GLB del usuario si está cargado)
     if (rp.weaponId !== state.weapon) {
       rp.weaponId = state.weapon
+      // v7: carga perezosa del GLB de ESA arma (avisa → refreshWeapons)
+      if (state.weapon && state.weapon !== 'knife') ensureWeaponGLB(state.weapon)
       rp.weaponHolder.clear()
       rp.weaponMuzzle = null
       if (state.weapon && state.weapon !== 'knife') {

@@ -211,6 +211,7 @@ export class Effects {
     if (this.particles.length < MAX_PARTICLES) {
       const mat = this.acquireMat('flash')
       mat.rotation = Math.random() * Math.PI * 2
+      mat.color.set(0xffffff)
       const s = this.acquireSprite(mat)
       s.position.copy(pos)
       s.scale.setScalar(0.55 * scale)
@@ -233,21 +234,33 @@ export class Effects {
   // ----------------------------------------------------------
   impact(point: THREE.Vector3, normal: THREE.Vector3, onFlesh = false): void {
     if (this.particles.length >= MAX_PARTICLES) return
-    const count = onFlesh ? 7 : 6
+    const count = onFlesh ? 9 : 6
     for (let i = 0; i < count; i++) {
       const mat = this.acquireMat(onFlesh ? 'blood' : 'spark')
       const s = this.acquireSprite(mat)
       s.position.copy(point)
-      const sc = onFlesh ? 0.12 + Math.random() * 0.1 : 0.05 + Math.random() * 0.06
+      const sc = onFlesh ? 0.14 + Math.random() * 0.12 : 0.05 + Math.random() * 0.06
       s.scale.setScalar(sc)
       this.scene.add(s)
-      const v = normal.clone().multiplyScalar(2 + Math.random() * 3)
-      v.x += (Math.random() - 0.5) * 3
-      v.y += Math.random() * 2.5
-      v.z += (Math.random() - 0.5) * 3
+      const v = normal.clone().multiplyScalar(onFlesh ? 2.6 + Math.random() * 3.4 : 2 + Math.random() * 3)
+      v.x += (Math.random() - 0.5) * (onFlesh ? 3.6 : 3)
+      v.y += Math.random() * (onFlesh ? 3.0 : 2.5)
+      v.z += (Math.random() - 0.5) * (onFlesh ? 3.6 : 3)
       this.particles.push({
-        mesh: s, vel: v, life: onFlesh ? 0.4 : 0.3, maxLife: onFlesh ? 0.4 : 0.3,
+        mesh: s, vel: v, life: onFlesh ? 0.5 : 0.3, maxLife: onFlesh ? 0.5 : 0.3,
         gravity: onFlesh ? 9 : 11, spin: 0, fade: 1, kind: onFlesh ? 'blood' : 'spark',
+      })
+    }
+    if (onFlesh) {
+      // v7: niebla de sangre — un sprite grande y rápido que se desvanece
+      // en el punto de impacto (feedback de daño claro sin coste)
+      const mat = this.acquireMat('blood')
+      const mist = this.acquireSprite(mat)
+      mist.position.copy(point)
+      mist.scale.setScalar(0.55)
+      this.scene.add(mist)
+      this.particles.push({
+        mesh: mist, vel: V0, life: 0.22, maxLife: 0.22, gravity: 0, spin: 0, fade: 1, kind: 'blood',
       })
     }
     if (!onFlesh) {
@@ -281,6 +294,23 @@ export class Effects {
   }
 
   // ----------------------------------------------------------
+  // v7: brillo de impacto en enemigo — destello aditivo naranja-rojo
+  // en el torso del enemigo alcanzado (feedback de daño evidente)
+  // ----------------------------------------------------------
+  hitGlow(point: THREE.Vector3, scale = 1): void {
+    const mat = this.acquireMat('flash')
+    mat.rotation = Math.random() * Math.PI * 2
+    mat.color.set(0xff5030)   // tinte rojo-naranja: distinto del fogonazo
+    const s = this.acquireSprite(mat)
+    s.position.copy(point)
+    s.scale.setScalar(0.5 * scale)
+    this.scene.add(s)
+    this.particles.push({
+      mesh: s, vel: V0, life: 0.09, maxLife: 0.09, gravity: 0, spin: 0, fade: 1, kind: 'flash',
+    })
+  }
+
+  // ----------------------------------------------------------
   // Casquillo expulsado
   // ----------------------------------------------------------
   casing(pos: THREE.Vector3, rightDir: THREE.Vector3): void {
@@ -303,6 +333,7 @@ export class Effects {
   explosion(pos: THREE.Vector3): void {
     // destello central
     const flashMat = this.acquireMat('flash')
+    flashMat.color.set(0xffffff)
     const flash = this.acquireSprite(flashMat)
     flash.position.copy(pos)
     flash.scale.setScalar(1.2)

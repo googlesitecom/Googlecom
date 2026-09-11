@@ -26,11 +26,11 @@ import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
 import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture, makeCloudTexture, makeWaterNoiseTexture, makeBirdTexture } from './textures'
 import { useGame } from './store'
 import { NetClient } from './net'
-import { preloadAssets, buildGLBWeapon, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
+import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
 import { StoryDirector } from './story'
 
 interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
-interface HitMarker { t: number; headshot: boolean }
+interface HitMarker { t: number; headshot: boolean; dmg?: number }
 interface DamageDir { angle: number; t: number }
 interface Ping { x: number; z: number; t: number }
 interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
@@ -62,7 +62,7 @@ export interface CineDialogue {
   text: string
 }
 
-/** batalla visible durante una cinemática (v6.3) */
+/** batalla visible durante una cinemática (v7: varias por escena) */
 export interface CineBattleSpec {
   cx: number
   cz: number
@@ -119,11 +119,12 @@ const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
 
 /** colores de locutor para los diálogos de cinemática (v6.3) */
 const CINE_SPEAKERS: Record<string, string> = {
-  MANDO: '#f5c04a',   // ámbar de mando
-  RED: '#6ee7a0',     // verde de red
-  RÍOS: '#7db8f5',    // azul de resistencia
-  VEGA: '#f06a6a',    // rojo del villano
-  OPERATIVO: '#ffe9c4',
+  COMMAND: '#f5c04a',   // command amber
+  RED: '#6ee7a0',       // net ops green
+  RIVERA: '#7db8f5',    // resistance blue
+  VEGA: '#f06a6a',      // villain red
+  PILOT: '#ffd9a6',     // extraction pilot
+  OPERATOR: '#ffe9c4',
 }
 
 export class Game {
@@ -208,6 +209,10 @@ export class Game {
   private swayX = 0
   private swayY = 0
   private vmKick = 0
+  /** v7: velocidad del muelle de retroceso del viewmodel */
+  private vmKickVel = 0
+  /** v7: amplitud de bob suavizada */
+  private bobAmt = 0
 
   // overlay 2D
   private dmgNumbers: DamageNumber[] = []
@@ -253,7 +258,7 @@ export class Game {
 
   // ---- v6.3: batalla visible durante la cinemática ----
   private cineSoldiers: CineSoldier[] = []
-  private cineBattle: CineBattleSpec | null = null
+  private cineBattles: CineBattleSpec[] = []
   private cineShotNext = 0
   private cineBoomNext = 0
   private cineBattlePos = new THREE.Vector3()
@@ -331,6 +336,8 @@ export class Game {
   private fpsT = 0
   private minimapT = 0
   private scoreboardT = 0
+  /** v7: familia Rajdhani real (next/font la registra con nombre hash) */
+  private tacFont = '"Courier New"'
   private mapMeshes: THREE.Mesh[] = []
   private disposed = false
 
@@ -369,8 +376,8 @@ export class Game {
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    // ULTRA: exposición apenas más cálida (más presencia de las luces)
-    this.renderer.toneMappingExposure = quality === 'ultra' ? 1.17 : 1.12
+    // v7: exposure pulled back — ULTRA sun no longer blows out walls
+    this.renderer.toneMappingExposure = quality === 'ultra' ? 1.08 : 1.12
     this.renderer.shadowMap.enabled = quality !== 'baja'
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
@@ -395,10 +402,10 @@ export class Game {
     // fogonazo) — OPCIONAL, solo si el jugador lo activó en AJUSTES
     if (quality === 'ultra') this.buildUltraFX()
 
-    // assets del usuario (GLB de armas + texturas; árboles solo en la ciudad
-    // → carga perezosa según el modo): se cargan en segundo plano y se
-    // integran al llegar (con fallback procedural hasta entonces)
-    preloadAssets({ trees: true }).then(() => {
+    // v7 assets: texturas siempre · árboles SOLO en el mapa ciudad ·
+    // armas GLB perezosas (ensureWeaponGLB al blandirla) → el modo que
+    // juegas descarga solo lo que usa (~18 MB menos al entrar)
+    preloadAssets({ trees: this.mapId === 'ciudad' }).then(() => {
       if (this.disposed) return
       // DIAGNÓSTICO: partes integradas por separado para localizar cuelgues
       const parts = (new URLSearchParams(location.search).get('assets') ?? 'all').split(',')
@@ -408,6 +415,7 @@ export class Game {
     onWeaponGLBsReady(() => {
       if (this.disposed) return
       // refrescar el arma en mano y las de los remotos con los modelos GLB
+      // (v7: se dispara cada vez que llega un GLB nuevo — carga perezosa)
       this.setWeapon(this.weapon, true)
       this.remotes.refreshWeapons()
     })
@@ -431,7 +439,7 @@ export class Game {
     if (quality === 'alta' || quality === 'ultra') {
       this.composer = new EffectComposer(this.renderer)
       this.composer.addPass(new RenderPass(this.scene, this.camera))
-      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), quality === 'ultra' ? 0.55 : 0.42, 0.7, 0.88)
+      const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), quality === 'ultra' ? 0.46 : 0.42, 0.7, 0.9)
       this.composer.addPass(bloom)
       this.ultraBloom = bloom   // v6.4: referencia al pase (ajustable en vivo)
       this.composer.addPass(new OutputPass())
@@ -444,6 +452,13 @@ export class Game {
 
     // gancho de depuración (tests automatizados)
     ;(window as unknown as Record<string, unknown>).__game = this
+
+    // v7: fuente táctica real para el canvas (Rajdhani con hash de next/font)
+    try {
+      const v = getComputedStyle(document.body).getPropertyValue('--font-rajdhani')
+      const first = v.split(',')[0].trim()
+      if (first) this.tacFont = first
+    } catch { /* sin estilos: monospace del sistema */ }
 
     this.clock.start()
     this.loop()
@@ -604,7 +619,8 @@ export class Game {
   }
 
   private buildLights(quality: Quality): void {
-    const sun = new THREE.DirectionalLight(0xffdcae, 2.6)
+    // v7: sun dialed back (ULTRA was a bit blinding): 2.6 → 2.15
+    const sun = new THREE.DirectionalLight(0xffdcae, quality === 'ultra' ? 2.15 : 2.35)
     sun.position.set(52, 58, -40)
     if (quality !== 'baja') {
       sun.castShadow = true
@@ -631,11 +647,11 @@ export class Game {
     this.scene.add(sun.target)
     this.sunLight = sun
 
-    const hemi = new THREE.HemisphereLight(0x9db4d0, 0x8a6a4a, quality === 'ultra' ? 0.62 : 0.5)
+    const hemi = new THREE.HemisphereLight(0x9db4d0, 0x8a6a4a, quality === 'ultra' ? 0.58 : 0.5)
     this.scene.add(hemi)
 
     // relleno cálido del atardecer desde el oeste
-    const fill = new THREE.DirectionalLight(0xc7a17a, 0.5)
+    const fill = new THREE.DirectionalLight(0xc7a17a, 0.42)
     fill.position.set(-40, 30, 30)
     this.scene.add(fill)
   }
@@ -726,16 +742,17 @@ export class Game {
       const anchor = new THREE.Object3D()
       anchor.position.copy(sunDir).multiplyScalar(299)
       const flare = new Lensflare()
-      const haloTex = this.makeFlareTexture(0, 'rgba(255,255,255,1)', 0.55)
-      const hexTexA = this.makeFlareTexture(6, 'rgba(255,190,120,0.9)', 0.35)
-      const hexTexB = this.makeFlareTexture(6, 'rgba(140,190,255,0.55)', 0.3)
-      const dotTex = this.makeFlareTexture(0, 'rgba(255,220,170,0.9)', 0.5)
-      flare.addElement(new LensflareElement(haloTex, 340, 0, new THREE.Color(0xffe0b0)))
-      flare.addElement(new LensflareElement(hexTexA, 70, 0.28))
-      flare.addElement(new LensflareElement(dotTex, 46, 0.46))
-      flare.addElement(new LensflareElement(hexTexB, 110, 0.62))
-      flare.addElement(new LensflareElement(dotTex, 28, 0.8))
-      flare.addElement(new LensflareElement(hexTexA, 160, 1.0, new THREE.Color(0xffd9a6)))
+      // v7: flare toned down ~25% (sun was a bit excessive on ULTRA)
+      const haloTex = this.makeFlareTexture(0, 'rgba(255,255,255,1)', 0.42)
+      const hexTexA = this.makeFlareTexture(6, 'rgba(255,190,120,0.9)', 0.28)
+      const hexTexB = this.makeFlareTexture(6, 'rgba(140,190,255,0.55)', 0.24)
+      const dotTex = this.makeFlareTexture(0, 'rgba(255,220,170,0.9)', 0.4)
+      flare.addElement(new LensflareElement(haloTex, 255, 0, new THREE.Color(0xffe8c4)))
+      flare.addElement(new LensflareElement(hexTexA, 58, 0.28))
+      flare.addElement(new LensflareElement(dotTex, 38, 0.46))
+      flare.addElement(new LensflareElement(hexTexB, 92, 0.62))
+      flare.addElement(new LensflareElement(dotTex, 24, 0.8))
+      flare.addElement(new LensflareElement(hexTexA, 128, 1.0, new THREE.Color(0xffd9a6)))
       anchor.add(flare)
       this.scene.add(anchor)
       this.ultraAnchor = anchor
@@ -910,7 +927,7 @@ export class Game {
     if (this.ultraBloom) this.ultraBloom.strength = 0.4
     // 3) menos fogonazos con luz
     if (this.muzzleLight) this.muzzleLight.distance = 9
-    useGame.getState().addAnnouncement('Gráficos ULTRA ajustados automáticamente para mantener los FPS', 'info')
+    useGame.getState().addAnnouncement('ULTRA graphics auto-adjusted to keep your FPS stable', 'info')
   }
 
   // ----------------------------------------------------------
@@ -931,7 +948,7 @@ export class Game {
     this.renderer.setSize(innerWidth, innerHeight)
 
     // 2) tono/exposición
-    this.renderer.toneMappingExposure = ultra ? 1.17 : q === 'alta' ? 1.12 : q === 'media' ? 1.1 : 1.05
+    this.renderer.toneMappingExposure = ultra ? 1.08 : q === 'alta' ? 1.12 : q === 'media' ? 1.1 : 1.05
 
     // 3) SOMBRAS (diferencia brutal entre niveles): BAJA sin sombras,
     //    MEDIA 1K, ALTA 2K, ULTRA 4K con caja cerrada y PCF fino
@@ -983,7 +1000,7 @@ export class Game {
       }
     }
     if (this.composer) this.composer.setSize(innerWidth, innerHeight)
-    if (this.ultraBloom) this.ultraBloom.strength = ultra ? 0.55 : 0.42
+    if (this.ultraBloom) this.ultraBloom.strength = ultra ? 0.46 : 0.42
 
     // 6) entorno PBR (reflejos de atardecer en muros y metal): BAJA lo
     //    apaga → materiales planos y mucho más baratos
@@ -1009,8 +1026,8 @@ export class Game {
     //    cargado, se hornearán ya con el valor nuevo
     if (this.glbTreeMeshes.length || getTreeTemplate()) this.applyRepoTrees(q)
 
-    const NAMES: Record<Quality, string> = { baja: 'BAJA', media: 'MEDIA', alta: 'ALTA', ultra: 'ULTRA' }
-    useGame.getState().addAnnouncement(`Gráficos ${NAMES[q]} aplicados al instante`, 'info')
+    const NAMES: Record<Quality, string> = { baja: 'LOW', media: 'MEDIUM', alta: 'HIGH', ultra: 'ULTRA' }
+    useGame.getState().addAnnouncement(`${NAMES[q]} graphics applied instantly`, 'info')
   }
 
   /** v6.4: visibilidad del ambiente según calidad (nubes, aves, polvo) */
@@ -2157,13 +2174,13 @@ export class Game {
   // ----------------------------------------------------------
   openBuyMenu(): void {
     if (this.mapId === 'instalacion') {
-      useGame.getState().addAnnouncement('Sin tienda en la misión: usa los kits del terreno', 'info')
+      useGame.getState().addAnnouncement('No shop in the campaign — use the field kits on the terrain', 'info')
       return
     }
     const s = useGame.getState()
     if (this.dead) return
     if (!s.buyZone) {
-      s.addAnnouncement('La tienda solo funciona en tu base (anillo de color)', 'info')
+      s.addAnnouncement('The shop only works inside your base (colored ring)', 'info')
       return
     }
     s.setHud({ buyOpen: true })
@@ -2290,7 +2307,7 @@ export class Game {
     this.story?.update(dt, t)
 
     // v6.3: batalla de la cinemática (fogonazos/trazas/explosiones)
-    if (this.cine.active && this.cineBattle) this.updateCineBattle(dt)
+    if (this.cine.active && this.cineBattles.length) this.updateCineBattle(dt)
 
     // remotos (interpolación)
     const renderT = performance.now() - GAME.INTERP_DELAY
@@ -2331,7 +2348,8 @@ export class Game {
 
     // HUD canvas
     this.drawOverlay(t)
-    if (performance.now() - this.minimapT > 100) {
+    // v7: minimapa a 30 Hz (rotación suave; el dibujo es barato)
+    if (performance.now() - this.minimapT > 33) {
       this.minimapT = performance.now()
       this.drawMinimap()
     }
@@ -2589,12 +2607,12 @@ export class Game {
     this.interactHint = ''
     if (this.dead) return
     if (this.ziplineIdx >= 0) {
-      this.interactHint = `[${keyLabel(this.kb('jump'))}] SOLTAR TIROLINA`
+      this.interactHint = `[${keyLabel(this.kb('jump'))}] RELEASE ZIPLINE`
       return
     }
     if (performance.now() < this.ziplineCooldownUntil) return
     const reach = this.ziplineReach()
-    if (reach) this.interactHint = `[${keyLabel(this.kb('zipline'))} / ${keyLabel(this.kb('jump'))}] TIROLINA`
+    if (reach) this.interactHint = `[${keyLabel(this.kb('zipline'))} / ${keyLabel(this.kb('jump'))}] ZIPLINE`
   }
 
   // ----------------------------------------------------------
@@ -2702,9 +2720,9 @@ export class Game {
     const eye = curEye + (targetEye - curEye) * Math.min(1, dt * 10)
     void t
 
-    // bob
+    // bob (v7: amplitud con el mismo suavizado del viewmodel — se siente unido)
     const hSpeed = Math.hypot(this.vel.x, this.vel.z)
-    const bobAmp = this.onGround ? Math.min(1, hSpeed / 5) * (this.adsAmt > 0.3 ? 0.008 : 0.028) : 0
+    const bobAmp = this.bobAmt * (this.adsAmt > 0.3 ? 0.008 : 0.028)
     const bobX = Math.cos(this.bobT) * bobAmp * 0.6
     const bobY = Math.abs(Math.sin(this.bobT)) * bobAmp
 
@@ -2767,6 +2785,8 @@ export class Game {
     this.vmGroup = group
     this.vmMuzzle = muzzle
     this.vmHolder.add(group)
+    // v7: descarga perezosa del GLB de ESTA arma (aviso → refresco en vivo)
+    ensureWeaponGLB(id)
     if (!this.ammo[id] && WEAPONS[id].mag > 0) {
       this.ammo[id] = { mag: WEAPONS[id].mag, reserve: WEAPONS[id].reserve }
     }
@@ -2820,7 +2840,7 @@ export class Game {
     this.drawT = Math.min(1, this.drawT + dt * 4.5)
     const draw = this.drawT
 
-    // sway
+    // sway (v7: decay exponencial suave)
     this.swayX *= Math.max(0, 1 - dt * 6)
     this.swayY *= Math.max(0, 1 - dt * 6)
 
@@ -2829,26 +2849,38 @@ export class Game {
     const ads = pose.ads
     const adsA = this.adsAmt
     const sprintA = this.sprintAmt * (1 - adsA)
+    // v7: retroceso con MUELLE (sube rápido, vuelve con un pequeño
+    // rebote — antes era un decaimiento lineal que se veía robótico)
     const vmKick = this.vmKick
-    this.vmKick *= Math.max(0, 1 - dt * 9)
+    this.vmKickVel += (-140 * this.vmKick - 13 * this.vmKickVel) * dt
+    this.vmKick += this.vmKickVel * dt
+    if (this.vmKick < 0.0001 && Math.abs(this.vmKickVel) < 0.01) { this.vmKick = 0; this.vmKickVel = 0 }
 
-    // bob del arma
+    // bob del arma (v7: amplitud suavizada)
     const hSpeed = Math.hypot(this.vel.x, this.vel.z)
-    const bob = this.onGround ? Math.min(1, hSpeed / 5) * (1 - adsA * 0.85) : 0
+    const bobTarget = this.onGround ? Math.min(1, hSpeed / 5) * (1 - adsA * 0.85) : 0
+    this.bobAmt += (bobTarget - this.bobAmt) * Math.min(1, dt * 8)
+    const bob = this.bobAmt
+
+    // v7: respiración en reposo (el arma nunca está muerta en pantalla)
+    const breathX = Math.cos(t * 1.15) * 0.0022 * (1 - adsA)
+    const breathY = Math.sin(t * 1.55) * 0.0028 * (1 - adsA)
 
     let px = hip.x + (ads.x - hip.x) * adsA
     let py = hip.y + (ads.y - hip.y) * adsA
     let pz = hip.z + (ads.z - hip.z) * adsA + vmKick * 0.09
 
-    // animación de recarga
+    // animación de recarga (v7: rotación más articulada en dos fases)
     let reloadRot = 0
     if (this.reloading) {
       const now = performance.now()
       const w = WEAPONS[this.weapon]
       const progress = 1 - (this.reloadEndAt - now) / (w.reloadTime * 1000)
-      const dip = Math.sin(Math.min(1, progress) * Math.PI)
+      const p = Math.min(1, Math.max(0, progress))
+      const dip = Math.sin(p * Math.PI)
       reloadRot = dip * 0.9
       py -= dip * 0.16
+      // ligera rotación lateral durante el cambio de cargador
       // sonidos por etapas (30 %: cargador fuera · 82 %: cargador dentro + cerrojo)
       if (progress > 0.3 && this.reloadStage === 0) { this.reloadStage = 1; this.audio.reload('mag') }
       if (progress > 0.82 && this.reloadStage === 1) { this.reloadStage = 2; this.audio.reload('end') }
@@ -2858,12 +2890,14 @@ export class Game {
     py += Math.abs(Math.sin(this.bobT)) * 0.010 * bob + this.swayY * 0.024 * (1 - adsA * 0.8)
     py -= (1 - draw) * 0.35   // animación de desenfundado
     pz -= (1 - draw) * 0.12
+    px += breathX
+    py += breathY
 
     this.vmGroup.position.set(px, py, pz)
     this.vmGroup.rotation.set(
-      pose.hipRot.x + reloadRot + vmKick * 0.14 + this.swayY * 0.06 * (1 - adsA),
-      pose.hipRot.y * (1 - adsA) + sprintA * 0.5 - this.swayX * 0.05 * (1 - adsA),
-      pose.hipRot.z + sprintA * 0.25 + reloadRot * 0.4,
+      pose.hipRot.x + reloadRot + vmKick * 0.14 + this.swayY * 0.06 * (1 - adsA) + (1 - draw) * 0.7,
+      pose.hipRot.y * (1 - adsA) + sprintA * 0.5 - this.swayX * 0.05 * (1 - adsA) + (1 - draw) * 0.35,
+      pose.hipRot.z + sprintA * 0.25 + reloadRot * 0.4 + Math.sin(this.bobT) * 0.008 * bob,
     )
     // sprint: arma apuntando abajo
     if (sprintA > 0.01) {
@@ -2993,6 +3027,8 @@ export class Game {
       }
       if (hit.player) {
         this.effects.impact(hit.point, dir.clone().negate(), true)
+        // v7: brillo aditivo rojo en el punto de impacto — el daño se VE
+        this.effects.hitGlow(hit.point, hit.part === 'head' ? 1.35 : 1)
         hits.push({ target: hit.player, part: hit.part, dist: hit.dist, point: hit.point })
       } else {
         this.effects.impact(hit.point, hit.normal ?? dir.clone().negate())
@@ -3157,14 +3193,14 @@ export class Game {
     if (this.dead || this.throwCooldown > 0) return
     if (kind === 'smoke') {
       if (this.smokes <= 0) {
-        useGame.getState().addAnnouncement('Sin granadas de humo — cómpralas en la tienda (B)', 'info')
+        useGame.getState().addAnnouncement('No smoke grenades — buy them at the shop (B)', 'info')
         return
       }
       this.smokes--
       useGame.getState().setHud({ smokes: this.smokes })
     } else {
       if (this.frags <= 0) {
-        useGame.getState().addAnnouncement('Sin granadas MOLO — cómpralas en la tienda (B)', 'info')
+        useGame.getState().addAnnouncement('No MOLO grenades — buy them at the shop (B)', 'info')
         return
       }
       this.frags--
@@ -3268,7 +3304,7 @@ export class Game {
     this.cine.played = true
     this.cine.kind = 'entry'
     this.cine.title = 'EMERGENCY STRIKE'
-    this.cine.subtitle = 'ESTACIÓN MERIDIANO 59 · ZONA DE EXCLUSIÓN TOTAL'
+    this.cine.subtitle = 'MERIDIAN STATION 59 · TOTAL EXCLUSION ZONE'
     this.cine.onDone = null
     this.cine.active = true
     this.cine.t0 = performance.now()
@@ -3306,6 +3342,9 @@ export class Game {
     title: string
     subtitle: string
     dialogues?: CineDialogue[]
+    /** v7: varios frentes de batalla visibles durante la escena */
+    battles?: CineBattleSpec[]
+    /** compat: un solo frente */
     battle?: CineBattleSpec
     onDone?: () => void
   }): void {
@@ -3323,8 +3362,9 @@ export class Game {
     this.cine.look = new THREE.CatmullRomCurve3(spec.looks, false, 'catmullrom', 0.4)
     this.minimap.style.opacity = '0'
     useGame.getState().setHud({ cineActive: true })
-    // v6.3: batalla visible durante el sobrevuelo
-    if (spec.battle) this.startCineBattle(spec.battle)
+    // v7: batallas (varios frentes) visibles durante el sobrevuelo
+    const battles = spec.battles ?? (spec.battle ? [spec.battle] : null)
+    if (battles?.length) this.startCineBattle(battles)
   }
 
   /** teletransporte suave del jugador (puntos de control de capítulo) */
@@ -3354,45 +3394,46 @@ export class Game {
   // intercambian fuego (fogonazos, trazadoras, caídas y
   // explosiones) mientras la cámara sobrevuela la escena
   // ----------------------------------------------------------
-  private startCineBattle(spec: CineBattleSpec): void {
+  private startCineBattle(specs: CineBattleSpec[]): void {
     this.endCineBattle()
-    this.cineBattle = spec
-    this.cineBattlePos.set(spec.cx, 1.3, spec.cz)
+    this.cineBattles = specs
     this.cineShotNext = performance.now() + 400
     this.cineBoomNext = performance.now() + 2200 + Math.random() * 1800
-    const dir = new THREE.Vector2(Math.sin(spec.yaw), Math.cos(spec.yaw))
-    const perp = new THREE.Vector2(-dir.y, dir.x)
     const gap = 7.5          // media distancia entre bandos
     const weapons: WeaponId[] = ['ar47', 'ar47', 'mp9', 'p9']
-    for (let side = 0; side < 2; side++) {
-      const team: Team = side === 0 ? 'A' : 'B'
-      const sgn = side === 0 ? -1 : 1
-      for (let i = 0; i < spec.count; i++) {
-        // línea de frente: separación a lo largo del eje perpendicular,
-        // pequeño escalonamiento en profundidad para que no parezcan latas
-        const along = (i - (spec.count - 1) / 2) * 2.6 + (Math.random() - 0.5) * 0.8
-        const depth = gap + Math.random() * 2.2
-        const x = spec.cx + perp.x * along + dir.x * depth * sgn
-        const z = spec.cz + perp.y * along + dir.y * depth * sgn
-        const w = weapons[(i + side) % weapons.length]
-        const parts = buildCineSoldier(team, w)
-        // mirar al bando contrario (el modelo mira a +Z: yaw = atan2(dx,dz))
-        // bando A (lado −dir) mira a +dir; bando B (lado +dir) mira a −dir
-        parts.root.position.set(x, 0.02, z)
-        parts.root.rotation.y = (sgn === -1 ? spec.yaw : spec.yaw + Math.PI) + (Math.random() - 0.5) * 0.14
-        this.scene.add(parts.root)
-        this.cineSoldiers.push({
-          root: parts.root, body: parts.body, muzzle: parts.muzzle,
-          team, weapon: w, fallen: false, fallT: 0,
-          phase: Math.random() * Math.PI * 2,
-        })
+    for (const spec of specs) {
+      const dir = new THREE.Vector2(Math.sin(spec.yaw), Math.cos(spec.yaw))
+      const perp = new THREE.Vector2(-dir.y, dir.x)
+      for (let side = 0; side < 2; side++) {
+        const team: Team = side === 0 ? 'A' : 'B'
+        const sgn = side === 0 ? -1 : 1
+        for (let i = 0; i < spec.count; i++) {
+          // línea de frente: separación a lo largo del eje perpendicular,
+          // pequeño escalonamiento en profundidad para que no parezcan latas
+          const along = (i - (spec.count - 1) / 2) * 2.6 + (Math.random() - 0.5) * 0.8
+          const depth = gap + Math.random() * 2.2
+          const x = spec.cx + perp.x * along + dir.x * depth * sgn
+          const z = spec.cz + perp.y * along + dir.y * depth * sgn
+          const w = weapons[(i + side) % weapons.length]
+          const parts = buildCineSoldier(team, w)
+          // mirar al bando contrario (el modelo mira a +Z: yaw = atan2(dx,dz))
+          // bando A (lado −dir) mira a +dir; bando B (lado +dir) mira a −dir
+          parts.root.position.set(x, 0.02, z)
+          parts.root.rotation.y = (sgn === -1 ? spec.yaw : spec.yaw + Math.PI) + (Math.random() - 0.5) * 0.14
+          this.scene.add(parts.root)
+          this.cineSoldiers.push({
+            root: parts.root, body: parts.body, muzzle: parts.muzzle,
+            team, weapon: w, fallen: false, fallT: 0,
+            phase: Math.random() * Math.PI * 2,
+          })
+        }
       }
     }
   }
 
   private updateCineBattle(dt: number): void {
-    const spec = this.cineBattle
-    if (!spec || !this.cineSoldiers.length) return
+    const specs = this.cineBattles
+    if (!specs.length || !this.cineSoldiers.length) return
     const now = performance.now()
     // caídas en curso
     for (const s of this.cineSoldiers) {
@@ -3403,7 +3444,7 @@ export class Game {
     }
     // disparos: fogonazo + trazadora + sonido lejano
     if (now >= this.cineShotNext) {
-      this.cineShotNext = now + 130 + Math.random() * 260
+      this.cineShotNext = now + 110 + Math.random() * 220
       const standing = this.cineSoldiers.filter(s => !s.fallen)
       if (standing.length > 1) {
         const shooter = standing[Math.floor(Math.random() * standing.length)]
@@ -3434,10 +3475,11 @@ export class Game {
         }
       }
     }
-    // explosión periódica en el frente
+    // explosión periódica: elige UNO de los frentes al azar
     if (now >= this.cineBoomNext) {
       this.cineBoomNext = now + 3400 + Math.random() * 3200
-      const p = this.cineBattlePos.clone()
+      const spec = specs[Math.floor(Math.random() * specs.length)]
+      const p = new THREE.Vector3(spec.cx, 1.0, spec.cz)
       p.x += (Math.random() - 0.5) * 13
       p.z += (Math.random() - 0.5) * 13
       p.y = 0.6 + Math.random() * 1.2
@@ -3449,7 +3491,7 @@ export class Game {
   private endCineBattle(): void {
     for (const s of this.cineSoldiers) this.scene.remove(s.root)
     this.cineSoldiers.length = 0
-    this.cineBattle = null
+    this.cineBattles = []
   }
 
   // ----------------------------------------------------------
@@ -3537,8 +3579,8 @@ export class Game {
     const info = PICKUP_INFO[kind]
     this.audio.pickup(info.shield > 0)
     const parts: string[] = [info.name.toUpperCase()]
-    if (hpGain > 0) parts.push(`+${hpGain} VIDA`)
-    if (shieldGain > 0) parts.push(`+${shieldGain} ESCUDO`)
+    if (hpGain > 0) parts.push(`+${hpGain} HP`)
+    if (shieldGain > 0) parts.push(`+${shieldGain} SHIELD`)
     useGame.getState().addAnnouncement(parts.join(' '), 'info')
   }
 
@@ -3550,10 +3592,14 @@ export class Game {
   }
 
   onHitConfirm(dmg: number, headshot: boolean): void {
-    this.hitMarkers.push({ t: performance.now(), headshot })
+    // v7: hitmarker con escala según daño y animación de entrada
+    this.hitMarkers.push({ t: performance.now(), headshot, dmg })
+    // v7: los números de daño se APILAN (cada uno nace un poco más arriba
+    // para que las ráfagas se lean bien)
+    const recent = this.dmgNumbers.filter(d => performance.now() - d.t < 500).length
     this.dmgNumbers.push({
-      x: innerWidth / 2 + (Math.random() - 0.5) * 70,
-      y: innerHeight / 2 - 40 + (Math.random() - 0.5) * 40,
+      x: innerWidth / 2 + (Math.random() - 0.5) * 64,
+      y: innerHeight / 2 - 34 + (Math.random() - 0.5) * 30 - recent * 22,
       amount: dmg, t: performance.now(), headshot,
     })
     this.audio.hitmarker(headshot)
@@ -3904,7 +3950,7 @@ export class Game {
       ctx.textAlign = 'center'
       ctx.font = 'bold 13px monospace'
       ctx.fillStyle = `rgba(255,255,255,${pulse})`
-      ctx.fillText('CLIC O CUALQUIER TECLA PARA OMITIR', cx, H - barH - 18)
+      ctx.fillText('CLICK OR ANY KEY TO SKIP', cx, H - barH - 18)
     }
 
     // mira telescópica
@@ -3933,21 +3979,36 @@ export class Game {
       ctx.fillRect(cx - 1, cy - 1, 2, 2)
     }
 
-    // hitmarkers
+    // hitmarkers (v7: escala según daño, pop de entrada, crítico largo)
     for (let i = this.hitMarkers.length - 1; i >= 0; i--) {
       const hm = this.hitMarkers[i]
-      const age = (now - hm.t) / 240
+      const life = hm.headshot ? 420 : 260
+      const age = (now - hm.t) / life
       if (age >= 1) { this.hitMarkers.splice(i, 1); continue }
       const a = 1 - age
-      const g = 7, l = 8
-      ctx.strokeStyle = hm.headshot ? `rgba(255,60,60,${a})` : `rgba(255,255,255,${a})`
-      ctx.lineWidth = 2.5
+      // pop inicial (0→1 en 60 ms) + escala según daño
+      const pop = Math.min(1, (now - hm.t) / 60)
+      const dmgScale = 1 + Math.min(0.6, (hm.dmg ?? 30) / 90)
+      const g = (6 + 2 * pop) * dmgScale * (1 - age * 0.25)
+      const l = 9 * dmgScale
+      ctx.strokeStyle = hm.headshot
+        ? `rgba(255,45,45,${a})`
+        : hm.dmg !== undefined && hm.dmg >= 80 ? `rgba(255,140,40,${a})` : `rgba(255,255,255,${a})`
+      ctx.lineWidth = hm.headshot ? 3.2 : 2.6
+      ctx.lineCap = 'round'
       ctx.beginPath()
       ctx.moveTo(cx - g - l, cy - g - l); ctx.lineTo(cx - g, cy - g)
       ctx.moveTo(cx + g, cy + g); ctx.lineTo(cx + g + l, cy + g + l)
       ctx.moveTo(cx - g - l, cy + g + l); ctx.lineTo(cx - g, cy + g)
       ctx.moveTo(cx + g, cy - g); ctx.lineTo(cx + g + l, cy - g - l)
       ctx.stroke()
+      // núcleo de impacto (punto que late)
+      if (hm.headshot) {
+        ctx.fillStyle = `rgba(255,60,60,${a * 0.9})`
+        ctx.beginPath()
+        ctx.arc(cx, cy, 2.6 * dmgScale * (1 - age), 0, Math.PI * 2)
+        ctx.fill()
+      }
     }
 
     // pista de interacción (tirolina)
@@ -3966,16 +4027,25 @@ export class Game {
       ctx.fillText(this.interactHint, cx, by + 23)
     }
 
-    // números de daño
+    // números de daño (v7: tipografía táctica, contorno y rebote de entrada)
     ctx.textAlign = 'center'
-    ctx.font = 'bold 18px "Courier New", monospace'
     for (let i = this.dmgNumbers.length - 1; i >= 0; i--) {
       const dn = this.dmgNumbers[i]
-      const age = (now - dn.t) / 800
+      const age = (now - dn.t) / 850
       if (age >= 1) { this.dmgNumbers.splice(i, 1); continue }
-      const y = dn.y - age * 46
-      const alpha = age < 0.15 ? age / 0.15 : 1 - (age - 0.15) / 0.85
-      ctx.fillStyle = dn.headshot ? `rgba(255,70,70,${alpha})` : `rgba(255,220,80,${alpha})`
+      // rebote: sube rápido al nacer y luego flota
+      const rise = age < 0.18 ? (age / 0.18) * 26 : 26 + (age - 0.18) * 34
+      const y = dn.y - rise
+      const alpha = age < 0.12 ? age / 0.12 : 1 - (age - 0.12) / 0.88
+      const scale = age < 0.14 ? 1.25 - (age / 0.14) * 0.25 : 1
+      const size = (dn.headshot ? 24 : 19) * scale
+      ctx.font = `700 ${size}px ${this.tacFont}, "Courier New", monospace`
+      ctx.lineWidth = 3
+      ctx.strokeStyle = `rgba(0,0,0,${alpha * 0.75})`
+      ctx.strokeText(String(dn.amount), dn.x, y)
+      ctx.fillStyle = dn.headshot
+        ? `rgba(255,64,64,${alpha})`
+        : dn.amount >= 80 ? `rgba(255,150,50,${alpha})` : `rgba(255,226,90,${alpha})`
       ctx.fillText(String(dn.amount), dn.x, y)
     }
 
@@ -4069,44 +4139,88 @@ export class Game {
     const c = document.createElement('canvas')
     c.width = c.height = 240
     const ctx = c.getContext('2d')!
-    ctx.fillStyle = 'rgba(12,14,10,0.88)'
+    // fondo: verde-táctico oscuro (papel de mapa militar)
+    ctx.fillStyle = 'rgba(14,19,16,0.96)'
     ctx.fillRect(0, 0, 240, 240)
     const S = 240 / (this.md.half * 2 + 2) // escala px/m
     const O = 120
-    // cajas (solo muros altos visibles)
+
+    // rejilla táctica cada 20 m
+    ctx.strokeStyle = 'rgba(120,150,130,0.10)'
+    ctx.lineWidth = 1
+    for (let g = -60; g <= 60; g += 20) {
+      const p = O + g * S
+      ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, 240); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(240, p); ctx.stroke()
+    }
+
+    // agua (río / lago / fuentes) en azul
+    ctx.fillStyle = 'rgba(48,110,138,0.55)'
+    for (const w of this.md.water) {
+      const x = O + w.x * S, y = O + w.z * S
+      const ww = Math.max(3, w.w * S), dd = Math.max(3, w.d * S)
+      ctx.fillRect(x - ww / 2, y - dd / 2, ww, dd)
+    }
+
+    // edificios: relleno por altura + contorno fino (huellas nítidas)
     for (const b of this.md.boxes) {
       if (b.h < 1.0) continue
       const x = O + b.x * S, y = O + b.z * S
-      ctx.fillStyle = b.h > 2.5 ? 'rgba(150,140,120,0.65)' : 'rgba(120,112,96,0.45)'
-      ctx.fillRect(x - (b.w * S) / 2, y - (b.d * S) / 2, b.w * S, b.d * S)
+      const w = Math.max(2, b.w * S), d = Math.max(2, b.d * S)
+      if (b.h > 2.5) {
+        ctx.fillStyle = 'rgba(172,162,140,0.82)'
+        ctx.fillRect(x - w / 2, y - d / 2, w, d)
+        ctx.strokeStyle = 'rgba(226,220,204,0.28)'
+        ctx.lineWidth = 0.7
+        ctx.strokeRect(x - w / 2, y - d / 2, w, d)
+      } else {
+        ctx.fillStyle = 'rgba(122,132,116,0.5)'
+        ctx.fillRect(x - w / 2, y - d / 2, w, d)
+      }
     }
-    // zonas de spawn
+
+    // zonas de spawn (círculo punteado del color del equipo)
     if (this.mapId === 'ciudad') {
-      ctx.strokeStyle = 'rgba(245,158,11,0.5)'
+      ctx.setLineDash([3, 3])
+      ctx.lineWidth = 1.4
+      ctx.strokeStyle = 'rgba(245,158,11,0.6)'
       ctx.beginPath(); ctx.arc(O + this.md.spawnA[0] * S, O + this.md.spawnA[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
-      ctx.strokeStyle = 'rgba(34,197,94,0.5)'
+      ctx.strokeStyle = 'rgba(34,197,94,0.6)'
       ctx.beginPath(); ctx.arc(O + this.md.spawnB[0] * S, O + this.md.spawnB[2] * S, GAME.BUY_RADIUS * S, 0, Math.PI * 2); ctx.stroke()
+      ctx.setLineDash([])
     }
+
     // barriles explosivos (puntos rojos)
-    ctx.fillStyle = 'rgba(220,60,40,0.85)'
+    ctx.fillStyle = 'rgba(228,82,56,0.9)'
     for (const b of this.md.barrels) {
       ctx.beginPath()
-      ctx.arc(O + b.x * S, O + b.z * S, 2.2, 0, Math.PI * 2)
+      ctx.arc(O + b.x * S, O + b.z * S, 2.1, 0, Math.PI * 2)
       ctx.fill()
     }
-    // tirolinas (líneas)
-    ctx.strokeStyle = 'rgba(190,200,210,0.55)'
-    ctx.lineWidth = 1.4
+
+    // tirolinas (líneas discontinuas claras)
+    ctx.strokeStyle = 'rgba(196,208,214,0.6)'
+    ctx.lineWidth = 1.2
+    ctx.setLineDash([4, 3])
     for (const z of this.md.ziplines) {
       ctx.beginPath()
       ctx.moveTo(O + z.from[0] * S, O + z.from[2] * S)
       ctx.lineTo(O + z.to[0] * S, O + z.to[2] * S)
       ctx.stroke()
     }
-    // plataformas de salto (cuadrados naranjas)
+    ctx.setLineDash([])
+
+    // plataformas de salto (rombos naranjas)
     ctx.fillStyle = 'rgba(255,140,26,0.9)'
     for (const p of this.md.jumpPads) {
-      ctx.fillRect(O + p.x * S - 2.5, O + p.z * S - 2.5, 5, 5)
+      const x = O + p.x * S, y = O + p.z * S
+      ctx.beginPath()
+      ctx.moveTo(x, y - 3.4)
+      ctx.lineTo(x + 3.4, y)
+      ctx.lineTo(x, y + 3.4)
+      ctx.lineTo(x - 3.4, y)
+      ctx.closePath()
+      ctx.fill()
     }
     this.mapStatic = c
   }
@@ -4114,90 +4228,194 @@ export class Game {
   private drawMinimap(): void {
     const ctx = this.mctx
     const W = this.minimap.width
-    ctx.clearRect(0, 0, W, W)
-    ctx.drawImage(this.mapStatic, 0, 0)
+    const now = performance.now()
+    const C = W / 2
+    const R = W / 2 - 5            // radio útil (marco circular)
+    const ZOOM = 1.9               // zoom táctico: ~37 m de radio visible
     const S = 240 / (this.md.half * 2 + 2)
     const O = 120
-    const now = performance.now()
+    const px = O + this.pos.x * S
+    const py = O + this.pos.z * S
 
-    // pings de enemigos
+    ctx.clearRect(0, 0, W, W)
+
+    // ---- clip circular + fondo ----
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(C, C, R, 0, Math.PI * 2)
+    ctx.clip()
+    ctx.fillStyle = 'rgba(10,13,11,0.94)'
+    ctx.fillRect(0, 0, W, W)
+
+    // ---- mundo ROTADO con el jugador al centro (estilo Warzone) ----
+    ctx.save()
+    ctx.translate(C, C)
+    ctx.rotate(this.yaw)
+    ctx.scale(ZOOM, ZOOM)
+    ctx.translate(-px, -py)
+    ctx.drawImage(this.mapStatic, 0, 0)
+
+    const lw = (n: number): number => n / ZOOM
+
+    // pings de disparos enemigos (círculos que se expanden y desvanecen)
     for (const p of this.pings) {
       const age = (now - p.t) / 2500
-      ctx.fillStyle = `rgba(255,60,60,${1 - age})`
+      const rad = 3 + age * 7
+      ctx.strokeStyle = `rgba(255,72,72,${(1 - age) * 0.9})`
+      ctx.lineWidth = lw(1.6)
       ctx.beginPath()
-      ctx.arc(O + p.x * S, O + p.z * S, 4, 0, Math.PI * 2)
+      ctx.arc(O + p.x * S, O + p.z * S, rad, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.fillStyle = `rgba(255,72,72,${1 - age})`
+      ctx.beginPath()
+      ctx.arc(O + p.x * S, O + p.z * S, 2.2, 0, Math.PI * 2)
       ctx.fill()
     }
 
-    // granadas
-    ctx.fillStyle = 'rgba(250,204,21,0.9)'
+    // granadas en vuelo
+    ctx.fillStyle = 'rgba(250,204,21,0.95)'
     for (const gv of this.grenadeViews.values()) {
       ctx.beginPath()
-      ctx.arc(O + gv.group.position.x * S, O + gv.group.position.z * S, 3, 0, Math.PI * 2)
+      ctx.arc(O + gv.group.position.x * S, O + gv.group.position.z * S, 2.6, 0, Math.PI * 2)
       ctx.fill()
     }
 
-    // banderas (CTF)
+    // banderas (CTF): rombos con borde blanco
     for (const [key, fv] of this.flagViews) {
-      ctx.fillStyle = key === 'a' ? '#f59e0b' : '#22c55e'
       const x = O + fv.group.position.x * S, y = O + fv.group.position.z * S
-      ctx.fillRect(x - 3, y - 3, 6, 6)
-      ctx.strokeStyle = 'rgba(255,255,255,0.8)'
-      ctx.lineWidth = 1
-      ctx.strokeRect(x - 3, y - 3, 6, 6)
-    }
-
-    // objetivos del modo historia (marcadores parpadeantes del director)
-    if (this.story) {
-      const blink = 0.55 + 0.45 * Math.sin(now / 260)
-      for (const mk of this.story.minimapMarkers()) {
-        ctx.globalAlpha = blink
-        ctx.fillStyle = mk.color
-        ctx.beginPath()
-        ctx.arc(O + mk.x * S, O + mk.z * S, 4.5, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.globalAlpha = 1
-      }
+      ctx.fillStyle = key === 'a' ? '#f59e0b' : '#22c55e'
+      ctx.beginPath()
+      ctx.moveTo(x, y - 4); ctx.lineTo(x + 4, y); ctx.lineTo(x, y + 4); ctx.lineTo(x - 4, y)
+      ctx.closePath()
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+      ctx.lineWidth = lw(1)
+      ctx.stroke()
     }
 
     // zonas de dominación
     for (const zv of this.zoneViews) {
       const mat = zv.ring.material as THREE.MeshBasicMaterial
       ctx.strokeStyle = `#${mat.color.getHexString()}`
-      ctx.lineWidth = 1.6
+      ctx.lineWidth = lw(1.8)
       ctx.beginPath()
       ctx.arc(O + zv.letter.position.x * S, O + zv.letter.position.z * S, GAME.DOM_ZONE_RADIUS * S, 0, Math.PI * 2)
       ctx.stroke()
     }
 
-    // remotos
+    // aliados: puntos verdes con tick de orientación
     for (const rp of this.remotes.map.values()) {
       const st = rp.state
-      if (!st || st.dead) continue
-      const x = O + rp.root.position.x * S
-      const y = O + rp.root.position.z * S
-      if (st.team === this.team) {
-        ctx.fillStyle = '#4ade80'
+      if (!st || st.dead || st.team !== this.team) continue
+      const x = O + rp.root.position.x * S, y = O + rp.root.position.z * S
+      ctx.fillStyle = '#4ade80'
+      ctx.beginPath()
+      ctx.arc(x, y, 3, 0, Math.PI * 2)
+      ctx.fill()
+      // dirección a la que mira (yaw del modelo, frente +Z)
+      const myaw = rp.root.rotation.y
+      ctx.strokeStyle = 'rgba(220,255,230,0.9)'
+      ctx.lineWidth = lw(1.6)
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.lineTo(x + Math.sin(myaw) * 6.5, y + Math.cos(myaw) * 6.5)
+      ctx.stroke()
+    }
+
+    // objetivos del modo historia (parpadeantes)
+    if (this.story) {
+      const blink = 0.55 + 0.45 * Math.sin(now / 260)
+      for (const mk of this.story.minimapMarkers()) {
+        ctx.globalAlpha = blink
+        ctx.fillStyle = mk.color
         ctx.beginPath()
-        ctx.arc(x, y, 3.5, 0, Math.PI * 2)
+        ctx.arc(O + mk.x * S, O + mk.z * S, 4, 0, Math.PI * 2)
         ctx.fill()
+        ctx.globalAlpha = 1
+      }
+    }
+    ctx.restore()
+
+    // ---- capa fija (sin rotación) ----
+
+    // cono de visión del jugador (hacia arriba)
+    const cone = ctx.createRadialGradient(C, C, 6, C, C, R * 0.92)
+    cone.addColorStop(0, 'rgba(255,244,214,0.16)')
+    cone.addColorStop(1, 'rgba(255,244,214,0)')
+    ctx.fillStyle = cone
+    ctx.beginPath()
+    ctx.moveTo(C, C)
+    ctx.arc(C, C, R * 0.92, -Math.PI / 2 - 0.62, -Math.PI / 2 + 0.62)
+    ctx.closePath()
+    ctx.fill()
+
+    // flecha del jugador (siempre apuntando arriba)
+    ctx.save()
+    ctx.translate(C, C)
+    ctx.fillStyle = '#ffffff'
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)'
+    ctx.lineWidth = 1.2
+    ctx.beginPath()
+    ctx.moveTo(0, -7.5)
+    ctx.lineTo(5.4, 5.4)
+    ctx.lineTo(0, 2.6)
+    ctx.lineTo(-5.4, 5.4)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+    ctx.restore()
+
+    // marcadores de objetivo FUERA del radio (fijos al borde, estilo baliza)
+    if (this.story) {
+      for (const mk of this.story.minimapMarkers()) {
+        // posición en pantalla tras la rotación
+        const wx = O + mk.x * S - px, wy = O + mk.z * S - py
+        const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw)
+        const sx = (wx * cs - wy * sn) * ZOOM + C
+        const sy = (wx * sn + wy * cs) * ZOOM + C
+        const d = Math.hypot(sx - C, sy - C)
+        if (d < R - 12) continue
+        const k = (R - 11) / Math.max(1, d)
+        const bx = C + (sx - C) * k, by = C + (sy - C) * k
+        ctx.save()
+        ctx.translate(bx, by)
+        ctx.rotate(Math.atan2(sy - C, sx - C) + Math.PI / 2)
+        const blink = 0.6 + 0.4 * Math.sin(now / 260)
+        ctx.globalAlpha = blink
+        ctx.fillStyle = mk.color
+        ctx.beginPath()
+        ctx.moveTo(0, -6); ctx.lineTo(4.6, 2.4); ctx.lineTo(0, 0.6); ctx.lineTo(-4.6, 2.4)
+        ctx.closePath()
+        ctx.fill()
+        ctx.restore()
+        ctx.globalAlpha = 1
       }
     }
 
-    // jugador local (flecha)
-    const px = O + this.pos.x * S, py = O + this.pos.z * S
-    ctx.save()
-    ctx.translate(px, py)
-    ctx.rotate(-this.yaw)
-    ctx.fillStyle = '#ffffff'
+    ctx.restore()   // fin del clip circular
+
+    // ---- anillo exterior + brújula (N siempre visible) ----
+    ctx.strokeStyle = 'rgba(120,124,116,0.55)'
+    ctx.lineWidth = 2
     ctx.beginPath()
-    ctx.moveTo(0, -7)
-    ctx.lineTo(5, 5)
-    ctx.lineTo(0, 2.5)
-    ctx.lineTo(-5, 5)
-    ctx.closePath()
-    ctx.fill()
-    ctx.restore()
+    ctx.arc(C, C, R + 1.5, 0, Math.PI * 2)
+    ctx.stroke()
+    // puntos cardinales (rotan con el mundo)
+    const card: [string, number][] = [['N', 0], ['E', Math.PI / 2], ['S', Math.PI], ['W', -Math.PI / 2]]
+    for (const [label, base] of card) {
+      // dirección en pantalla: norte del mapa rotado por yaw
+      const a = base + this.yaw
+      const x = C + Math.sin(a) * (R + 1.5)
+      const y = C - Math.cos(a) * (R + 1.5)
+      ctx.fillStyle = label === 'N' ? 'rgba(240,190,90,0.95)' : 'rgba(190,196,188,0.8)'
+      ctx.font = `700 10px ${this.tacFont}, monospace`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(label, x, y)
+    }
+
+    // pings del minimapa expiran
+    this.pings = this.pings.filter(p => now - p.t < 2500)
   }
 
   // utilidades

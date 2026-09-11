@@ -1,15 +1,17 @@
 'use client'
 
 // ============================================================
-// EMERGENCY STRIKE → EMERGENCY STRIKE — Menú principal (v6.1)
-// Estética sobria militar: panel oscuro, tipografía condensada,
-// ámbar de acento y detalle por sección (sin look arcade).
+// EMERGENCY STRIKE — Main menu (v7)
+// Full-bleed combat artwork background (img/menu.jpg) with a
+// tactical dark grade, Rajdhani typography, refined tabs and
+// detailed deploy/story panels. All copy in English.
 // ============================================================
 
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { getGame } from '@/game/game-instance'
 import { getAudio } from '@/game/audio'
+import { ASSET_BASE } from '@/game/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -26,28 +28,25 @@ import {
 } from '@/game/shared'
 
 // ============================================================
-// Fondo táctico: negro azulado + bruma + retícula tenue
+// Backdrop: combat artwork + tactical dark grade + film grain
 // ============================================================
 function MenuBackdrop() {
   return (
     <>
+      {/* user's menu artwork */}
       <div
-        className="absolute inset-0"
-        style={{
-          background:
-            'radial-gradient(120% 100% at 70% 18%, #131a1f 0%, #0b0e12 45%, #070809 100%)',
-        }}
+        className="absolute inset-0 bg-cover bg-center"
+        style={{ backgroundImage: `url(${ASSET_BASE}/img/menu.jpg)` }}
       />
-      {/* bruma cálida del atardecer (esquina del sol) */}
+      {/* dark tactical grade so UI text always reads well */}
+      <div className="absolute inset-0" style={{ background: 'linear-gradient(90deg, rgba(5,7,9,0.93) 0%, rgba(5,7,9,0.78) 34%, rgba(6,8,10,0.42) 62%, rgba(4,5,6,0.55) 100%)' }} />
+      <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(5,7,9,0.35) 0%, transparent 30%, rgba(4,5,6,0.6) 100%)' }} />
+      {/* scanlines (subtle CRT flavor) */}
       <div
-        className="absolute -top-32 right-[-10rem] w-[42rem] h-[42rem] rounded-full blur-3xl opacity-60"
-        style={{ background: 'radial-gradient(circle, rgba(196,128,54,0.16), transparent 62%)' }}
+        className="absolute inset-0 opacity-[0.05] pointer-events-none"
+        style={{ backgroundImage: 'repeating-linear-gradient(0deg, rgba(255,255,255,0.7) 0 1px, transparent 1px 3px)' }}
       />
-      <div
-        className="absolute bottom-[-14rem] left-[-12rem] w-[36rem] h-[36rem] rounded-full blur-3xl opacity-50"
-        style={{ background: 'radial-gradient(circle, rgba(52,84,96,0.16), transparent 62%)' }}
-      />
-      {/* retícula técnica */}
+      {/* technical grid */}
       <div
         className="absolute inset-0 opacity-[0.05]"
         style={{
@@ -56,13 +55,31 @@ function MenuBackdrop() {
           backgroundSize: '52px 52px',
         }}
       />
-      {/* esquinas de encuadre */}
-      <div className="absolute inset-4 border border-stone-800/40 rounded-sm" />
+      {/* frame corners */}
+      <div className="absolute inset-4 border border-stone-700/30 rounded-sm pointer-events-none" />
     </>
   )
 }
 
-/** Pestaña táctica (recta, sobria) */
+/** status strip above the tabs (rec dot + coordinates flavor) */
+function StatusStrip() {
+  return (
+    <div className="w-full max-w-5xl flex items-center justify-between mb-4 select-none">
+      <div className="flex items-center gap-2">
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-60" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+        </span>
+        <span className="font-tac-md text-[10px] text-stone-500">LIVE · WEBGL COMBAT SIMULATION</span>
+      </div>
+      <div className="font-tac-md text-[10px] text-stone-600 hidden sm:block">
+        20°41'N · 103°21'W · GRID MERIDIAN-59
+      </div>
+    </div>
+  )
+}
+
+/** Tactical tab */
 function TabButton({ icon: Icon, label, active, onClick }: {
   icon: typeof Play
   label: string
@@ -72,7 +89,7 @@ function TabButton({ icon: Icon, label, active, onClick }: {
   return (
     <button
       onClick={onClick}
-      className={`group relative px-5 sm:px-6 py-2.5 text-xs sm:text-[13px] font-bold uppercase tracking-[0.18em]
+      className={`group relative px-4 sm:px-6 py-2.5 font-tac-md text-[13px]
         transition-colors duration-150 flex items-center gap-2.5 border-t-2 ${
         active
           ? 'text-amber-200 border-amber-500/80 bg-stone-100/[0.04]'
@@ -87,10 +104,10 @@ function TabButton({ icon: Icon, label, active, onClick }: {
 }
 
 // ============================================================
-// Panel de CONTROLES (rebindable) — compartido menú/pausa
+// CONTROLS panel (rebindable) — shared menu/pause
 // ============================================================
-const MOVIMIENTO: ActionId[] = ['fwd', 'back', 'left', 'right', 'sprint', 'crouch', 'jump', 'zipline']
-const COMBATE: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
+const MOVEMENT: ActionId[] = ['fwd', 'back', 'left', 'right', 'sprint', 'crouch', 'jump', 'zipline']
+const COMBAT: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
 
 function useKeyCapture() {
   const [capture, setCapture] = useState<ActionId | null>(null)
@@ -99,11 +116,11 @@ function useKeyCapture() {
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      // Escape cancela · el resto reasigna
+      // Escape cancels · anything else rebinds
       if (e.code !== 'Escape') useGame.getState().setKeybind(capture, e.code)
       setCapture(null)
     }
-    // los botones del RATÓN también se pueden asignar (disparar/apuntar)
+    // MOUSE buttons can also be bound (fire/aim)
     const onMouse = (e: MouseEvent) => {
       e.preventDefault()
       e.stopPropagation()
@@ -123,7 +140,7 @@ function useKeyCapture() {
   return { capture, setCapture }
 }
 
-/** captura de botones del MANDO (sondeo de gamepads) */
+/** gamepad button capture (polling) */
 function usePadCapture() {
   const [padCapture, setPadCapture] = useState<PadAction | null>(null)
   useEffect(() => {
@@ -158,10 +175,10 @@ function KeybindRow({ action, capture, onCapture }: {
   const capturing = capture === action
   return (
     <div className="flex items-center justify-between gap-3 bg-stone-900/50 rounded-md px-3.5 py-2 border border-stone-700/50">
-      <span className="text-stone-300 text-xs font-semibold tracking-wide">{ACTION_LABELS[action]}</span>
+      <span className="font-tac-md text-stone-300 text-[12px]">{ACTION_LABELS[action]}</span>
       <button
         onClick={() => onCapture(action)}
-        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-bold text-[11px] tracking-widest border transition-colors ${
+        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-tac-md text-[11px] tracking-widest border transition-colors ${
           capturing
             ? 'bg-amber-500/15 border-amber-400/70 text-amber-200 animate-pulse'
             : code
@@ -169,7 +186,7 @@ function KeybindRow({ action, capture, onCapture }: {
               : 'bg-red-950/50 border-red-800/60 text-red-300'
         }`}
       >
-        {capturing ? 'TECLA O CLIC' : keyLabel(code)}
+        {capturing ? 'PRESS KEY' : keyLabel(code)}
       </button>
     </div>
   )
@@ -184,10 +201,10 @@ function PadRow({ action, capture, onCapture }: {
   const capturing = capture === action
   return (
     <div className="flex items-center justify-between gap-3 bg-stone-900/50 rounded-md px-3.5 py-2 border border-stone-700/50">
-      <span className="text-stone-300 text-xs font-semibold tracking-wide">{PAD_ACTION_LABELS[action]}</span>
+      <span className="font-tac-md text-stone-300 text-[12px]">{PAD_ACTION_LABELS[action]}</span>
       <button
         onClick={() => onCapture(action)}
-        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-bold text-[11px] tracking-widest border transition-colors ${
+        className={`min-w-[7.5rem] px-3 py-1.5 rounded-md font-tac-md text-[11px] tracking-widest border transition-colors ${
           capturing
             ? 'bg-amber-500/15 border-amber-400/70 text-amber-200 animate-pulse'
             : btn >= 0
@@ -195,7 +212,7 @@ function PadRow({ action, capture, onCapture }: {
               : 'bg-red-950/50 border-red-800/60 text-red-300'
         }`}
       >
-        {capturing ? 'PULSA UN BOTÓN' : btn >= 0 ? padButtonLabel(btn) : '—'}
+        {capturing ? 'PRESS BUTTON' : btn >= 0 ? padButtonLabel(btn) : '—'}
       </button>
     </div>
   )
@@ -209,42 +226,42 @@ export function KeybindsPanel() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-stone-400 text-xs leading-relaxed max-w-md">
-          Haz clic en una tecla y pulsa la nueva asignación — <b className="text-stone-300">teclado o botón del
-          ratón</b> (disparar y apuntar ya se pueden cambiar). Si ya está en uso, la otra acción se libera
-          automáticamente. <b className="text-stone-300">ESC</b> cancela.
+          Click a key and press the new binding — <b className="text-stone-300">keyboard or mouse
+          button</b> (fire and aim can be rebound too). If the key is already in use, the other
+          action is released automatically. <b className="text-stone-300">ESC</b> cancels.
         </p>
         <Button
           onClick={reset}
           variant="secondary"
-          className="h-9 font-bold text-[11px] tracking-widest bg-stone-800 border border-stone-600 hover:bg-stone-700"
+          className="h-9 font-tac-md text-[11px] bg-stone-800 border border-stone-600 hover:bg-stone-700"
         >
-          <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> RESTAURAR POR DEFECTO
+          <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> RESET DEFAULTS
         </Button>
       </div>
 
       <div className="grid md:grid-cols-2 gap-5">
         <div className="space-y-2">
-          <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] flex items-center gap-2 uppercase">
-            <Mouse className="w-4 h-4" /> Movimiento
+          <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2">
+            <Mouse className="w-4 h-4" /> Movement
           </h4>
-          {MOVIMIENTO.map(a => (
+          {MOVEMENT.map(a => (
             <KeybindRow key={a} action={a} capture={capture} onCapture={setCapture} />
           ))}
         </div>
         <div className="space-y-2">
-          <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] flex items-center gap-2 uppercase">
-            <Crosshair className="w-4 h-4" /> Combate (ratón y teclado)
+          <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2">
+            <Crosshair className="w-4 h-4" /> Combat (keyboard & mouse)
           </h4>
-          {COMBATE.map(a => (
+          {COMBAT.map(a => (
             <KeybindRow key={a} action={a} capture={capture} onCapture={setCapture} />
           ))}
         </div>
       </div>
 
-      {/* mando (rebindable) */}
+      {/* gamepad (rebindable) */}
       <div className="bg-stone-950/60 border border-stone-800 rounded-lg p-4">
-        <h4 className="text-stone-300 font-bold tracking-[0.22em] text-[11px] mb-3 flex items-center gap-2 uppercase">
-          <Gamepad2 className="w-4 h-4 text-amber-200/80" /> Mando — botones reasignables (Xbox · PS · genérico)
+        <h4 className="font-tac-md text-stone-300 text-[11px] mb-3 flex items-center gap-2">
+          <Gamepad2 className="w-4 h-4 text-amber-200/80" /> Gamepad — rebindable buttons (Xbox · PS · generic)
         </h4>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
           {(Object.keys(PAD_ACTION_LABELS) as PadAction[]).map(a => (
@@ -252,9 +269,9 @@ export function KeybindsPanel() {
           ))}
         </div>
         <p className="text-stone-600 text-[10px] mt-2.5 leading-relaxed">
-          Haz clic en una acción y pulsa el botón del mando que quieras. Correr va en <b>L3</b> (pulsar el
-          stick izquierdo) por defecto; también corre empujando el stick a fondo. La sensibilidad se ajusta
-          en AJUSTES.
+          Click an action and press the gamepad button you want. Sprint sits on <b>L3</b> (left
+          stick click) by default; fully pushing the stick also sprints. Sensitivity lives in
+          SETTINGS.
         </p>
       </div>
     </div>
@@ -262,7 +279,7 @@ export function KeybindsPanel() {
 }
 
 // ============================================================
-// Panel de AJUSTES — con AUDIO (música y efectos por separado)
+// SETTINGS panel — with AUDIO (separate music/SFX)
 // ============================================================
 export function SettingsPanel() {
   const settings = useGame(s => s.settings)
@@ -271,12 +288,12 @@ export function SettingsPanel() {
     <div className="space-y-7 max-w-xl">
       {/* ---- AUDIO ---- */}
       <section className="space-y-4">
-        <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] flex items-center gap-2 uppercase border-b border-stone-800 pb-2">
+        <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2 border-b border-stone-800 pb-2">
           <Volume2 className="w-4 h-4" /> Audio
         </h4>
         <SliderRow
           icon={<Volume2 className="w-4 h-4" />}
-          label="VOLUMEN GENERAL"
+          label="MASTER VOLUME"
           value={settings.volume} min={0} max={1} step={0.05}
           format={v => `${Math.round(v * 100)}%`}
           onChange={v => {
@@ -286,7 +303,7 @@ export function SettingsPanel() {
         />
         <SliderRow
           icon={<Music2 className="w-4 h-4" />}
-          label="VOLUMEN DE LA MÚSICA"
+          label="MUSIC VOLUME"
           value={settings.musicVol} min={0} max={1} step={0.05}
           format={v => `${Math.round(v * 100)}%`}
           onChange={v => {
@@ -296,7 +313,7 @@ export function SettingsPanel() {
         />
         <SliderRow
           icon={<Bomb className="w-4 h-4" />}
-          label="VOLUMEN DE EFECTOS"
+          label="SFX VOLUME"
           value={settings.sfxVol} min={0} max={1} step={0.05}
           format={v => `${Math.round(v * 100)}%`}
           onChange={v => {
@@ -305,70 +322,70 @@ export function SettingsPanel() {
           }}
         />
         <p className="text-stone-600 text-[10px] leading-relaxed">
-          La música (Musica.mp3) suena en el menú y se atenúa en combate. Los disparos usan los
-          MP3 del repositorio (Pistola · SMG · Rifle · Sniper). Se guarda automáticamente.
+          Music (Musica.mp3) plays in the menu and ducks during combat. Gunshots use the
+          repository MP3s (Pistol · SMG · Rifle · Sniper). Settings save automatically.
         </p>
       </section>
 
       {/* ---- CONTROL ---- */}
       <section className="space-y-4">
-        <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] flex items-center gap-2 uppercase border-b border-stone-800 pb-2">
+        <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2 border-b border-stone-800 pb-2">
           <Mouse className="w-4 h-4" /> Control
         </h4>
         <SliderRow
           icon={<Mouse className="w-4 h-4" />}
-          label="SENSIBILIDAD DEL RATÓN"
+          label="MOUSE SENSITIVITY"
           value={settings.sens} min={0.2} max={3} step={0.05}
           format={v => v.toFixed(2)}
           onChange={v => setSettings({ sens: v })}
         />
         <SliderRow
           icon={<Crosshair className="w-4 h-4" />}
-          label="SENSIBILIDAD AL APUNTAR (ADS)"
+          label="AIM SENSITIVITY (ADS)"
           value={settings.adsSens} min={0.3} max={1.5} step={0.05}
           format={v => `${Math.round(v * 100)}%`}
           onChange={v => setSettings({ adsSens: v })}
         />
         <SliderRow
           icon={<Gamepad2 className="w-4 h-4" />}
-          label="SENSIBILIDAD DEL MANDO"
+          label="GAMEPAD SENSITIVITY"
           value={settings.padSens} min={0.2} max={3} step={0.05}
           format={v => v.toFixed(2)}
           onChange={v => setSettings({ padSens: v })}
         />
       </section>
 
-      {/* ---- GRÁFICOS ---- */}
+      {/* ---- GRAPHICS ---- */}
       <section>
-        <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] flex items-center gap-2 uppercase border-b border-stone-800 pb-2 mb-3">
-          <Gauge className="w-4 h-4" /> Gráficos
+        <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2 border-b border-stone-800 pb-2 mb-3">
+          <Gauge className="w-4 h-4" /> Graphics
         </h4>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {(['baja', 'media', 'alta', 'ultra'] as const).map(q => (
             <button
               key={q}
               onClick={() => setSettings({ quality: q })}
-              className={`rounded-md py-2.5 font-bold tracking-widest text-[11px] border uppercase transition-colors relative ${
+              className={`rounded-md py-2.5 font-tac-md text-[11px] border uppercase transition-colors relative ${
                 settings.quality === q
                   ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
                   : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
               }`}
             >
-              {q.toUpperCase()}
+              {q === 'baja' ? 'LOW' : q === 'media' ? 'MEDIUM' : q === 'alta' ? 'HIGH' : 'ULTRA'}
               {q === 'ultra' && (
                 <span className="absolute -top-1.5 -right-1.5 text-[8px] font-black tracking-normal bg-amber-500 text-stone-900 rounded-sm px-1 py-px">
-                  OPCIONAL
+                  OPTIONAL
                 </span>
               )}
             </button>
           ))}
         </div>
         <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-          <b className="text-stone-300">Se aplica AL INSTANTE</b>, incluso en plena partida (se nota en los FPS).
-          <b className="text-stone-300"> Baja</b>: sin sombras, sin bloom, niebla cerrada y 30 % menos resolución → máx. FPS.
-          <b className="text-stone-300"> Media</b>: sombras 1K, 2 farolas. <b className="text-stone-300"> Alta</b>: sombras 2K, bloom y polvo/aves (recomendada).
-          <b className="text-amber-200/70"> ULTRA</b>: luces reales (fogonazos que iluminan), sol con destello de lente,
-          sombras 4K nítidas, calles mojadas y <b className="text-amber-200/70">reflexión real del agua</b>. No viene activado y, si tu equipo no da abasto, se ajusta solo para no dar lag.
+          <b className="text-stone-300">Applies INSTANTLY</b>, even mid-match (you will notice it in the FPS counter).
+          <b className="text-stone-300"> Low</b>: no shadows, no bloom, tight fog and 30 % less resolution → max FPS.
+          <b className="text-stone-300"> Medium</b>: 1K shadows, 2 lamps. <b className="text-stone-300"> High</b>: 2K shadows, bloom, dust & birds (recommended).
+          <b className="text-amber-200/70"> ULTRA</b>: real lights (muzzle flashes that light up the scene), sun with lens flare,
+          crisp 4K shadows, wet streets and <b className="text-amber-200/70">real-time water reflection</b>. Off by default — and if your rig struggles, it auto-scales so it never lags.
         </p>
       </section>
     </div>
@@ -386,8 +403,8 @@ function SliderRow({ icon, label, value, min, max, step, format, onChange }: {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-stone-400 text-[11px] font-bold tracking-[0.18em] flex items-center gap-2 uppercase">{icon} {label}</span>
-        <span className="text-amber-200 font-bold tabular-nums text-xs">{format(value)}</span>
+        <span className="font-tac-md text-stone-400 text-[11px] flex items-center gap-2">{icon} {label}</span>
+        <span className="font-tac text-amber-200 tabular-nums text-xs">{format(value)}</span>
       </div>
       <Slider min={min} max={max} step={step} value={[value]} onValueChange={v => onChange(v[0])} />
     </div>
@@ -395,57 +412,49 @@ function SliderRow({ icon, label, value, min, max, step, format, onChange }: {
 }
 
 // ============================================================
-// Panel de INFORMACIÓN — mecánicas v5
+// INFO panel — what the game is about (per user request:
+// ONLY the game description, no mechanics grid)
 // ============================================================
-const MECHANICS = [
-  { icon: Swords, title: '5 modos de juego', desc: 'Equipos · FFA · bandera · dominación · OPERACIÓN CENIZA (historia)' },
-  { icon: Radio, title: 'Modo historia ampliado', desc: '6 capítulos, ~25-30 min, VALLE SERENO con cinemáticas y jefe final' },
-  { icon: Eye, title: 'Daño por zonas', desc: 'Headshots letales, caída por distancia, cajas y piernas' },
-  { icon: Coins, title: 'Economía por rondas', desc: 'Cobra por cada baja y victoria, compra en tu base' },
-  { icon: Package, title: 'Armería con 2 huecos', desc: 'Compra armas, equípalas en el hueco 1 o 2 y consérvalas aunque caigas' },
-  { icon: Footprints, title: 'Deslizamiento', desc: 'Agáchate mientras corres para derraparte por el suelo' },
-  { icon: Shield, title: 'Vida estilo Fortnite', desc: '100 HP + 100 escudo; el escudo absorbe primero' },
-  { icon: Volume2, title: 'Audio real', desc: 'Disparos y música en MP3 del repositorio, con mezclador' },
-  { icon: Bomb, title: 'MOLO y humo', desc: 'Granadas incendiarias y cortinas de humo de 12 s' },
-  { icon: Wind, title: 'Tirolinas y saltadores', desc: 'Vuela por cables y catapúltate a los tejados' },
-  { icon: Users, title: 'Salas P2P 1 vs 1', desc: 'Multijugador real por WebRTC (PeerJS) sin servidor propio' },
-  { icon: TreePine, title: 'Mapa vivo', desc: 'Árboles GLB, barriles explosivos y neones' },
-  { icon: Home, title: 'Ciudad con interiores', desc: 'Hotel de 3 plantas, torre de 4, mercado, almacenes, casas' },
-  { icon: Video, title: 'Cinemática de entrada', desc: 'Sobrevuelo del mapa al desplegarte por primera vez' },
-]
-
 export function InfoPanel() {
   return (
-    <div className="space-y-5">
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-        {MECHANICS.map(m => (
-          <div key={m.title} className="flex gap-2.5 bg-stone-950/60 border border-stone-800 rounded-md p-3.5">
-            <m.icon className="w-4 h-4 text-amber-300/80 shrink-0 mt-0.5" />
-            <div>
-              <div className="text-stone-200 text-xs font-bold">{m.title}</div>
-              <div className="text-stone-500 text-[10px] leading-snug mt-0.5">{m.desc}</div>
-            </div>
-          </div>
-        ))}
+    <div className="max-w-2xl space-y-5">
+      <div className="flex items-center gap-4">
+        <div className="w-12 h-12 rounded-md border border-amber-700/50 bg-amber-950/30 flex items-center justify-center shrink-0">
+          <Crosshair className="w-6 h-6 text-amber-400" />
+        </div>
+        <div>
+          <h3 className="font-tac text-2xl tracking-[0.14em] text-stone-100 uppercase">Emergency Strike</h3>
+          <p className="font-tac-md text-[10px] text-amber-300/70">Tactical multiplayer FPS · Operation Ashfall</p>
+        </div>
       </div>
-      <div className="bg-stone-900/40 border border-stone-800 rounded-md p-4 max-w-2xl">
-        <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[11px] mb-2 flex items-center gap-2 uppercase">
-          <Trophy className="w-4 h-4" /> Modo escaramuza
-        </h4>
-        <p className="text-stone-400 text-xs leading-relaxed">
-          Combate por equipos con economía por rondas: gana eliminaciones para tu escuadrón,
-          cobra recompensas, compra mejor equipo en tu base y sube al tejado de las casas.
-          ¡El primer escuadrón en ganar 5 rondas se lleva la partida!
-        </p>
+      <p className="text-stone-300 text-sm leading-relaxed">
+        Emergency Strike is a tactical first-person shooter that runs entirely in your browser.
+        It blends <b className="text-stone-100">CS2-style gunplay</b> — recoil, weapon slots, an economy
+        of kills and a buy menu — with a <b className="text-stone-100">Warzone-style world</b>: a 140×140 m
+        urban map with enterable buildings, ziplines, jump pads, explosive barrels and a night-lit
+        skyline.
+      </p>
+      <p className="text-stone-400 text-sm leading-relaxed">
+        Play the way you want: team deathmatch, free-for-all, capture the flag and domination
+        against smart AI, or open a peer-to-peer room and duel a friend in 1v1 / 2v2 over WebRTC.
+        On top of that sits <b className="text-amber-200">OPERATION ASHFALL</b>, a full single-player
+        campaign across the Serene Valley — six chapters with long cinematic flyovers, live battle
+        fronts, radio dialogue, a boss duel and a timed helicopter extraction.
+      </p>
+      <div className="border-t border-stone-800 pt-4 flex flex-wrap gap-x-6 gap-y-2 font-tac-md text-[10px] text-stone-500">
+        <span className="flex items-center gap-1.5"><Swords className="w-3.5 h-3.5 text-amber-400/60" /> 5 game modes</span>
+        <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-400/60" /> Online 1v1 & 2v2</span>
+        <span className="flex items-center gap-1.5"><Radio className="w-3.5 h-3.5 text-amber-400/60" /> 6-chapter campaign</span>
+        <span className="flex items-center gap-1.5"><Gamepad2 className="w-3.5 h-3.5 text-amber-400/60" /> Full gamepad support</span>
       </div>
     </div>
   )
 }
 
 // ============================================================
-// Menú principal — pestañas tácticas
+// Main menu — tactical tabs
 // ============================================================
-type MenuTab = 'desplegar' | 'historia' | 'controles' | 'ajustes' | 'info'
+type MenuTab = 'deploy' | 'story' | 'controls' | 'settings' | 'info'
 type PlayMode = 'solo' | 'host' | 'guest'
 type RoomKind = '1v1' | '2v2'
 
@@ -453,7 +462,7 @@ export function MainMenu() {
   const phase = useGame(s => s.phase)
   const setPlayerName = useGame(s => s.setPlayerName)
   const setHud = useGame(s => s.setHud)
-  const [tab, setTab] = useState<MenuTab>('desplegar')
+  const [tab, setTab] = useState<MenuTab>('deploy')
   const [name, setName] = useState('')
   const [mode, setMode] = useState<PlayMode>('solo')
   const [code, setCode] = useState('')
@@ -461,15 +470,15 @@ export function MainMenu() {
   const [fillBots, setFillBots] = useState(0)
   const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
   const [error, setError] = useState('')
-  // v6.2: formato de sala online + relleno de huecos con bots
+  // online room format + slot filling
   const [roomKind, setRoomKind] = useState<RoomKind>('1v1')
   const [fillEmpty, setFillEmpty] = useState(true)
 
   if (phase !== 'menu') return null
 
   const launch = (m: PlayMode, roomCode = '', forceMode?: GameMode) => {
-    const n = name.trim() || 'Operador'
-    if (n.length < 2) { setError('El nombre debe tener al menos 2 caracteres'); return }
+    const n = name.trim() || 'Operator'
+    if (n.length < 2) { setError('Name must be at least 2 characters'); return }
     setPlayerName(n)
     setError('')
     setHud({
@@ -500,93 +509,99 @@ export function MainMenu() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
       <MenuBackdrop />
 
       <div className="relative min-h-screen flex flex-col items-center px-4 py-6 sm:py-8">
-        {/* cabecera */}
+        {/* hero header */}
         <div className="w-full max-w-5xl mb-5">
           <div className="flex items-end justify-between">
             <div className="select-none">
-              <h1 className="font-extrabold text-4xl sm:text-5xl tracking-[0.18em] text-stone-100 leading-none">
-                EMERGENCY<span className="text-amber-400 ml-3">STRIKE</span>
+              <h1 className="font-tac text-4xl sm:text-[52px] tracking-[0.22em] text-stone-100 leading-none uppercase"
+                style={{ textShadow: '0 2px 28px rgba(0,0,0,0.8), 0 0 60px rgba(217,160,91,0.18)' }}>
+                Emergency<span className="text-amber-400 ml-3">Strike</span>
               </h1>
-              <p className="text-stone-500 tracking-[0.42em] text-[10px] font-bold uppercase mt-2">
-                FPS táctico multijugador · Operación Ceniza
-              </p>
+              <div className="flex items-center gap-3 mt-2">
+                <span className="h-px w-14 bg-amber-500/50" />
+                <p className="font-tac-md text-stone-400 text-[10px]">
+                  Tactical multiplayer FPS · Operation Ashfall
+                </p>
+              </div>
             </div>
             <div className="hidden sm:flex flex-col items-end gap-1">
-              <span className="text-[10px] font-bold tracking-[0.3em] text-amber-300/70 uppercase">v6.2</span>
-              <span className="text-[10px] font-semibold tracking-[0.2em] text-stone-600 uppercase">
-                Three.js · WebRTC · 5 modos
+              <span className="font-tac-md text-[10px] text-amber-300/70">v7</span>
+              <span className="font-tac-md text-[10px] text-stone-600">
+                Three.js · WebRTC · 5 modes
               </span>
             </div>
           </div>
         </div>
 
-        {/* pestañas */}
+        <StatusStrip />
+
+        {/* tabs */}
         <div className="w-full max-w-5xl flex items-stretch gap-1 mb-0 border-b border-stone-800">
-          <TabButton icon={Play} label="Desplegar" active={tab === 'desplegar'} onClick={() => setTab('desplegar')} />
-          <TabButton icon={Radio} label="Operación" active={tab === 'historia'} onClick={() => setTab('historia')} />
-          <TabButton icon={Keyboard} label="Controles" active={tab === 'controles'} onClick={() => setTab('controles')} />
-          <TabButton icon={Settings} label="Ajustes" active={tab === 'ajustes'} onClick={() => setTab('ajustes')} />
-          <TabButton icon={Info} label="Información" active={tab === 'info'} onClick={() => setTab('info')} />
+          <TabButton icon={Play} label="Deploy" active={tab === 'deploy'} onClick={() => setTab('deploy')} />
+          <TabButton icon={Radio} label="Campaign" active={tab === 'story'} onClick={() => setTab('story')} />
+          <TabButton icon={Keyboard} label="Controls" active={tab === 'controls'} onClick={() => setTab('controls')} />
+          <TabButton icon={Settings} label="Settings" active={tab === 'settings'} onClick={() => setTab('settings')} />
+          <TabButton icon={Info} label="Info" active={tab === 'info'} onClick={() => setTab('info')} />
         </div>
 
-        {/* contenido */}
-        <div className="w-full max-w-5xl bg-[#0d1013]/95 backdrop-blur-sm border-x border-b border-stone-800 shadow-2xl">
+        {/* content card */}
+        <div className="w-full max-w-5xl bg-[#0b0e11]/92 backdrop-blur-md border-x border-b border-stone-800 shadow-2xl">
 
-          {tab === 'desplegar' && (
+          {tab === 'deploy' && (
             <div className="p-5 sm:p-7 grid lg:grid-cols-[1.12fr_0.88fr] gap-6">
-              {/* columna izquierda: despliegue */}
+              {/* left column: deployment */}
               <div className="space-y-5">
                 <div>
-                  <label className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 block uppercase">
-                    Nombre del operador
+                  <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">
+                    Operator name
                   </label>
                   <Input
                     value={name}
                     onChange={e => { setName(e.target.value); setError('') }}
-                    placeholder="Introduce tu nombre de combate"
+                    placeholder="Enter your callsign"
                     maxLength={16}
                     className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
                   />
                   {error && <p className="text-red-400 text-xs mt-2 font-bold">{error}</p>}
                 </div>
 
-                {/* selector de modo de conexión */}
+                {/* connection mode selector */}
                 <div className="grid grid-cols-3 gap-2.5">
                   {([
-                    { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Escaramuza 4v4 contra IA', meta: 'offline' },
-                    { icon: Users, id: 'host', title: 'CREAR SALA', desc: '1v1 o 2v2 con código P2P', meta: 'online' },
-                    { icon: Link2, id: 'guest', title: 'UNIRSE', desc: 'Entra con un código', meta: 'online' },
+                    { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Team deathmatch 4v4 vs AI', meta: 'offline' },
+                    { icon: Users, id: 'host', title: 'CREATE ROOM', desc: '1v1 or 2v2 with a P2P code', meta: 'online' },
+                    { icon: Link2, id: 'guest', title: 'JOIN', desc: 'Enter with a code', meta: 'online' },
                   ] as const).map(m => (
                     <button
                       key={m.id}
                       onClick={() => setMode(m.id)}
-                      className={`rounded-lg border p-3 text-left transition-colors ${
+                      className={`rounded-lg border p-3 text-left transition-colors tac-corner ${
                         mode === m.id
                           ? 'border-amber-500/70 bg-amber-500/[0.07]'
                           : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
                       }`}
                     >
                       <m.icon className={`w-5 h-5 mb-1.5 ${mode === m.id ? 'text-amber-300' : 'text-stone-500'}`} />
-                      <div className={`text-xs font-bold tracking-wider ${mode === m.id ? 'text-white' : 'text-stone-300'}`}>
+                      <div className={`font-tac-md text-[11px] ${mode === m.id ? 'text-white' : 'text-stone-300'}`}>
                         {m.title}
                       </div>
                       <div className="text-[10px] text-stone-500 leading-snug mt-0.5">{m.desc}</div>
-                      <div className={`text-[9px] font-bold tracking-widest mt-1 uppercase ${mode === m.id ? 'text-amber-300/70' : 'text-stone-600'}`}>
+                      <div className={`font-tac-md text-[9px] mt-1 ${mode === m.id ? 'text-amber-300/70' : 'text-stone-600'}`}>
                         {m.meta}
                       </div>
                     </button>
                   ))}
                 </div>
 
-                {/* selector de modo de juego (solo/anfitrión; el invitado juega el del anfitrión) */}
+                {/* game mode selector (solo/host; the guest plays the host's mode) */}
                 {mode !== 'guest' && (
                   <div>
-                    <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 flex items-center gap-2 uppercase">
-                      <Swords className="w-3.5 h-3.5" /> Modo de juego
+                    <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                      <Swords className="w-3.5 h-3.5" /> Game mode
                     </p>
                     <div className="grid grid-cols-2 gap-2">
                       {MODE_LIST.map(id => {
@@ -597,14 +612,14 @@ export function MainMenu() {
                           <button
                             key={id}
                             onClick={() => setGameMode(id)}
-                            className={`rounded-lg border p-2.5 text-left transition-colors ${
+                            className={`rounded-lg border p-2.5 text-left transition-colors tac-corner ${
                               active
                                 ? 'border-amber-500/70 bg-amber-500/[0.07]'
                                 : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
                             }`}
                           >
                             <Icon className={`w-4 h-4 mb-1 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
-                            <div className={`text-[11px] font-bold tracking-wider ${active ? 'text-white' : 'text-stone-300'}`}>
+                            <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>
                               {m.name}
                             </div>
                             <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{m.desc}</div>
@@ -615,32 +630,32 @@ export function MainMenu() {
                   </div>
                 )}
 
-                {/* configuración según modo */}
+                {/* mode-specific config */}
                 {mode === 'solo' && (
-                  <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LA IA" />
+                  <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="AI DIFFICULTY" />
                 )}
                 {mode === 'host' && (
                   <div className="space-y-4">
-                    {/* v6.2: formato de la sala online */}
+                    {/* online room format */}
                     <div>
-                      <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 flex items-center gap-2 uppercase">
-                        <Users className="w-3.5 h-3.5" /> Formato de sala
+                      <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                        <Users className="w-3.5 h-3.5" /> Room format
                       </p>
                       <div className="grid grid-cols-2 gap-2">
                         {([
-                          { id: '1v1', title: '1 vs 1', desc: 'Duelo clásico · entra y juega' },
-                          { id: '2v2', title: '2 vs 2', desc: 'Equipos de 2 · lobby + bots de relleno' },
+                          { id: '1v1', title: '1 vs 1', desc: 'Classic duel · jump straight in' },
+                          { id: '2v2', title: '2 vs 2', desc: 'Teams of 2 · lobby + filler bots' },
                         ] as const).map(k => (
                           <button
                             key={k.id}
                             onClick={() => setRoomKind(k.id)}
-                            className={`rounded-lg border p-2.5 text-left transition-colors ${
+                            className={`rounded-lg border p-2.5 text-left transition-colors tac-corner ${
                               roomKind === k.id
                                 ? 'border-amber-500/70 bg-amber-500/[0.07]'
                                 : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
                             }`}
                           >
-                            <div className={`text-[11px] font-bold tracking-wider ${roomKind === k.id ? 'text-white' : 'text-stone-300'}`}>
+                            <div className={`font-tac-md text-[11px] ${roomKind === k.id ? 'text-white' : 'text-stone-300'}`}>
                               {k.title}
                             </div>
                             <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{k.desc}</div>
@@ -650,11 +665,11 @@ export function MainMenu() {
                     </div>
                     {roomKind === '1v1' ? (
                       <div>
-                        <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 uppercase">BOTS DE RELLENO (POR BANDO)</p>
+                        <p className="font-tac-md text-stone-400 text-[11px] mb-2">FILLER BOTS (PER TEAM)</p>
                         <div className="grid grid-cols-4 gap-2">
                           {[0, 1, 2, 3].map(n => (
                             <Chip key={n} active={fillBots === n} onClick={() => setFillBots(n)}>
-                              {n === 0 ? 'PURO 1v1' : `${n} vs ${n}`}
+                              {n === 0 ? 'PURE 1v1' : `${n} vs ${n}`}
                             </Chip>
                           ))}
                         </div>
@@ -669,11 +684,11 @@ export function MainMenu() {
                         }`}
                       >
                         <div>
-                          <div className={`text-[11px] font-bold tracking-wider ${fillEmpty ? 'text-white' : 'text-stone-300'}`}>
-                            RELLENAR HUECOS CON BOTS
+                          <div className={`font-tac-md text-[11px] ${fillEmpty ? 'text-white' : 'text-stone-300'}`}>
+                            FILL EMPTY SLOTS WITH BOTS
                           </div>
                           <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
-                            Los operadores que falten al iniciar se cubren con IA — la 2v2 nunca queda desequilibrada
+                            Missing operators at start are covered by AI — the 2v2 never plays unbalanced
                           </div>
                         </div>
                         <span className={`w-10 h-6 rounded-full border flex items-center px-0.5 transition-colors shrink-0 ${
@@ -683,72 +698,72 @@ export function MainMenu() {
                         </span>
                       </button>
                     )}
-                    <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LOS BOTS" />
+                    <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="BOT DIFFICULTY" />
                   </div>
                 )}
                 {mode === 'guest' && (
                   <div>
-                    <label className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 block uppercase">Código de sala</label>
+                    <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Room code</label>
                     <Input
                       value={code}
                       onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
                       onKeyDown={e => { if (e.key === 'Enter' && code.length >= 4) launch('guest', code) }}
-                      placeholder="EJ. K7M2P"
+                      placeholder="E.G. K7M2P"
                       className="bg-stone-950/80 border-stone-600 text-white text-2xl h-14 font-bold tracking-[0.3em] text-center"
                     />
                     <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-                      Conexión P2P (WebRTC) a través del servidor público de señalización PeerJS,
-                      con hasta 3 reintentos automáticos.
+                      P2P (WebRTC) connection through the public PeerJS signaling server,
+                      with up to 3 automatic retries.
                     </p>
                   </div>
                 )}
 
-                {/* botón de despliegue */}
+                {/* deploy button */}
                 <button
                   onClick={() => launch(mode, mode === 'guest' ? code : '')}
                   disabled={mode === 'guest' && code.length < 4}
-                  className="group w-full h-14 rounded-md font-bold text-lg tracking-[0.28em] uppercase transition-all
+                  className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
                     bg-stone-100 text-stone-900 hover:bg-amber-200 active:scale-[0.99]
                     disabled:opacity-30 disabled:cursor-not-allowed
                     flex items-center justify-center gap-3"
                 >
                   <Play className="w-5 h-5" />
-                  {mode === 'solo' ? 'Iniciar despliegue' : mode === 'host' ? 'Crear sala' : 'Unirse a la sala'}
+                  {mode === 'solo' ? 'Start deployment' : mode === 'host' ? 'Create room' : 'Join room'}
                   <ChevronRight className="w-5 h-5 opacity-50 group-hover:translate-x-0.5 transition-transform" />
                 </button>
               </div>
 
-              {/* columna derecha: resumen del despliegue */}
+              {/* right column: deployment summary */}
               <div className="border-t lg:border-t-0 lg:border-l border-stone-800/80 pt-5 lg:pt-0 lg:pl-6 space-y-4">
-                <h3 className="text-stone-200 font-bold tracking-[0.22em] text-[11px] uppercase flex items-center gap-2">
-                  <Map className="w-4 h-4 text-amber-300/80" /> Sector Meridiano
+                <h3 className="font-tac-md text-stone-200 text-[11px] flex items-center gap-2">
+                  <Map className="w-4 h-4 text-amber-300/80" /> Sector Meridian
                 </h3>
                 <div className="space-y-2.5 text-xs">
                   {[
-                    ['Terreno', 'Ciudad 140×140 m con distritos ordenados'],
-                    ['Edificios', 'Hotel 3 plantas · torre 4 · mercado · almacenes'],
-                    ['Interiores', '13 edificios practicables con escaleras'],
-                    ['Cobertura', 'Contenedores, sacos, barriles explosivos'],
-                    ['Verticalidad', 'Tirolinas, saltadores y azoteas'],
+                    ['Terrain', '140×140 m city with ordered districts'],
+                    ['Buildings', '3-floor hotel · 4-floor tower · market · warehouses'],
+                    ['Interiors', '13 enterable buildings with stairways'],
+                    ['Cover', 'Containers, sandbags, explosive barrels'],
+                    ['Verticality', 'Ziplines, jump pads and rooftops'],
                   ].map(([k, v]) => (
                     <div key={k} className="flex gap-3 items-baseline">
-                      <span className="text-stone-600 font-bold uppercase text-[10px] tracking-widest w-24 shrink-0">{k}</span>
+                      <span className="font-tac-md text-stone-600 text-[10px] w-24 shrink-0">{k.toUpperCase()}</span>
                       <span className="text-stone-400">{v}</span>
                     </div>
                   ))}
                 </div>
                 <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
-                  <h4 className="text-amber-200/90 font-bold tracking-[0.22em] text-[10px] mb-2 uppercase flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5" /> Novedades v6.2
+                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-2 flex items-center gap-2">
+                    <Clock className="w-3.5 h-3.5" /> What's new in v7
                   </h4>
                   <ul className="space-y-1.5">
                     {[
-                      'Nuevo: salas 2 vs 2 ONLINE — hasta 4 operadores por código (con lobby)',
-                      'Nuevo: modo gráfico ULTRA opcional — reflejo real del agua, sol con destello, luces y sombras vivas',
-                      'ULTRA no viene activado y se ajusta solo para no dar lag',
-                      'Armería con huecos: compra, EQUIPA y elige el hueco de cada arma',
-                      'OPERACIÓN CENIZA: 6 capítulos (25-30 min) en el VALLE SERENO con cinemáticas',
-                      'Audio real: disparos y música en MP3, con volumen ajustable',
+                      'Full English translation across the entire game',
+                      'Rebuilt OPERATION ASHFALL campaign: long Halo-style cinematics with dialogue and live battle fronts, fewer guards',
+                      'Redesigned HUD, circular rotating minimap with compass, and a reworked armory',
+                      'Multi-kill banners now show ONLY for your own kills',
+                      'Sharper damage feedback: blood bursts, hit glow, scaled hitmarkers',
+                      'Faster loading: weapon models download on demand — only what the mode you play uses',
                     ].map(t => (
                       <li key={t} className="text-stone-400 text-[11px] leading-snug flex gap-2">
                         <span className="text-amber-400/70 mt-0.5">·</span> {t}
@@ -760,107 +775,109 @@ export function MainMenu() {
             </div>
           )}
 
-          {tab === 'historia' && (
+          {tab === 'story' && (
             <div className="p-5 sm:p-7 grid lg:grid-cols-[1.05fr_0.95fr] gap-6">
               <div className="space-y-5">
                 <div>
-                  <label className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 block uppercase">
-                    Nombre del operador
+                  <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">
+                    Operator name
                   </label>
                   <Input
                     value={name}
                     onChange={e => { setName(e.target.value); setError('') }}
-                    placeholder="Introduce tu nombre de combate"
+                    placeholder="Enter your callsign"
                     maxLength={16}
                     className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
                   />
                   {error && <p className="text-red-400 text-xs mt-2 font-bold">{error}</p>}
                 </div>
 
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4">
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 tac-corner">
                   <div className="flex items-center gap-3">
-                    <Radio className="w-6 h-6 text-amber-300" />
+                    <div className="w-11 h-11 rounded-md border border-amber-700/50 bg-amber-950/40 flex items-center justify-center shrink-0">
+                      <Radio className="w-5 h-5 text-amber-300" />
+                    </div>
                     <div>
-                      <h3 className="text-white font-bold tracking-[0.2em] text-sm uppercase">Operación Ceniza</h3>
-                      <p className="text-stone-500 text-[10px] tracking-widest uppercase mt-0.5">
-                        Campaña en solitario · Valle Sereno
+                      <h3 className="font-tac text-white text-base tracking-[0.16em] uppercase">Operation Ashfall</h3>
+                      <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">
+                        Single-player campaign · Serene Valley
                       </p>
                     </div>
                   </div>
                   <p className="text-stone-400 text-xs leading-relaxed mt-3">
-                    Un valle al atardecer cerrado por la sierra: río con puente de piedra, lago
-                    con embarcadero, pueblo con plaza, capilla en ruinas y el complejo militar
-                    al norte. Seis capítulos con cinemáticas de cámara, diálogos de radio,
-                    rescate, jefe final y extracción cronometrada.
+                    A valley at dusk locked in by the ridge: a river with a stone bridge, a lake
+                    with a pier, a village with a square, a ruined chapel and the walled military
+                    complex to the north. Six chapters with cinematic flyovers, radio dialogue,
+                    live battle fronts, a rescue, a boss duel and a timed helicopter extraction.
                   </p>
-                  <div className="flex flex-wrap gap-4 mt-3 text-[10px] font-bold tracking-widest uppercase text-stone-500">
-                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 25-30 min</span>
-                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> Valle 140×140</span>
-                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 1 jugador vs IA</span>
+                  <div className="flex flex-wrap gap-4 mt-3 font-tac-md text-[10px] text-stone-500">
+                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 25-35 min</span>
+                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> 140×140 valley</span>
+                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 1 operator vs AI</span>
                   </div>
                 </div>
 
-                <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="DIFICULTAD DE LA MISIÓN" />
+                <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="MISSION DIFFICULTY" />
 
                 <button
                   onClick={() => launch('solo', '', 'historia')}
-                  className="group w-full h-14 rounded-md font-bold text-lg tracking-[0.28em] uppercase transition-all
+                  className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
                     bg-amber-400 text-stone-950 hover:bg-amber-300 active:scale-[0.99]
                     flex items-center justify-center gap-3"
                 >
                   <Radio className="w-5 h-5" />
-                  Comenzar operación
+                  Begin operation
                   <ChevronRight className="w-5 h-5 opacity-60 group-hover:translate-x-0.5 transition-transform" />
                 </button>
               </div>
 
-              {/* capítulos */}
+              {/* chapters */}
               <div className="border-t lg:border-t-0 lg:border-l border-stone-800/80 pt-5 lg:pt-0 lg:pl-6 space-y-2.5">
-                <h3 className="text-stone-200 font-bold tracking-[0.22em] text-[11px] uppercase mb-2">
-                  Estructura de la misión
+                <h3 className="font-tac-md text-stone-200 text-[11px] mb-2">
+                  Mission structure
                 </h3>
                 {[
-                  { n: '01', title: 'La inserción', desc: 'Cruza la sierra, vadea el río y recupera 3 inteligencias: molino, capilla y torre de vigía.', icon: Eye },
-                  { n: '02', title: 'El sitio', desc: 'Defiende el enlace de la plaza del pueblo 4 minutos mientras la Red descarga el plan.', icon: Shield },
-                  { n: '03', title: 'Sabotaje', desc: 'Coloca cargas en las 3 antenas (ALFA · BRAVO · CHARLIE) y apártate de la explosión.', icon: Bomb },
-                  { n: '04', title: 'El prisionero', desc: 'Abre la celda del Sargento Ríos manteniendo E y sobrevive a la alarma mientras escapa.', icon: Heart },
-                  { n: '05', title: 'El comandante', desc: 'Elimina al Cnel. Vega, blindado en el corazón del complejo.', icon: Crosshair },
-                  { n: '06', title: 'La extracción', desc: 'Corre al helipuerto norte contra el reloj antes de que el helicóptero despegue.', icon: Plane },
+                  { n: '01', title: 'First Light', desc: 'Cross the ridge, ford the river and recover 3 intel caches: the mill, the chapel and the watchtower.', icon: Eye },
+                  { n: '02', title: 'Hold the Line', desc: 'Defend the village uplink for 4 minutes while Red drains their defense grid.', icon: Shield },
+                  { n: '03', title: 'Cut the Tower', desc: 'Plant charges on the 3 antennas (ALPHA · BRAVO · CHARLIE) and get clear of the blast.', icon: Bomb },
+                  { n: '04', title: 'The Prisoner', desc: 'Open Sergeant Rivera\u2019s cell holding E and survive the alarm while he escapes.', icon: Heart },
+                  { n: '05', title: 'The Commander', desc: 'Eliminate Col. Vega — armored and waiting in the heart of the complex.', icon: Crosshair },
+                  { n: '06', title: 'Exfil', desc: 'Sprint to the north helipad against the clock before the helicopter leaves.', icon: Plane },
                 ].map(c => (
-                  <div key={c.n} className="flex gap-3.5 bg-stone-950/60 border border-stone-800 rounded-md p-3.5">
+                  <div key={c.n} className="flex gap-3.5 bg-stone-950/60 border border-stone-800 rounded-md p-3.5 tac-corner">
                     <div className="shrink-0 w-9 h-9 rounded border border-stone-700 bg-stone-900 flex items-center justify-center">
                       <c.icon className="w-4 h-4 text-amber-300/80" />
                     </div>
                     <div>
                       <div className="flex items-baseline gap-2">
-                        <span className="text-[10px] font-bold tracking-widest text-stone-600">{c.n}</span>
-                        <span className="text-stone-200 text-xs font-bold uppercase tracking-wider">{c.title}</span>
+                        <span className="font-tac-md text-[10px] text-stone-600">{c.n}</span>
+                        <span className="font-tac-md text-stone-200 text-[12px] uppercase">{c.title}</span>
                       </div>
                       <p className="text-stone-500 text-[11px] leading-snug mt-0.5">{c.desc}</p>
                     </div>
                   </div>
                 ))}
                 <p className="text-stone-600 text-[10px] leading-relaxed pt-1">
-                  Si caes, el capítulo en curso se repite desde su punto de control — el
-                  inventario se conserva. Las armas de la misión se entregan sobre la marcha.
+                  If you fall, the current chapter restarts from its checkpoint — your
+                  inventory is kept. Mission weapons are delivered as you go.
                 </p>
               </div>
             </div>
           )}
 
-          {tab === 'controles' && (
+          {tab === 'controls' && (
             <div className="p-5 sm:p-7">
-              <h3 className="text-stone-200 font-bold tracking-[0.22em] text-[11px] mb-4 uppercase flex items-center gap-2">
-                <Keyboard className="w-4 h-4 text-amber-300/80" /> Asignación de teclas
+              <h3 className="font-tac-md text-stone-200 text-[11px] mb-4 flex items-center gap-2">
+                <Keyboard className="w-4 h-4 text-amber-300/80" /> Key bindings
               </h3>
               <KeybindsPanel />
             </div>
           )}
 
-          {tab === 'ajustes' && (
+          {tab === 'settings' && (
             <div className="p-5 sm:p-7">
-              <h3 className="text-stone-200 font-bold tracking-[0.22em] text-[11px] mb-5 uppercase flex items-center gap-2">
-                <Settings className="w-4 h-4 text-amber-300/80" /> Ajustes del juego
+              <h3 className="font-tac-md text-stone-200 text-[11px] mb-5 flex items-center gap-2">
+                <Settings className="w-4 h-4 text-amber-300/80" /> Game settings
               </h3>
               <SettingsPanel />
             </div>
@@ -868,16 +885,16 @@ export function MainMenu() {
 
           {tab === 'info' && (
             <div className="p-5 sm:p-7">
-              <h3 className="text-stone-200 font-bold tracking-[0.22em] text-[11px] mb-4 uppercase flex items-center gap-2">
-                <Info className="w-4 h-4 text-amber-300/80" /> Mecánicas del juego
+              <h3 className="font-tac-md text-stone-200 text-[11px] mb-4 flex items-center gap-2">
+                <Info className="w-4 h-4 text-amber-300/80" /> About the game
               </h3>
               <InfoPanel />
             </div>
           )}
         </div>
 
-        <p className="text-stone-700 text-[10px] mt-6 tracking-[0.25em] font-bold uppercase">
-          Emergency Strike v6.1 · Three.js + WebRTC (PeerJS) · 5 modos · Ciudad 140×140 + Valle Sereno 140×140
+        <p className="font-tac-md text-stone-700 text-[10px] mt-6 tracking-[0.25em]">
+          Emergency Strike v7 · Three.js + WebRTC (PeerJS) · 5 modes · Meridian City 140×140 · Serene Valley 140×140
         </p>
       </div>
     </div>
@@ -892,7 +909,7 @@ function Chip({ active, onClick, children }: {
   return (
     <button
       onClick={onClick}
-      className={`rounded-md py-2.5 font-bold text-[11px] tracking-widest border uppercase transition-colors ${
+      className={`rounded-md py-2.5 font-tac-md text-[11px] border uppercase transition-colors ${
         active
           ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
           : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
@@ -910,7 +927,7 @@ function DifficultyPicker({ difficulty, setDifficulty, label }: {
 }) {
   return (
     <div>
-      <p className="text-stone-400 text-[11px] font-bold tracking-[0.22em] mb-2 flex items-center gap-2 uppercase">
+      <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
         <Bot className="w-3.5 h-3.5" /> {label}
       </p>
       <div className="grid grid-cols-4 gap-2">
@@ -925,9 +942,9 @@ function DifficultyPicker({ difficulty, setDifficulty, label }: {
 }
 
 // ============================================================
-// Pantalla de conexión (contextual por modo, con sala visible)
-// v6.2: en 2v2 muestra el LOBBY con los 4 huecos; el anfitrión
-// inicia la partida (o arranca sola al llenarse 4/4)
+// Connecting screen (contextual per mode, room code visible)
+// 2v2 shows the LOBBY with 4 slots; the host starts the match
+// (or it auto-starts when 4/4 fill up)
 // ============================================================
 function LobbySlotCard({ name, team, you }: { name: string | null; team: 'A' | 'B'; you?: boolean }) {
   const amber = team === 'A'
@@ -939,12 +956,12 @@ function LobbySlotCard({ name, team, you }: { name: string | null; team: 'A' | '
     }`}>
       <span className={`w-2 h-2 rounded-full shrink-0 ${name ? (amber ? 'bg-amber-400' : 'bg-emerald-400') : 'bg-stone-700'}`} />
       <div className="min-w-0">
-        <div className={`text-xs font-bold tracking-wider truncate ${name ? 'text-stone-100' : 'text-stone-600'}`}>
-          {name ?? 'HUECO LIBRE'}
-          {you && <span className="text-amber-300/80 ml-1.5 text-[9px] tracking-[0.2em]">(TÚ)</span>}
+        <div className={`font-tac-md text-xs truncate ${name ? 'text-stone-100' : 'text-stone-600'}`}>
+          {name ?? 'FREE SLOT'}
+          {you && <span className="font-tac-md text-amber-300/80 ml-1.5 text-[9px]">(YOU)</span>}
         </div>
-        <div className={`text-[9px] font-bold tracking-[0.25em] ${amber ? 'text-amber-300/60' : 'text-emerald-300/60'}`}>
-          {amber ? 'EQUIPO ÁMBAR' : 'EQUIPO VERDE'}
+        <div className={`font-tac-md text-[9px] ${amber ? 'text-amber-300/60' : 'text-emerald-300/60'}`}>
+          {amber ? 'AMBER TEAM' : 'GREEN TEAM'}
         </div>
       </div>
     </div>
@@ -965,12 +982,12 @@ export function ConnectingScreen() {
 
   const showError = mode === 'guest' && netStatus === 'error'
   const copyCode = (): void => {
-    try { void navigator.clipboard.writeText(roomCode) } catch { /* sin permiso */ }
+    try { void navigator.clipboard.writeText(roomCode) } catch { /* no permission */ }
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)
   }
 
-  // v6.2: lobby de la sala 2v2 (anfitrión esperando / invitado dentro)
+  // 2v2 lobby (host waiting / guest inside)
   const inDuoLobby = roomKind === '2v2' && netStatus === 'waiting' && lobby
   const duoPlayers = lobby?.players ?? []
   const slotFor = (id: string, team: 'A' | 'B') => {
@@ -980,18 +997,18 @@ export function ConnectingScreen() {
   const humans = duoPlayers.length
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 px-4">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 px-4" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
       <MenuBackdrop />
       {showError ? (
         <div className="relative text-center space-y-5">
           <div className="w-14 h-14 mx-auto rounded-full border-2 border-red-500/60 flex items-center justify-center text-red-400 text-2xl font-bold">×</div>
-          <p className="text-red-300 text-xl font-bold tracking-[0.25em] uppercase">Conexión fallida</p>
-          <p className="text-stone-500 text-sm max-w-md">{netError || 'Error desconocido'}</p>
+          <p className="font-tac text-red-300 text-xl tracking-[0.25em] uppercase">Connection failed</p>
+          <p className="text-stone-500 text-sm max-w-md">{netError || 'Unknown error'}</p>
           <Button
             onClick={() => useGame.getState().setPhase('menu')}
             className="h-12 px-8 bg-stone-100 text-stone-900 font-bold tracking-widest uppercase hover:bg-amber-200"
           >
-            Volver al menú
+            Back to menu
           </Button>
         </div>
       ) : inDuoLobby ? (
@@ -999,13 +1016,13 @@ export function ConnectingScreen() {
           <div className="text-center space-y-2">
             {mode === 'host' ? (
               <>
-                <p className="text-white text-lg font-bold tracking-[0.25em] uppercase">Sala 2v2 táctica</p>
+                <p className="font-tac text-white text-lg tracking-[0.25em] uppercase">Tactical 2v2 room</p>
                 <button
                   onClick={copyCode}
                   className="inline-flex items-center gap-3 px-6 py-2.5 rounded-md border border-amber-500/50 bg-amber-500/[0.07] hover:bg-amber-500/[0.14] transition-colors group"
-                  title="Copiar código"
+                  title="Copy code"
                 >
-                  <span className="text-amber-200 text-3xl font-bold tracking-[0.3em]">{roomCode}</span>
+                  <span className="font-tac text-amber-200 text-3xl tracking-[0.3em]">{roomCode}</span>
                   {copied
                     ? <Check className="w-5 h-5 text-emerald-400" />
                     : <Copy className="w-5 h-5 text-stone-500 group-hover:text-amber-300" />}
@@ -1013,12 +1030,12 @@ export function ConnectingScreen() {
               </>
             ) : (
               <>
-                <p className="text-white text-lg font-bold tracking-[0.25em] uppercase">En la sala 2v2</p>
-                <p className="text-amber-200 text-2xl font-bold tracking-[0.3em]">{roomCode}</p>
+                <p className="font-tac text-white text-lg tracking-[0.25em] uppercase">Inside the 2v2 room</p>
+                <p className="font-tac text-amber-200 text-2xl tracking-[0.3em]">{roomCode}</p>
               </>
             )}
-            <p className="text-stone-500 text-[11px]">
-              OPERADORES {humans}/4 — los huecos libres se cubren con bots{mode === 'host' ? ' al iniciar' : ''}
+            <p className="font-tac-md text-stone-500 text-[11px]">
+              OPERATORS {humans}/4 — free slots will be filled with bots{mode === 'host' ? ' at start' : ''}
             </p>
           </div>
 
@@ -1032,23 +1049,23 @@ export function ConnectingScreen() {
           {mode === 'host' ? (
             <button
               onClick={() => getGame()?.net.startDuoMatch()}
-              className="group w-full py-3.5 rounded-md font-bold text-base tracking-[0.28em] uppercase transition-all
+              className="group w-full py-3.5 rounded-md font-tac text-base tracking-[0.28em] uppercase transition-all
                 bg-stone-100 text-stone-900 hover:bg-amber-200 active:scale-[0.99]
                 flex items-center justify-center gap-3"
             >
               <Play className="w-5 h-5" />
-              {humans >= 4 ? 'Iniciar partida 2v2' : `Iniciar 2v2 (${humans}/4) con bots`}
+              {humans >= 4 ? 'Start 2v2 match' : `Start 2v2 (${humans}/4) with bots`}
             </button>
           ) : (
             <div className="flex items-center justify-center gap-3 text-stone-400">
               <Loader2 className="w-4 h-4 animate-spin" />
-              <p className="text-sm">Esperando a que el anfitrión inicie la partida…</p>
+              <p className="text-sm">Waiting for the host to start the match…</p>
             </div>
           )}
           <p className="text-stone-600 text-[10px] text-center leading-relaxed">
             {mode === 'host'
-              ? 'Comparte el código: hasta 3 operadores más. La sala arranca sola al llegar a 4/4.'
-              : 'ÁMBAR = tu anfitrión va contigo · VERDE = el equipo rival.'}
+              ? 'Share the code: up to 3 more operators. The room auto-starts at 4/4.'
+              : 'AMBER = you and the host · GREEN = the rival team.'}
           </p>
         </div>
       ) : (
@@ -1057,20 +1074,20 @@ export function ConnectingScreen() {
             <>
               <Loader2 className="w-12 h-12 text-amber-300 animate-spin mx-auto" />
               <div>
-                <p className="text-white text-xl font-bold tracking-[0.25em] uppercase">Sala táctica creada</p>
+                <p className="font-tac text-white text-xl tracking-[0.25em] uppercase">Tactical room created</p>
                 <button
                   onClick={copyCode}
                   className="mt-4 inline-flex items-center gap-3 px-6 py-3 rounded-md border border-amber-500/50 bg-amber-500/[0.07] hover:bg-amber-500/[0.14] transition-colors group"
-                  title="Copiar código"
+                  title="Copy code"
                 >
-                  <span className="text-amber-200 text-3xl font-bold tracking-[0.3em]">{roomCode}</span>
+                  <span className="font-tac text-amber-200 text-3xl tracking-[0.3em]">{roomCode}</span>
                   {copied
                     ? <Check className="w-5 h-5 text-emerald-400" />
                     : <Copy className="w-5 h-5 text-stone-500 group-hover:text-amber-300" />}
                 </button>
                 <p className="text-stone-500 text-xs mt-4 leading-relaxed max-w-sm mx-auto">
-                  Comparte el código con tu rival. Cuando se una, entrará en el bando
-                  contrario. Mientras, la partida funciona contra bots de relleno.
+                  Share the code with your rival. When they join, they enter the opposite
+                  team. Meanwhile the match runs against filler bots.
                 </p>
               </div>
             </>
@@ -1078,25 +1095,25 @@ export function ConnectingScreen() {
             <>
               <Loader2 className="w-12 h-12 text-amber-300 animate-spin mx-auto" />
               <div>
-                <p className="text-white text-xl font-bold tracking-[0.25em] uppercase">Uniéndose a la sala</p>
-                <p className="text-amber-200 text-3xl font-bold tracking-[0.3em] mt-3">{roomCode}</p>
-                <p className="text-stone-500 text-xs mt-3">Estableciendo enlace P2P con el anfitrión…</p>
+                <p className="font-tac text-white text-xl tracking-[0.25em] uppercase">Joining room</p>
+                <p className="font-tac text-amber-200 text-3xl tracking-[0.3em] mt-3">{roomCode}</p>
+                <p className="text-stone-500 text-xs mt-3">Establishing the P2P link with the host…</p>
               </div>
             </>
           ) : (
             <div>
               <Loader2 className="w-12 h-12 text-amber-300 animate-spin mx-auto" />
-              <p className="text-white text-xl font-bold tracking-[0.25em] uppercase mt-4">
-                {useGame.getState().gameMode === 'historia' ? 'Iniciando operación' : 'Estableciendo enlace táctico'}
+              <p className="font-tac text-white text-xl tracking-[0.25em] uppercase mt-4">
+                {useGame.getState().gameMode === 'historia' ? 'Starting operation' : 'Establishing tactical link'}
               </p>
               <p className="text-stone-500 text-xs mt-2">
                 {useGame.getState().gameMode === 'historia'
-                  ? 'Desplegando en la instalación…'
-                  : 'Desplegando operadores IA en el mapa…'}
+                  ? 'Deploying into the valley…'
+                  : 'Deploying AI operators across the map…'}
               </p>
             </div>
           )}
-          <div className="text-stone-700 text-[10px] font-bold tracking-[0.3em] uppercase">Emergency Strike · v6.2</div>
+          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v7</div>
         </div>
       )}
     </div>
@@ -1104,39 +1121,39 @@ export function ConnectingScreen() {
 }
 
 // ============================================================
-// Menú de pausa
+// Pause menu
 // ============================================================
-type PauseTab = 'controles' | 'ajustes' | 'info'
+type PauseTab = 'controls' | 'settings' | 'info'
 
 export function PauseMenu() {
   const phase = useGame(s => s.phase)
-  const [tab, setTab] = useState<PauseTab>('controles')
+  const [tab, setTab] = useState<PauseTab>('controls')
   if (phase !== 'paused') return null
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="w-[min(880px,94vw)] max-h-[92vh] overflow-y-auto bg-[#0d1013]/97 border border-stone-800 shadow-2xl">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
+      <div className="w-[min(880px,94vw)] max-h-[92vh] overflow-y-auto bg-[#0b0e11]/97 border border-stone-800 shadow-2xl rounded-xl">
         <div className="px-5 sm:px-7 pt-5 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-bold text-2xl tracking-[0.2em] text-white uppercase">
-            En <span className="text-amber-300">pausa</span>
+          <h2 className="font-tac text-2xl tracking-[0.2em] text-white uppercase">
+            Game <span className="text-amber-300">paused</span>
           </h2>
           <Button
             onClick={() => getGame()?.requestLock()}
             className="h-11 px-6 bg-stone-100 text-stone-900 font-bold tracking-widest uppercase hover:bg-amber-200"
           >
-            <Play className="w-4 h-4 mr-2" /> Reanudar
+            <Play className="w-4 h-4 mr-2" /> Resume
           </Button>
         </div>
 
         <div className="px-5 sm:px-7 pt-4 flex gap-1 border-b border-stone-800">
-          <TabButton icon={Keyboard} label="Controles" active={tab === 'controles'} onClick={() => setTab('controles')} />
-          <TabButton icon={Settings} label="Ajustes" active={tab === 'ajustes'} onClick={() => setTab('ajustes')} />
-          <TabButton icon={Info} label="Información" active={tab === 'info'} onClick={() => setTab('info')} />
+          <TabButton icon={Keyboard} label="Controls" active={tab === 'controls'} onClick={() => setTab('controls')} />
+          <TabButton icon={Settings} label="Settings" active={tab === 'settings'} onClick={() => setTab('settings')} />
+          <TabButton icon={Info} label="Info" active={tab === 'info'} onClick={() => setTab('info')} />
         </div>
 
         <div className="p-5 sm:p-7">
-          {tab === 'controles' && <KeybindsPanel />}
-          {tab === 'ajustes' && <SettingsPanel />}
+          {tab === 'controls' && <KeybindsPanel />}
+          {tab === 'settings' && <SettingsPanel />}
           {tab === 'info' && <InfoPanel />}
         </div>
 
@@ -1149,7 +1166,7 @@ export function PauseMenu() {
               useGame.getState().setPhase('menu')
             }}
           >
-            <LogOut className="w-4 h-4 mr-2" /> Abandonar partida
+            <LogOut className="w-4 h-4 mr-2" /> Leave match
           </Button>
         </div>
       </div>

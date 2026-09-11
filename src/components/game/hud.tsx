@@ -1,10 +1,17 @@
 'use client'
 
+// ============================================================
+// EMERGENCY STRIKE — In-game HUD (v7)
+// Refined tactical layout: segmented health/shield, slot strip,
+// circular minimap (engine-drawn), styled killfeed and
+// player-only multi-kill banners. All copy in English.
+// ============================================================
+
 import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
-import { WEAPONS, TEAM_INFO, keyLabel, MODES, type Team } from '@/game/shared'
+import { WEAPONS, TEAM_INFO, keyLabel, type Team } from '@/game/shared'
 import { getGame } from '@/game/game-instance'
-import { Crosshair, Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target } from 'lucide-react'
+import { Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target, Crosshair } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 export function Hud() {
@@ -41,9 +48,9 @@ export function Hud() {
   const myKills = scoreboard.find(p => p.id === useGame.getState().playerId)?.kills ?? 0
 
   return (
-    <div className="fixed inset-0 z-30 pointer-events-none font-mono">
-      {/* ===== Barra superior: modo, objetivo y marcador ===== */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-4">
+    <div className="fixed inset-0 z-30 pointer-events-none" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
+      {/* ===== Top bar: mode, objective and score ===== */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3">
         {gameMode === 'escaramuza' && (
           <>
             <TeamScore team="A" kills={round?.scoresA ?? 0} wins={round?.roundWinsA ?? 0} active={team === 'A'} />
@@ -52,13 +59,13 @@ export function Hud() {
           </>
         )}
         {gameMode === 'ffa' && (
-          <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 text-center shadow-xl">
+          <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-lg px-5 py-2 text-center shadow-xl tac-corner">
             <div className="flex items-center gap-2 text-amber-300">
               <Swords className="w-4 h-4" />
-              <span className="text-xl font-black tabular-nums">{myKills} / {round?.scoreTarget ?? 15}</span>
+              <span className="font-tac text-xl tabular-nums">{myKills} / {round?.scoreTarget ?? 15}</span>
             </div>
-            <div className="text-[10px] text-stone-400 tracking-widest">
-              LÍDER: {round?.leader?.name ?? '—'} · {round?.leader?.kills ?? 0}
+            <div className="font-tac-md text-[9px] text-stone-400">
+              LEADER: {round?.leader?.name ?? '—'} · {round?.leader?.kills ?? 0}
             </div>
           </div>
         )}
@@ -73,10 +80,10 @@ export function Hud() {
           <div className="flex items-center gap-3">
             <ZoneChip id="A" zone={round?.zones?.find(z => z.id === 'A')} />
             <RoundChip />
-            <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-4 py-1.5 flex gap-3">
-              <span className="text-xl font-black tabular-nums" style={{ color: TEAM_INFO.A.color }}>{round?.scoresA ?? 0}</span>
+            <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-lg px-4 py-1.5 flex gap-3 tac-corner">
+              <span className="font-tac text-xl tabular-nums" style={{ color: TEAM_INFO.A.color }}>{round?.scoresA ?? 0}</span>
               <span className="text-stone-600 text-sm">/ {round?.scoreTarget ?? 150}</span>
-              <span className="text-xl font-black tabular-nums" style={{ color: TEAM_INFO.B.color }}>{round?.scoresB ?? 0}</span>
+              <span className="font-tac text-xl tabular-nums" style={{ color: TEAM_INFO.B.color }}>{round?.scoresB ?? 0}</span>
             </div>
             <ZoneChip id="B" zone={round?.zones?.find(z => z.id === 'B')} />
             <ZoneChip id="C" zone={round?.zones?.find(z => z.id === 'C')} />
@@ -85,28 +92,51 @@ export function Hud() {
         {gameMode === 'historia' && <StoryPanel />}
       </div>
 
-      {/* ===== Chip de sala (multijugador P2P) ===== */}
+      {/* ===== P2P room chip ===== */}
       <RoomChip />
 
-      {/* ===== Indicador: llevo la bandera ===== */}
+      {/* ===== Carrying the flag ===== */}
       {carryingFlag && phase === 'playing' && (
         <div className="absolute top-36 left-1/2 -translate-x-1/2 bg-amber-500/20 border border-amber-400 rounded-lg px-5 py-1.5 flex items-center gap-2 animate-pulse shadow-2xl">
           <Flag className="w-4 h-4 text-amber-300" />
-          <span className="text-amber-200 text-sm font-black tracking-widest">¡LLEVAS LA BANDERA! CORRE A TU BASE</span>
+          <span className="font-tac-md text-amber-200 text-sm">YOU HAVE THE FLAG — RUN TO YOUR BASE</span>
         </div>
       )}
 
-      {/* ===== Anuncios centrales ===== */}
+      {/* ===== Center announcements (multi-kills get the hero style) ===== */}
       <div className="absolute top-24 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
-        {announcements.map(a => (
+        {announcements.map(a => a.kind === 'multi' ? (
           <div
             key={a.id}
-            className={`px-6 py-1.5 rounded font-black tracking-widest text-center shadow-2xl border ${
+            className="relative px-8 py-1.5 rounded tac-corner"
+            style={{
+              background: 'linear-gradient(180deg, rgba(20,8,4,0.88) 0%, rgba(12,5,3,0.92) 100%)',
+              border: '1px solid rgba(248,113,79,0.65)',
+              boxShadow: '0 0 28px rgba(248,80,40,0.35), inset 0 0 18px rgba(248,80,40,0.12)',
+            }}
+          >
+            <span
+              className="font-tac text-3xl tracking-[0.14em] uppercase text-center block"
+              style={{
+                background: 'linear-gradient(180deg, #ffe2b0 20%, #ff7a45 60%, #e6482c 100%)',
+                WebkitBackgroundClip: 'text',
+                backgroundClip: 'text',
+                color: 'transparent',
+                filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.8))',
+              }}
+            >
+              {a.text}
+            </span>
+          </div>
+        ) : (
+          <div
+            key={a.id}
+            className={`px-6 py-1.5 rounded font-tac tracking-[0.18em] text-center shadow-2xl border uppercase ${
               a.kind === 'round'
                 ? 'bg-stone-950/90 border-amber-500/60 text-amber-300 text-2xl'
                 : a.kind === 'kill'
                   ? 'bg-stone-950/80 border-red-500/50 text-red-300 text-xl'
-                  : 'bg-stone-950/75 border-stone-600/50 text-stone-300 text-sm'
+                  : 'bg-stone-950/75 border-stone-600/50 text-stone-300 text-xs'
             }`}
             style={a.team ? { borderColor: TEAM_INFO[a.team].color + '99', color: TEAM_INFO[a.team].accent } : undefined}
           >
@@ -116,140 +146,168 @@ export function Hud() {
       </div>
 
       {/* ===== Killfeed ===== */}
-      <div className="absolute top-4 right-4 flex flex-col gap-1.5 items-end">
+      <div className="absolute top-4 right-4 flex flex-col gap-1 items-end">
         {killfeed.map(k => (
-          <div key={k.id} className="bg-stone-950/75 rounded px-3 py-1 flex items-center gap-2 text-sm border border-stone-700/60 shadow-lg">
-            <span className="font-bold" style={{ color: TEAM_INFO[k.killerTeam].color }}>{k.killer}</span>
-            <span className="text-stone-400 text-xs">{shortWeapon(k.weapon)}</span>
-            {k.headshot && <Skull className="w-4 h-4 text-red-400" />}
-            <span className="text-stone-500">›</span>
-            <span className="font-bold" style={{ color: TEAM_INFO[k.victimTeam].color }}>{k.victim}</span>
+          <div
+            key={k.id}
+            className="bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1 flex items-center gap-2 text-sm border border-stone-700/50 shadow-lg"
+            style={{ clipPath: 'polygon(6px 0, 100% 0, 100% 100%, 0 100%, 0 6px)' }}
+          >
+            <span className="font-tac" style={{ color: TEAM_INFO[k.killerTeam].color }}>{k.killer}</span>
+            <span className="font-tac text-stone-400 text-[11px] tracking-wider">{shortWeapon(k.weapon)}</span>
+            {k.headshot && <Skull className="w-3.5 h-3.5 text-red-400" />}
+            <span className="text-stone-600 text-[10px]">▸</span>
+            <span className="font-tac" style={{ color: TEAM_INFO[k.victimTeam].color }}>{k.victim}</span>
           </div>
         ))}
       </div>
 
-      {/* ===== Vida y escudo estilo Fortnite (abajo-izquierda) ===== */}
-      <div className="absolute bottom-6 left-6 space-y-2 w-64">
-        <div className="flex items-center gap-3 bg-stone-950/70 rounded-lg px-4 py-2.5 border border-stone-700/60 shadow-xl">
-          <Heart className={`w-5 h-5 ${hp > 60 ? 'text-green-500' : hp > 25 ? 'text-amber-500' : 'text-red-500'}`} />
+      {/* ===== Health & shield — segmented tactical bars (bottom-left) ===== */}
+      <div className="absolute bottom-6 left-6 space-y-2 w-[290px]">
+        {/* HP */}
+        <div
+          className="flex items-center gap-3 bg-stone-950/70 backdrop-blur-sm rounded-md px-4 py-2.5 border border-stone-700/60 shadow-xl tac-corner"
+        >
+          <Heart className={`w-5 h-5 shrink-0 ${hp > 60 ? 'text-green-500' : hp > 25 ? 'text-amber-500' : 'text-red-500'}`} />
           <div className="flex-1">
-            <div className="h-2.5 bg-stone-800 rounded-full overflow-hidden">
-              <div
-                className={`h-full transition-all duration-200 ${hp > 60 ? 'bg-green-500' : hp > 25 ? 'bg-amber-500' : 'bg-red-500'}`}
-                style={{ width: `${Math.max(0, hp)}%` }}
-              />
+            <div className="flex gap-[3px] h-[10px]">
+              {Array.from({ length: 10 }).map((_, i) => {
+                const segHp = Math.min(1, Math.max(0, (hp - i * 10) / 10))
+                const lowHp = hp <= 25
+                return (
+                  <div key={i} className="flex-1 bg-stone-800/90 rounded-[1px] overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-300 ${hp > 60 ? 'bg-gradient-to-r from-green-600 to-green-400' : hp > 25 ? 'bg-gradient-to-r from-amber-600 to-amber-400' : 'bg-gradient-to-r from-red-700 to-red-500'} ${lowHp ? 'animate-pulse' : ''}`}
+                      style={{ width: `${segHp * 100}%` }}
+                    />
+                  </div>
+                )
+              })}
             </div>
           </div>
-          <span className="text-xl font-black tabular-nums text-stone-100 w-10 text-right">{Math.max(0, Math.round(hp))}</span>
+          <span className={`font-tac text-2xl tabular-nums w-10 text-right ${hp > 60 ? 'text-stone-100' : hp > 25 ? 'text-amber-200' : 'text-red-300'}`}>
+            {Math.max(0, Math.round(hp))}
+          </span>
         </div>
-        <div className={`flex items-center gap-3 bg-stone-950/70 rounded-lg px-4 py-2 border shadow-xl transition-opacity ${armor > 0 ? 'border-sky-700/60' : 'border-stone-700/60 opacity-60'}`}>
-          <Shield className="w-5 h-5 text-sky-400" />
+        {/* Shield */}
+        <div className={`flex items-center gap-3 bg-stone-950/70 backdrop-blur-sm rounded-md px-4 py-1.5 border shadow-lg transition-opacity tac-corner ${armor > 0 ? 'border-sky-700/60' : 'border-stone-700/60 opacity-60'}`}>
+          <Shield className="w-4 h-4 text-sky-400 shrink-0" />
           <div className="flex-1">
-            <div className="h-2 bg-stone-800 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-sky-500 to-cyan-400 transition-all duration-200" style={{ width: `${Math.max(0, armor)}%` }} />
+            <div className="flex gap-[3px] h-[7px]">
+              {Array.from({ length: 10 }).map((_, i) => {
+                const segA = Math.min(1, Math.max(0, (armor - i * 10) / 10))
+                return (
+                  <div key={i} className="flex-1 bg-stone-800/90 rounded-[1px] overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-sky-600 to-cyan-300 transition-all duration-300"
+                      style={{ width: `${segA * 100}%` }}
+                    />
+                  </div>
+                )
+              })}
             </div>
           </div>
-          <span className="text-sm font-bold tabular-nums text-sky-300 w-10 text-right">{Math.round(armor)}</span>
+          <span className="font-tac text-base tabular-nums text-sky-300 w-10 text-right">{Math.round(armor)}</span>
         </div>
+        {/* money / frags / smokes */}
         <div className="flex gap-2">
-          <div className="flex items-center gap-1.5 bg-stone-950/70 rounded px-3 py-1.5 border border-amber-700/40 shadow-lg">
+          <div className="flex items-center gap-1.5 bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1.5 border border-amber-700/40 shadow-lg" style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
             <Coins className="w-4 h-4 text-amber-400" />
-            <span className="text-amber-300 font-bold tabular-nums">${money}</span>
+            <span className="font-tac text-amber-300 tabular-nums">${money}</span>
           </div>
-          <div className="flex items-center gap-1.5 bg-stone-950/70 rounded px-3 py-1.5 border border-stone-700/60 shadow-lg">
+          <div className="flex items-center gap-1.5 bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1.5 border border-stone-700/60 shadow-lg" style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
             <Zap className="w-4 h-4 text-lime-400" />
-            <span className="text-lime-300 font-bold tabular-nums">×{frags}</span>
+            <span className="font-tac text-lime-300 tabular-nums">×{frags}</span>
           </div>
-          <div className={`flex items-center gap-1.5 bg-stone-950/70 rounded px-3 py-1.5 border shadow-lg ${smokes > 0 ? 'border-slate-500/70' : 'border-stone-700/60 opacity-60'}`}>
+          <div className={`flex items-center gap-1.5 bg-stone-950/70 backdrop-blur-sm rounded px-3 py-1.5 border shadow-lg ${smokes > 0 ? 'border-slate-500/70' : 'border-stone-700/60 opacity-60'}`} style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
             <svg viewBox="0 0 24 24" className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="9" cy="9" r="2" /><circle cx="15" cy="12" r="2.6" /><circle cx="8.5" cy="15.5" r="2.2" />
             </svg>
-            <span className="text-slate-300 font-bold tabular-nums">×{smokes}</span>
+            <span className="font-tac text-slate-300 tabular-nums">×{smokes}</span>
           </div>
         </div>
       </div>
 
-      {/* ===== Munición y arma (abajo-derecha) ===== */}
+      {/* ===== Weapon & ammo (bottom-right) ===== */}
       <div className="absolute bottom-6 right-6 text-right">
-        {/* tira de huecos (v6.1): qué arma va en cada tecla */}
+        {/* slot strip: which weapon sits on each key */}
         <div className="flex justify-end gap-1.5 mb-2">
           {[0, 1].map(idx => {
-            const w = slots[idx]
-            const active = w != null && w === weapon
+            const sl = slots[idx]
+            const active = sl != null && sl === weapon
             return (
               <div
                 key={idx}
-                className={`px-2 py-1 rounded border text-[10px] font-bold tracking-wider transition-colors ${
-                  active
-                    ? 'bg-amber-500/25 border-amber-500/70 text-amber-200'
-                    : w
-                      ? 'bg-stone-950/70 border-stone-700/70 text-stone-400'
-                      : 'bg-stone-950/40 border-stone-800/60 border-dashed text-stone-600'
-                }`}
+                className={`px-2.5 py-1 rounded-sm border font-tac-md text-[10px] transition-colors ${active ? 'bg-amber-500/25 border-amber-500/70 text-amber-200' : sl ? 'bg-stone-950/70 border-stone-700/70 text-stone-400' : 'bg-stone-950/40 border-stone-800/60 border-dashed text-stone-600'}`}
               >
-                <span className="opacity-70 mr-1">{idx + 1}</span>{w ? shortWeapon(w) : '—'}
+                <span className="opacity-70 mr-1">{idx + 1}</span>{sl ? shortWeapon(sl) : '—'}
               </div>
             )
           })}
-          <div className={`px-2 py-1 rounded border text-[10px] font-bold tracking-wider ${weapon === 'knife' ? 'bg-amber-500/25 border-amber-500/70 text-amber-200' : 'bg-stone-950/70 border-stone-700/70 text-stone-400'}`}>
-            <span className="opacity-70 mr-1">3</span>Cuchillo
+          <div className={`px-2.5 py-1 rounded-sm border font-tac-md text-[10px] ${weapon === 'knife' ? 'bg-amber-500/25 border-amber-500/70 text-amber-200' : 'bg-stone-950/70 border-stone-700/70 text-stone-400'}`}>
+            <span className="opacity-70 mr-1">3</span>Knife
           </div>
         </div>
-        <div className="bg-stone-950/70 rounded-lg px-5 py-3 border border-stone-700/60 shadow-xl">
-          <div className="text-stone-400 text-xs tracking-widest font-bold uppercase">{w.name}</div>
+        <div
+          className="bg-stone-950/70 backdrop-blur-sm rounded-md px-5 py-3 border border-stone-700/60 shadow-xl tac-corner"
+        >
+          <div className="font-tac-md text-stone-400 text-[10px] uppercase">{w.name}</div>
           <div className="flex items-baseline justify-end gap-2 mt-0.5">
-            <span className={`text-4xl font-black tabular-nums ${mag <= w.mag * 0.25 ? 'text-red-400' : 'text-stone-100'}`}>
+            <span className={`font-tac text-[42px] leading-none tabular-nums ${mag <= w.mag * 0.25 ? 'text-red-400' : 'text-stone-100'}`}>
               {w.mag === 0 ? '—' : mag}
             </span>
-            <span className="text-stone-500 text-xl font-bold">/ {w.mag === 0 ? '∞' : reserve}</span>
+            <span className="font-tac text-stone-500 text-xl">/ {w.mag === 0 ? '∞' : reserve}</span>
           </div>
-          {w.sniper && <div className="text-emerald-400 text-[10px] tracking-widest">MIRA ×8</div>}
+          {w.sniper && <div className="font-tac-md text-emerald-400 text-[9px] mt-0.5">SCOPE ×8</div>}
         </div>
       </div>
 
-      {/* ===== MODO HISTORIA: diálogo de radio y pista ===== */}
+      {/* ===== STORY MODE: radio dialogue and hint ===== */}
       {story.active && phase === 'playing' && (
         <>
           {story.dialogue && (
             <div className="absolute bottom-28 left-1/2 -translate-x-1/2 max-w-xl">
-              <div className="flex items-start gap-3 bg-stone-950/85 border border-amber-700/50 rounded-lg px-4 py-2.5 shadow-2xl">
+              <div
+                className="flex items-start gap-3 bg-stone-950/85 backdrop-blur-sm border border-amber-700/50 rounded-md px-4 py-2.5 shadow-2xl tac-corner"
+                style={{ clipPath: 'polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px)' }}
+              >
                 <Radio className="w-4 h-4 text-amber-300 mt-0.5 shrink-0 animate-pulse" />
                 <div>
-                  <span className="text-amber-300 text-[10px] font-bold tracking-[0.3em] uppercase">{story.dialogue.who}</span>
-                  <p className="text-stone-200 text-xs leading-snug">{story.dialogue.text}</p>
+                  <span className="font-tac-md text-amber-300 text-[10px]">{story.dialogue.who}</span>
+                  <p className="text-stone-200 text-[13px] leading-snug" style={{ fontFamily: 'var(--font-geist-sans), system-ui' }}>{story.dialogue.text}</p>
                 </div>
               </div>
             </div>
           )}
           {story.hint && (
-            <div className="absolute top-[58%] left-1/2 -translate-x-1/2 bg-stone-950/75 border border-stone-600/60 rounded px-4 py-1.5">
-              <span className="text-amber-200 text-xs font-bold tracking-wider">{story.hint}</span>
+            <div className="absolute top-[58%] left-1/2 -translate-x-1/2 bg-stone-950/75 border border-stone-600/60 rounded-sm px-4 py-1.5">
+              <span className="font-tac-md text-amber-200 text-[11px]">{story.hint}</span>
             </div>
           )}
         </>
       )}
 
-      {/* ===== Aviso de zona de compra (no en la misión) ===== */}
+      {/* ===== Buy zone notice (not in the campaign) ===== */}
       {buyZone && phase === 'playing' && !story.active && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-950/80 border border-amber-600/50 rounded-lg px-5 py-2 shadow-2xl">
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-stone-950/80 backdrop-blur-sm border border-amber-600/50 rounded-md px-5 py-2 shadow-2xl tac-corner">
           <MapPin className="w-4 h-4 text-amber-400" />
-          <span className="text-amber-200 text-sm font-bold tracking-wide">
-            ZONA DE COMPRA — presiona <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-amber-300">{buyKey}</kbd>
+          <span className="font-tac-md text-amber-200 text-xs">
+            BUY ZONE — press <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-amber-300 text-[10px]">{buyKey}</kbd>
           </span>
         </div>
       )}
 
-      {/* ===== FPS / ping / mando ===== */}
+      {/* ===== FPS / ping / gamepad ===== */}
       <div className="absolute bottom-1 right-2 text-stone-600 text-[10px] font-mono flex items-center gap-3">
         {gamepadConnected && <Gamepad2 className="w-3.5 h-3.5 text-green-500" />}
         {mode !== 'solo' && ping > 0 && <span className="text-stone-500">{ping} MS</span>}
         <span>{fps} FPS</span>
       </div>
 
-      {/* ===== Indicador de equipo ===== */}
-      <div className="absolute top-4 left-[220px] flex items-center gap-2 bg-stone-950/60 rounded px-3 py-1.5 border border-stone-700/50">
+      {/* ===== Team indicator ===== */}
+      <div className="absolute top-[248px] left-4 flex items-center gap-2 bg-stone-950/60 rounded-sm px-3 py-1.5 border border-stone-700/50" style={{ clipPath: 'polygon(5px 0, 100% 0, 100% 100%, 0 100%, 0 5px)' }}>
         <Crosshair className="w-4 h-4" style={{ color: TEAM_INFO[team].color }} />
-        <span className="text-xs font-bold tracking-wider" style={{ color: TEAM_INFO[team].accent }}>
+        <span className="font-tac-md text-[10px]" style={{ color: TEAM_INFO[team].accent }}>
           {TEAM_INFO[team].name}
         </span>
       </div>
@@ -261,59 +319,59 @@ function TeamScore({ team, kills, wins, active }: { team: Team; kills: number; w
   const info = TEAM_INFO[team]
   return (
     <div
-      className={`bg-stone-950/85 border rounded-lg px-3 py-2 text-center shadow-xl min-w-[76px] ${active ? 'ring-1' : ''}`}
+      className={`bg-stone-950/85 backdrop-blur-sm border rounded-md px-3 py-2 text-center shadow-xl min-w-[76px] tac-corner ${active ? 'ring-1' : ''}`}
       style={{ borderColor: info.color + '80', ...(active ? { boxShadow: `0 0 14px ${info.color}44` } : {}) }}
     >
-      <div className="text-[10px] font-bold tracking-widest" style={{ color: info.color }}>{team === 'A' ? 'ÁMBAR' : 'VERDE'}</div>
-      <div className="text-2xl font-black tabular-nums text-stone-100">{kills}</div>
-      <div className="text-[9px] text-stone-500 font-bold">/{30} · ★{wins}</div>
+      <div className="font-tac-md text-[10px]" style={{ color: info.color }}>{team === 'A' ? 'AMBER' : 'GREEN'}</div>
+      <div className="font-tac text-2xl tabular-nums text-stone-100 leading-tight">{kills}</div>
+      <div className="font-tac-md text-[8px] text-stone-500">/{30} · ★{wins}</div>
     </div>
   )
 }
 
-/** chip central: tiempo + ronda */
+/** center chip: time + round */
 function RoundChip() {
   const round = useGame(s => s.round)
   return (
-    <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 text-center shadow-xl">
+    <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-md px-5 py-2 text-center shadow-xl tac-corner">
       <div className="flex items-center gap-2 text-amber-300">
         <Timer className="w-4 h-4" />
-        <span className="text-xl font-black tabular-nums">
+        <span className="font-tac text-xl tabular-nums">
           {formatTime(round?.timeLeft ?? 0)}
         </span>
       </div>
-      <div className="text-[10px] text-stone-400 tracking-widest">
-        RONDA {round?.roundNumber ?? 1}
+      <div className="font-tac-md text-[9px] text-stone-400">
+        ROUND {round?.roundNumber ?? 1}
       </div>
     </div>
   )
 }
 
-/** marcador de bandera (CTF) */
+/** capture the flag score */
 function FlagScore({ team, own, score, target, status }: { team: Team; own: boolean; score: number; target: number; status: string }) {
   const info = TEAM_INFO[team]
   return (
     <div
-      className={`bg-stone-950/85 border rounded-lg px-3 py-2 text-center shadow-xl min-w-[86px] ${own ? 'ring-1' : ''} ${status !== 'home' ? 'animate-pulse' : ''}`}
+      className={`bg-stone-950/85 backdrop-blur-sm border rounded-md px-3 py-2 text-center shadow-xl min-w-[86px] tac-corner ${own ? 'ring-1' : ''} ${status !== 'home' ? 'animate-pulse' : ''}`}
       style={{ borderColor: info.color + (status !== 'home' ? 'ff' : '80'), ...(own ? { boxShadow: `0 0 14px ${info.color}44` } : {}) }}
     >
-      <div className="text-[10px] font-bold tracking-widest flex items-center justify-center gap-1" style={{ color: info.color }}>
-        <Flag className="w-3 h-3" /> {team === 'A' ? 'ÁMBAR' : 'VERDE'}
+      <div className="font-tac-md text-[10px] flex items-center justify-center gap-1" style={{ color: info.color }}>
+        <Flag className="w-3 h-3" /> {team === 'A' ? 'AMBER' : 'GREEN'}
       </div>
-      <div className="text-2xl font-black tabular-nums text-stone-100">{score}<span className="text-stone-500 text-sm">/{target}</span></div>
-      <div className="text-[9px] text-stone-400 font-bold">{status === 'home' ? 'EN BASE' : status === 'carried' ? '¡ROBADA!' : 'CAÍDA'}</div>
+      <div className="font-tac text-2xl tabular-nums text-stone-100 leading-tight">{score}<span className="text-stone-500 text-sm">/{target}</span></div>
+      <div className="font-tac-md text-[8px] text-stone-400">{status === 'home' ? 'AT BASE' : status === 'carried' ? 'STOLEN!' : 'DROPPED'}</div>
     </div>
   )
 }
 
-/** chip de zona de dominación */
+/** domination zone chip */
 function ZoneChip({ id, zone }: { id: string; zone?: { owner: Team | null; prog: number; by: Team | null } }) {
   const color = zone?.owner ? TEAM_INFO[zone.owner].color : '#78716c'
   const capturing = zone && zone.by && zone.prog > 0.02
   return (
-    <div className={`bg-stone-950/85 border rounded-lg px-2.5 py-1.5 text-center shadow-xl min-w-[64px] ${capturing ? 'animate-pulse' : ''}`}
+    <div className={`bg-stone-950/85 backdrop-blur-sm border rounded-md px-2.5 py-1.5 text-center shadow-xl min-w-[64px] tac-corner ${capturing ? 'animate-pulse' : ''}`}
       style={{ borderColor: color + 'aa' }}>
-      <div className="text-[10px] font-black tracking-widest" style={{ color }}>{id === 'A' ? 'ALFA' : id === 'B' ? 'BRAVO' : 'CHARLIE'}</div>
+      <div className="font-tac-md text-[10px]" style={{ color }}>{id === 'A' ? 'ALPHA' : id === 'B' ? 'BRAVO' : 'CHARLIE'}</div>
       <div className="h-1.5 bg-stone-800 rounded-full overflow-hidden mt-1 w-12 mx-auto">
         <div className="h-full transition-all" style={{ width: `${Math.round((zone?.prog ?? 0) * 100)}%`, background: color }} />
       </div>
@@ -323,7 +381,7 @@ function ZoneChip({ id, zone }: { id: string; zone?: { owner: Team | null; prog:
 
 function shortWeapon(id: string): string {
   const names: Record<string, string> = {
-    knife: 'Cuchillo', p9: 'P9', aguila: '.50', mp9: 'MP-9', breacher: 'B-12', ar47: 'AR-47', cr4: 'CR-4', awp338: 'FR-338',
+    knife: 'KNIFE', p9: 'P9', aguila: '.50', mp9: 'MP-9', breacher: 'B-12', ar47: 'AR-47', cr4: 'CR-4', awp338: 'FR-338',
   }
   return names[id] ?? id
 }
@@ -335,7 +393,7 @@ function formatTime(s: number): string {
 }
 
 // ============================================================
-// Chip de sala P2P — código + estado del rival
+// P2P room chip — code + rival status
 // ============================================================
 function RoomChip() {
   const mode = useGame(s => s.mode)
@@ -351,33 +409,33 @@ function RoomChip() {
       await navigator.clipboard.writeText(roomCode)
       setCopied(true)
       setTimeout(() => setCopied(false), 1600)
-    } catch { /* sin permiso de portapapeles */ }
+    } catch { /* no clipboard permission */ }
   }
 
   return (
     <div className="absolute top-[76px] left-1/2 -translate-x-1/2 pointer-events-auto">
-      <div className={`flex items-center gap-3 rounded-lg px-4 py-1.5 border shadow-2xl ${
+      <div className={`flex items-center gap-3 rounded-md px-4 py-1.5 border shadow-2xl tac-corner ${
         connected
           ? 'bg-green-950/70 border-green-700/50'
           : 'bg-stone-950/75 border-amber-700/50 animate-pulse'
       }`}>
         <Users className="w-4 h-4 text-stone-300 shrink-0" />
-        <span className="text-stone-400 text-[10px] font-bold tracking-widest">SALA</span>
-        <span className="text-amber-300 text-lg font-black tracking-[0.2em] tabular-nums">{roomCode}</span>
+        <span className="font-tac-md text-stone-400 text-[9px]">ROOM</span>
+        <span className="font-tac text-amber-300 text-lg tracking-[0.2em] tabular-nums">{roomCode}</span>
         {mode === 'host' && !connected && (
           <>
-            <span className="text-amber-200/80 text-[10px] font-bold tracking-widest hidden sm:inline">ESPERANDO RIVAL…</span>
+            <span className="font-tac-md text-amber-200/80 text-[9px] hidden sm:inline">WAITING FOR RIVAL…</span>
             <button
               onClick={copy}
-              className="bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded px-2 py-1 flex items-center gap-1 text-[10px] font-bold text-stone-200 tracking-widest transition-colors"
+              className="bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded px-2 py-1 flex items-center gap-1 font-tac-md text-[10px] text-stone-200 transition-colors"
             >
-              <Copy className="w-3 h-3" /> {copied ? '¡COPIADO!' : 'COPIAR'}
+              <Copy className="w-3 h-3" /> {copied ? 'COPIED!' : 'COPY'}
             </button>
           </>
         )}
         {connected && (
-          <span className="text-green-300 text-[10px] font-bold tracking-widest flex items-center gap-1">
-            <Wifi className="w-3 h-3" /> {mode === 'host' ? 'RIVAL CONECTADO' : 'P2P ACTIVO'}
+          <span className="font-tac-md text-green-300 text-[9px] flex items-center gap-1">
+            <Wifi className="w-3 h-3" /> {mode === 'host' ? 'RIVAL CONNECTED' : 'P2P ACTIVE'}
           </span>
         )}
       </div>
@@ -402,14 +460,14 @@ export function DeathOverlay() {
   return (
     <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-red-950/25">
       <div className="text-center space-y-4 mt-[-80px]">
-        <p className="text-6xl font-black tracking-widest text-red-500 drop-shadow-[0_0_20px_rgba(0,0,0,0.9)]">
-          ELIMINADO
+        <p className="font-tac text-6xl tracking-[0.2em] text-red-500 uppercase drop-shadow-[0_0_20px_rgba(0,0,0,0.9)]">
+          Eliminated
         </p>
         <p className="text-xl text-stone-200 font-bold">
-          Por <span className="text-red-400">{deathInfo.killer}</span>
+          By <span className="text-red-400">{deathInfo.killer}</span>
         </p>
         <p className="text-stone-400 text-lg">
-          Reapareciendo en <span className="text-amber-300 font-black text-2xl tabular-nums">{countdown}</span> s
+          Respawning in <span className="font-tac text-amber-300 text-2xl tabular-nums">{countdown}</span> s
         </p>
       </div>
     </div>
@@ -417,30 +475,30 @@ export function DeathOverlay() {
 }
 
 // ============================================================
-// MODO HISTORIA — panel de capítulo y pantalla de victoria
+// STORY MODE — chapter panel and victory screen
 // ============================================================
 function StoryPanel() {
   const story = useGame(s => s.story)
   if (!story.active) return null
   return (
     <div className="flex items-center gap-3">
-      <div className="bg-stone-950/85 border border-stone-700 rounded-lg px-5 py-2 shadow-xl text-left">
+      <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-md px-5 py-2 shadow-xl text-left tac-corner">
         <div className="flex items-center gap-2">
           <Radio className="w-3.5 h-3.5 text-amber-300" />
-          <span className="text-amber-200 text-[10px] font-bold tracking-[0.25em] uppercase">
+          <span className="font-tac-md text-amber-200 text-[10px]">
             {story.chapterTitle}
           </span>
         </div>
         <div className="flex items-center gap-2 mt-0.5">
           <Target className="w-3.5 h-3.5 text-stone-500" />
-          <span className="text-stone-200 text-xs font-bold tracking-wide">{story.objective}</span>
-          {story.progress && <span className="text-amber-300 text-xs font-bold tabular-nums">{story.progress}</span>}
+          <span className="font-tac-md text-stone-200 text-[11px]">{story.objective}</span>
+          {story.progress && <span className="font-tac text-amber-300 text-[11px] tabular-nums">{story.progress}</span>}
         </div>
       </div>
       {story.timer > 0 && (
-        <div className="bg-stone-950/85 border border-amber-700/60 rounded-lg px-4 py-2 flex items-center gap-2 shadow-xl">
+        <div className="bg-stone-950/85 backdrop-blur-sm border border-amber-700/60 rounded-md px-4 py-2 flex items-center gap-2 shadow-xl tac-corner">
           <Timer className="w-4 h-4 text-amber-300" />
-          <span className={`text-xl font-black tabular-nums ${story.timer <= 10 ? 'text-red-400 animate-pulse' : 'text-amber-200'}`}>
+          <span className={`font-tac text-xl tabular-nums ${story.timer <= 10 ? 'text-red-400 animate-pulse' : 'text-amber-200'}`}>
             {formatTime(story.timer)}
           </span>
         </div>
@@ -460,19 +518,19 @@ export function StoryVictory() {
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 backdrop-blur-sm pointer-events-auto">
       <div className="text-center space-y-6 max-w-lg px-6">
         <div>
-          <p className="text-[11px] font-bold tracking-[0.5em] text-amber-300/70 uppercase">Operación Ceniza</p>
-          <h2 className="text-5xl font-extrabold tracking-[0.15em] text-white mt-2">MISIÓN</h2>
-          <h2 className="text-5xl font-extrabold tracking-[0.15em] text-amber-400 -mt-1">COMPLETADA</h2>
+          <p className="font-tac-md text-[11px] tracking-[0.5em] text-amber-300/70">Operation Ashfall</p>
+          <h2 className="font-tac text-5xl tracking-[0.12em] text-white mt-2 uppercase">Mission</h2>
+          <h2 className="font-tac text-5xl tracking-[0.12em] text-amber-400 -mt-2 uppercase">Complete</h2>
         </div>
         <div className="flex items-center justify-center gap-8 bg-stone-950/80 border border-stone-700 rounded-lg px-8 py-4">
           <div>
-            <div className="text-[10px] font-bold tracking-[0.3em] text-stone-500 uppercase">Tiempo</div>
-            <div className="text-2xl font-black tabular-nums text-stone-100">{mins}:{String(secs).padStart(2, '0')}</div>
+            <div className="font-tac-md text-[10px] text-stone-500">Time</div>
+            <div className="font-tac text-2xl tabular-nums text-stone-100">{mins}:{String(secs).padStart(2, '0')}</div>
           </div>
           <div className="w-px h-10 bg-stone-700" />
           <div>
-            <div className="text-[10px] font-bold tracking-[0.3em] text-stone-500 uppercase">Bajas</div>
-            <div className="text-2xl font-black tabular-nums text-stone-100">{story.stats.kills}</div>
+            <div className="font-tac-md text-[10px] text-stone-500">Kills</div>
+            <div className="font-tac text-2xl tabular-nums text-stone-100">{story.stats.kills}</div>
           </div>
         </div>
         <Button
@@ -482,7 +540,7 @@ export function StoryVictory() {
           }}
           className="h-12 px-10 bg-stone-100 text-stone-900 font-bold tracking-[0.25em] uppercase hover:bg-amber-200"
         >
-          Volver al menú
+          Back to menu
         </Button>
       </div>
     </div>
