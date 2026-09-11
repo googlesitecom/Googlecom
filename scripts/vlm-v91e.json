@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the image provided, here is the final QA assessment:\n\n1.  **3D Soldier:** **No.** There are no visible enemy or friendly soldiers in the scene. The view shows a stone building, a vehicle, and the environment.\n2.  **First-Person Weapon:** **Yes.** A rifle model (labeled \"AR-47 'CONDOR'\") is visible in the bottom-right foreground, pointing forward.\n3.  **Textured Environment:** **Yes.** The stone building has a distinct masonry texture, the ground has a grassy texture, and the vehicle has dark shading/texturing rather than flat colors.\n4.  **HUD Presence:** **Yes.** The HUD is fully present, including:\n    *   **Minimap:** Top-left (showing zone, paths, and stations).\n    *   **Stats:** Top-center (Alive count, Eliminations).\n    *   **Vitals/Health:** Bottom-left (Health bar at 65).\n    *   **Weapon Info:** Bottom-right (Weapon name and ammo count 30/60).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789139669,
+  "id": "202609112314198ba32315f3384c21",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609112314198ba32315f3384c21",
+  "usage": {
+    "completion_tokens": 225,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 970,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1195
+  }
+}
