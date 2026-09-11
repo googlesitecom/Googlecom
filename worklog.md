@@ -468,3 +468,26 @@ Work Log:
 Stage Summary:
 - Live v9: login + persistent career profiles, user widget, reworked mode rules (3-round TDM, FFA-50, CTF carrier rules, roof-only BRAVO), online 1v1-5v5 + 5-player co-op campaign with strict no-bots, and a complete isolated Battle Royale (20 players, 280×280 island, plane, storm, vehicles, loot, Low/Medium-only graphics).
 - Pendiente: recomendar ROTAR el PAT (expuesto en el chat).
+
+---
+Task ID: v9.1-release
+Agent: Super Z (main)
+Task: user feedback after v9 — the Battle Royale must ALSO run on the user's real models and textures (soldier1.glb, GLB weapons, Pared/Piso, Arbol.glb), and keep the matchmaking behavior (60 s countdown starting at 4 operators online).
+
+Work Log:
+- BR ASSETS (battle-royale.ts, all per-instance so nothing leaks on exit):
+  - soldier1.glb loads inside BR (own template, same normalization as the main game: 1.84 m scale, Sketchfab BLEND→opaque, PBR capped, frustumCulled off) → every one of the 19 bots AND the 10 lobby walkers is the real soldier: SkeletonUtils clone, 7 muted military tints (FFA — one uniform per operator), two-hands AIM pose (SOLDIER_AIM calibration), one-pass hand IK places the weapon between the hands, procedural walk cycle on the mixamo bones (hip sway, knee bend, bounce), easeOutCubic death fall.
+  - GLB weapons everywhere: bots' hands, floating loot (now spinning + bobbing), and the player's viewmodel (buildGLBWeapon ?? buildWeaponModel with weaponPose — also fixes the old backwards-rotated procedural viewmodel). ensureWeaponGLB for the whole pool at init + onWeaponGLBsReady swaps any remaining procedural models live.
+  - Pared/Piso on buildings: preloadAssets({trees:true}) at BR init; materials register themselves and get patched in vivo when the textures land (the player is on the lobby island meanwhile, never sees untextured walls).
+  - Arbol.glb forests: clustered woods (8 masses + scattered, 82/50 by quality) baked per material (~4 draw calls, no shadows for perf), same recipe as the main game; procedural cones remain as fallback and get rebuilt when the template arrives late.
+- DISPOSAL SAFETY (critical): GLB weapon meshes now carry userData.sharedGeo/sharedMat (assets.ts) and building materials userData.sharedMap; BR's disposeTree() skips shared cache resources (weapon cache, tree materials, Pared/Piso textures) while still freeing everything per-instance (soldier template, tinted clones, baked forest geometry, props). Verified leave → re-enter works with fresh state and 0 console errors.
+- BUG FIX (v9 latent): buildBots indexed a 1-element array with Math.floor(rand(0,2)) → undefined anchor → exception → the room spawned ~4-6 bots instead of 20 (~96% probability). Anchor selection rewritten; verified 19 bots + player = 20 operators.
+- LOBBY POLISH: matchmaking labels now say "X/4 OPERATORS ONLINE — the 60-second countdown starts at 4" / "OPERATORS ONLINE"; the misleading click-to-control overlay no longer renders during the queue (player has no control there); the empty minimap fades out during matchmaking.
+- VERIFIED (agent-browser + VLM on the production build): register → menu → BR: 10/10 walkers as real soldiers on the island, countdown starts at 4 operators (58 s), 19 bots, 19/19 soldier rigs after landing, 14+ real GLB weapons in hands, ar47 GLB viewmodel, 56/56 building meshes textured with Pared.jpg (803×789), 4 baked Arbol.glb forest meshes (0 procedural left), 9 loot weapons as GLB, VLM confirms "realistic 3D soldier with uniform/gear textures and a rifle held in hands" and "photographic brick/concrete textures" on facades; leave → re-enter BR works; TDM regression green (8/8 remotes as soldiers with weapons, 0 console errors); tsc clean, build OK, BR still a lazy 64 KB chunk not present in the initial page load.
+- DEPLOY: build:pages + gh-pages + push main (v9.1).
+
+Stage Summary:
+- Battle Royale now runs on the user's own assets: soldier1.glb operators with per-operator uniforms, real GLB weapons (bots, loot, viewmodel), Pared/Piso building textures and Arbol.glb forests.
+- Matchmaking behavior kept and clearer: 4 OPERATORS ONLINE start the 60-second countdown, then the room fills to 20.
+- Fixed the v9 bug that silently shrunk the BR room to ~4-6 operators.
+- Pendiente: recomendar ROTAR el PAT (expuesto en el chat).

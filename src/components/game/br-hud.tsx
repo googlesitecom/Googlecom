@@ -49,21 +49,21 @@ export function BrHud() {
       {phase === 'dead' && <DeathScreen />}
       {phase === 'victory' && <VictoryScreen />}
 
-      {/* click to (re)take control while the match is interactive */}
-      {!locked && (phase === 'queue' || phase === 'plane' || phase === 'live') && (
+      {/* click to (re)take control while the match is interactive
+       *  (v9.1: solo en aviso/partida — en cola la QueueOverlay ya cubre
+       *  todo y el jugador aún no controla nada) */}
+      {!locked && (phase === 'plane' || phase === 'live') && (
         <div
           className="absolute inset-0 z-40 flex items-center justify-center bg-black/55 cursor-pointer pointer-events-auto"
           onClick={() => getBrGame()?.requestLock()}
         >
           <div className="text-center space-y-2.5">
             <p className="font-tac text-3xl tracking-widest text-amber-400 uppercase">
-              {phase === 'queue' ? 'Lobby island' : phase === 'plane' ? 'Aboard the plane' : 'Paused'}
+              {phase === 'plane' ? 'Aboard the plane' : 'Paused'}
             </p>
             <p className="text-stone-300 text-lg">Click to take control</p>
             <p className="text-stone-500 text-sm font-tac-md">
-              {phase === 'queue'
-                ? 'WASD to walk the island while the squad fills'
-                : 'WASD move · SPACE jump / drop · E interact · R reload · ESC mouse'}
+              WASD move · SPACE jump / drop · E interact · R reload · ESC mouse
             </p>
             <Button
               onClick={e => { e.stopPropagation(); getBrGame()?.leave() }}
@@ -104,7 +104,7 @@ function QueueOverlay({ locked }: { locked: boolean }) {
           <p className="font-tac-md text-amber-200/80 text-[11px] tracking-[0.3em]">DEPLOYING IN</p>
           <p className="font-tac text-amber-200 text-6xl tabular-nums leading-none mt-1.5">{countdown}</p>
           <p className="font-tac-md text-stone-500 text-[10px] mt-2">
-            {players.length} connected · room fills to 20 with bots
+            {players.length} OPERATORS ONLINE · room fills to 20 with bots
           </p>
         </div>
       ) : (
@@ -113,7 +113,7 @@ function QueueOverlay({ locked }: { locked: boolean }) {
           <div>
             <p className="font-tac text-white text-lg tracking-widest">CONNECTING OPERATORS</p>
             <p className="font-tac-md text-stone-400 text-[11px] mt-0.5">
-              {players.length}/4 operators detected — the 60-second countdown starts at 4
+              {players.length}/4 OPERATORS ONLINE — the 60-second countdown starts at 4
             </p>
           </div>
         </div>
@@ -122,7 +122,7 @@ function QueueOverlay({ locked }: { locked: boolean }) {
       {/* connected operators */}
       <div className="w-[min(430px,92vw)] bg-stone-950/70 border border-stone-800 rounded-lg p-3">
         <p className="font-tac-md text-stone-500 text-[10px] mb-2 flex items-center gap-2">
-          <Users className="w-3.5 h-3.5" /> CONNECTED — {players.length}
+          <Users className="w-3.5 h-3.5" /> OPERATORS ONLINE — {players.length}
         </p>
         <div className="grid grid-cols-2 gap-1.5">
           {players.map((p, i) => (

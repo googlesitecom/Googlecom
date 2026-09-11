@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Yes, a **realistic 3D soldier** with uniform/gear textures and a rifle held in hands is visible in the bottom right corner of the screen.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789139099,
+  "id": "202609112304545c444b9f755f424b",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "202609112304545c444b9f755f424b",
+  "usage": {
+    "completion_tokens": 34,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1112,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 1146
+  }
+}

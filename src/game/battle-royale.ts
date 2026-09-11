@@ -1,5 +1,5 @@
 // ============================================================
-// EMERGENCY STRIKE — BATTLE ROYALE (v9)
+// EMERGENCY STRIKE — BATTLE ROYALE (v9.1)
 // Standalone 20-operator battle royale module.
 //
 // ISOLATION BY DESIGN (per requirement): this module is only
@@ -10,6 +10,11 @@
 // of the game. The main engine chunks are NOT loaded while BR
 // runs and vice versa.
 //
+// v9.1: BR runs on the SAME real assets as the rest of the game
+// (user request) — soldier1.glb for every operator, GLB weapons
+// in hands + viewmodel, Pared/Piso.jpg on buildings and Arbol.glb
+// forests — with per-instance loading so nothing leaks on exit.
+//
 // Map: 280×280 (twice the 140×140 Team Deathmatch city) with
 // 2 cities, mountains, 2 lakes, forests, drivable vehicles,
 // weapon loot, supply crates and a progressive storm.
@@ -18,13 +23,20 @@
 // Graphics: capped to LOW / MEDIUM for stability.
 // ============================================================
 import * as THREE from 'three'
-import { GAME, WEAPONS, type WeaponId } from './shared'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+import { GAME, WEAPONS, ASSET_BASE, type WeaponId } from './shared'
 import { useBr, type BrQueuePlayer } from './br-store'
 import { useGame } from './store'
 import { useAuth, recordBr } from './auth'
 import { getAudio } from './audio'
-import { getRepoTextures } from './assets'
-import { buildWeaponModel } from './viewmodel'
+import {
+  getRepoTextures, getTreeTemplate, preloadAssets,
+  buildGLBWeapon, ensureWeaponGLB, onWeaponGLBsReady,
+  type TreeTemplate,
+} from './assets'
+import { buildWeaponModel, weaponPose } from './viewmodel'
 
 // ------------------------------------------------------------
 // Constants
@@ -76,6 +88,66 @@ const SIM_NAMES = [
   'Milo', 'Ares', 'Rune', 'Ciro', 'Otto', 'Nyx',
 ]
 
+// ------------------------------------------------------------
+// v9.1 — Real soldier rig (soldier1.glb, same as the main game)
+// ------------------------------------------------------------
+const SOLDIER_HEIGHT = 1.84
+// pose de reposo (bajar brazos de la T-pose) — ejes verificados en el rig mixamo
+const ARM_REST_X = 1.28
+const FORE_BEND_X = -0.45
+// pose de APUNTADO a dos manos (calibrada visualmente contra el rig):
+// trigger = brazo derecho (−X) · apoyo = brazo izquierdo (+X)
+const SOLDIER_AIM = {
+  tArm: { x: 1.45, y: -0.59, z: -1.17 },
+  tFore: { x: -0.34, z: -0.24 },
+  sArm: { x: 1.5, y: 0.43, z: 1.5 },
+  sFore: { x: -0.01, z: 0.05 },
+}
+// el soldado empaqueta la ropa en estos materiales → teñibles por operador
+const TINTABLE_MATS = new Set([
+  'Topmat', 'Hatmat', 'Bottommat',
+  'PackedMaterial1mat', 'PackedMaterial2mat',
+])
+/** FFA: cada operador lleva un uniforme militar distinto */
+const BR_TINTS = [
+  0xc79a4a, // tan
+  0x5a9a6a, // verde
+  0x4a6a7a, // azul grisáceo
+  0x8a6a4a, // marrón
+  0x6a7a5a, // oliva
+  0x7a5a4a, // tierra rojiza
+  0x5a5a6a, // gris
+]
+
+const Z_AXIS = new THREE.Vector3(0, 0, 1)
+const UP_AXIS = new THREE.Vector3(0, 1, 0)
+
+/** busca un hueso por nombre dentro del rig (prefijo mixamorig…) */
+function findBone(root: THREE.Object3D, pattern: RegExp): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null
+  root.traverse(o => {
+    if (!found && pattern.test(o.name)) found = o
+  })
+  return found
+}
+
+/** libera un subtree respetando los recursos COMPARTIDOS con la caché
+ *  global (armas GLB, plantilla de árboles) y las texturas Pared/Piso */
+function disposeTree(root: THREE.Object3D): void {
+  root.traverse(o => {
+    const mesh = o as THREE.Mesh
+    if (mesh.geometry && !mesh.userData.sharedGeo) mesh.geometry.dispose()
+    if (mesh.material && !mesh.userData.sharedMat) {
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      for (const m of mats) {
+        const mm = m as THREE.MeshStandardMaterial
+        if (!(mm.userData as Record<string, unknown> | undefined)?.sharedMap) mm.map?.dispose?.()
+        mm.dispose()
+      }
+    }
+  })
+}
+
 const clamp = (v: number, a: number, b: number): number => Math.max(a, Math.min(b, v))
 const rand = (a: number, b: number): number => a + Math.random() * (b - a)
 const smooth = (t: number): number => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x) }
@@ -119,6 +191,8 @@ interface LootSpot {
   weapon: WeaponId
   taken: boolean
   mesh: THREE.Group | null
+  /** v9.1: objeto flotante (para reemplazarlo por el arma GLB real) */
+  item: THREE.Group | null
 }
 interface BrVehicle {
   x: number; z: number; yaw: number
@@ -142,11 +216,33 @@ interface BrBot {
   targetBot: number
   targetPlayer: boolean
   mesh: THREE.Group | null
+  /** v9.1: cuerpo articulado (soldado GLB o low-poly) */
+  rig: BodyRig | null
+  /** uniforme distinto por operador (FFA) */
+  tint: number
   legPhase: number
   deadAt: number
   dropAt: number     // becomes active when landed
   landed: boolean
   dropX: number; dropZ: number
+}
+
+/** v9.1 — cuerpo de operador: soldado1.glb con huesos o fallback low-poly */
+interface BodyRig {
+  root: THREE.Group
+  body: THREE.Group          // se voltea al morir / se balancea al andar
+  weaponHolder: THREE.Group  // arma agarrada a las manos (IK)
+  legs: [THREE.Object3D, THREE.Object3D]
+  knees: [THREE.Object3D, THREE.Object3D]
+  arms: [THREE.Object3D, THREE.Object3D]
+  forearms: [THREE.Object3D, THREE.Object3D]
+  usingSoldier: boolean
+  /** para regenerar al llegar el GLB / mantener el uniforme */
+  tintIdx: number
+  weaponId: WeaponId
+  /** piernas/brazos del fallback low-poly */
+  pLegs?: THREE.Mesh[]
+  pArms?: THREE.Mesh[]
 }
 
 // ------------------------------------------------------------
@@ -238,11 +334,29 @@ export class BattleRoyaleGame {
   private mapReady = false
 
   // lobby extras
-  private lobbyWalkers: { group: THREE.Group; phase: number; dest: [number, number] }[] = []
+  private lobbyWalkers: { rig: BodyRig; phase: number; dest: [number, number] }[] = []
 
   private hudAt = 0
   private botThink = 0
   private endTime = 0
+
+  // ---- v9.1: real assets (soldier1.glb, GLB weapons, Pared/Piso, Arbol) ----
+  private effQuality: 'baja' | 'media' = 'media'
+  private soldierTemplate: THREE.Group | null = null
+  private soldierLoading = false
+  /** materiales teñidos por variante de uniforme (compartidos entre clones) */
+  private tintCache: Map<THREE.Material, THREE.Material>[] = BR_TINTS.map(() => new Map())
+  private weaponGLBUnsub: (() => void) | null = null
+  /** muros/tejados creados sin textura aún — se parchean al llegar Pared/Piso */
+  private texMats: { mat: THREE.MeshStandardMaterial; kind: 'wall' | 'roof' }[] = []
+  private repoTexTries = 0
+  private forestIsProcedural = false
+  private procForestMeshes: THREE.Mesh[] = []
+  private glbForestMeshes: THREE.Mesh[] = []
+  // viewmodel base pose (weaponPose del arma actual)
+  private vmBase = new THREE.Vector3(0.2, -0.24, -0.5)
+  private vmBaseRot = new THREE.Euler()
+  private vmIsProcedural = true
 
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -258,6 +372,7 @@ export class BattleRoyaleGame {
     const q = useGame.getState().settings.quality
     const eff = (q === 'alta' || q === 'ultra') ? 'media' : q
     if (eff !== q) brSet({ qualityNote: 'Graphics profile capped to MEDIUM in Battle Royale for stability' })
+    this.effQuality = eff as 'baja' | 'media'
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: eff === 'media' })
     this.renderer.setPixelRatio(eff === 'baja' ? 0.75 : Math.min(devicePixelRatio, 1))
@@ -303,8 +418,21 @@ export class BattleRoyaleGame {
 
     getAudio().setDuck(true)   // music ducks down during BR
 
+    // ---- v9.1: the user's real assets (models + textures) in BR too ----
+    // texturas Pared/Piso + plantilla de Arbol.glb (caché compartida; si ya
+    // las bajó el juego principal, aquí están al instante)
+    preloadAssets({ trees: true }).then(() => this.onRepoAssetsReady())
+    // armas GLB del pool: la descarga se reparte durante la cuenta atrás
+    // (carga perezosa por arma) y al llegar se sustituyen los modelos
+    for (const w of WEAPON_POOL) ensureWeaponGLB(w)
+    this.weaponGLBUnsub = onWeaponGLBsReady(() => this.refreshWeaponModels())
+    // soldado1.glb (plantilla por instancia: se libera al salir del BR)
+    this.loadSoldier()
+
     this.bindInput()
     this.lastT = performance.now()
+    // gancho de depuración (tests automatizados), como el __game del motor
+    ;(window as unknown as Record<string, unknown>).__brGame = this
     this.raf = requestAnimationFrame(this.loop)
   }
 
@@ -430,13 +558,15 @@ export class BattleRoyaleGame {
       scene.add(c)
     }
 
-    // waiting operators (bots idle/walking on the island as they "connect")
+    // waiting operators on the island as they "connect"
+    // (v9.1: soldier1.glb con uniforme propio por operador; fallback low-poly
+    //  mientras baja el GLB — swap en cascada al llegar)
     for (let i = 0; i < 10; i++) {
-      const g = this.buildBotMesh(0x3a4a5a, 0x2c3642)
-      g.position.set(rand(-18, 18), 0, rand(-16, 16))
-      g.rotation.y = rand(0, Math.PI * 2)
-      scene.add(g)
-      this.lobbyWalkers.push({ group: g, phase: rand(0, 10), dest: [rand(-16, 16), rand(-16, 16)] })
+      const rig = this.buildBotBody(i, WEAPON_POOL[i % WEAPON_POOL.length])
+      rig.root.position.set(rand(-18, 18), 0, rand(-16, 16))
+      rig.root.rotation.y = rand(0, Math.PI * 2)
+      scene.add(rig.root)
+      this.lobbyWalkers.push({ rig, phase: rand(0, 10), dest: [rand(-16, 16), rand(-16, 16)] })
     }
 
     // far ridge silhouette for depth
@@ -568,11 +698,14 @@ export class BattleRoyaleGame {
     }
   }
 
-  /** building material set — the user's own Pared1/Piso1 textures */
+  /** building material set — the user's own Pared1/Piso1 textures.
+   *  v9.1: si aún no han llegado (BR recién abierto), se registran y se
+   *  parchean en vivo con applyRepoTexToBr() — el jugador está en la isla
+   *  del lobby mientras tanto, así que nunca ve los muros sin textura */
   private buildingMats(): { wall: THREE.MeshStandardMaterial; roof: THREE.MeshStandardMaterial } {
     const repo = getRepoTextures()
-    const pared = (repo as { pared?: THREE.Texture } | null)?.pared ?? null
-    const piso = (repo as { piso?: THREE.Texture } | null)?.piso ?? null
+    const pared = repo.pared ?? null
+    const piso = repo.piso ?? null
     if (pared) { pared.wrapS = pared.wrapT = THREE.RepeatWrapping }
     if (piso) { piso.wrapS = piso.wrapT = THREE.RepeatWrapping }
     const wall = new THREE.MeshStandardMaterial(
@@ -581,7 +714,39 @@ export class BattleRoyaleGame {
     const roof = new THREE.MeshStandardMaterial(
       piso ? { map: piso, roughness: 0.95 } : { color: 0x6b6257, roughness: 0.95 },
     )
+    // el mapa es de la textura COMPARTIDA (caché global): no liberarla al salir
+    wall.userData.sharedMap = true
+    roof.userData.sharedMap = true
+    this.texMats.push({ mat: wall, kind: 'wall' }, { mat: roof, kind: 'roof' })
     return { wall, roof }
+  }
+
+  /** v9.1: aplica Pared/Piso a los materiales creados sin textura */
+  private applyRepoTexToBr(): boolean {
+    const repo = getRepoTextures()
+    if (!repo.pared || !repo.piso) return false
+    for (const { mat, kind } of this.texMats) {
+      const tex = kind === 'wall' ? repo.pared : repo.piso
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+      if (mat.map !== tex) {
+        mat.map = tex
+        mat.color.set(0xffffff)
+        mat.needsUpdate = true
+      }
+    }
+    return true
+  }
+
+  /** v9.1: al resolver preloadAssets — texturas a los muros y Arbol.glb
+   *  a los bosques (con reintentos si la carga seguía en vuelo) */
+  private onRepoAssetsReady(): void {
+    if (this.disposed) return
+    this.applyRepoTexToBr()
+    const tree = getTreeTemplate()
+    if (tree && this.forestIsProcedural && this.mapScene) this.rebuildForests(tree)
+    if ((!getRepoTextures().pared || !getTreeTemplate()) && ++this.repoTexTries < 14) {
+      setTimeout(() => this.onRepoAssetsReady(), 700)
+    }
   }
 
   private buildCity(idx: number): void {
@@ -701,23 +866,21 @@ export class BattleRoyaleGame {
     }
   }
 
+  /** v9.1: bosques con Arbol.glb del usuario (horneado por material, ~4 draw
+   *  calls) si la plantilla está lista; si no, conos procedurales que se
+   *  reemplazan en cuanto llega (onRepoAssetsReady → rebuildForests) */
   private buildForests(eff: string): void {
-    const count = eff === 'baja' ? 150 : 230
-    const spots: TreeCol[] = []
-    let tries = 0
-    while (spots.length < count && tries < count * 6) {
-      tries++
-      const x = rand(-MAP + 8, MAP - 8)
-      const z = rand(-MAP + 8, MAP - 8)
-      const h = terrainH(x, z)
-      if (h < -0.6 || h > 20) continue
-      if (CITIES.some(c => Math.hypot(x - c.x, z - c.z) < c.r + 4)) continue
-      if (POIS.some(p => Math.hypot(x - p.x, z - p.z) < p.r)) continue
-      if (spots.some(s => Math.hypot(s.x - x, s.z - z) < 3.4)) continue
-      spots.push({ x, z, r: 0.55 })
-    }
+    // clustered woods read as forests from a distance + scattered singles
+    const count = eff === 'baja' ? 50 : 82
+    const spots = this.pickTreeSpots(count)
     this.trees = spots
-    // instanced trunks + cones
+    const tree = getTreeTemplate()
+    if (tree) {
+      this.bakeGlbForests(tree, spots)
+      return
+    }
+    this.forestIsProcedural = true
+    // instanced trunks + cones (fallback)
     const trunkGeo = new THREE.CylinderGeometry(0.22, 0.34, 3.4, 6)
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5d452c, roughness: 0.95 })
     const leafGeo = new THREE.ConeGeometry(2.1, 5.2, 8)
@@ -742,6 +905,79 @@ export class BattleRoyaleGame {
     })
     leaves.castShadow = eff === 'media'
     this.mapScene.add(trunks, leaves)
+    this.procForestMeshes.push(trunks, leaves)
+  }
+
+  /** puntos de bosque: 8 macizos + dispersos, fuera de ciudades/POIs/agua */
+  private pickTreeSpots(count: number): TreeCol[] {
+    const clusters: [number, number][] = [
+      [-30, -60], [42, 8], [-85, 90], [95, 20], [-10, 60], [60, 85], [-95, -35], [15, -85],
+    ]
+    const spots: TreeCol[] = []
+    let tries = 0
+    while (spots.length < count && tries < count * 8) {
+      tries++
+      let x: number, z: number
+      if (Math.random() < 0.78) {
+        const c = clusters[Math.floor(rand(0, clusters.length))]
+        x = c[0] + rand(-16, 16)
+        z = c[1] + rand(-16, 16)
+      } else {
+        x = rand(-MAP + 8, MAP - 8)
+        z = rand(-MAP + 8, MAP - 8)
+      }
+      const h = terrainH(x, z)
+      if (h < -0.6 || h > 20) continue
+      if (CITIES.some(c => Math.hypot(x - c.x, z - c.z) < c.r + 4)) continue
+      if (POIS.some(p => Math.hypot(x - p.x, z - p.z) < p.r)) continue
+      if (spots.some(s => Math.hypot(s.x - x, s.z - z) < 3.2)) continue
+      spots.push({ x, z, r: 0.55 })
+    }
+    return spots
+  }
+
+  /** hornea los árboles GLB en una geometría por material (como el juego
+   *  principal: sin instancing+alphaTest, robusto en cualquier GPU) */
+  private bakeGlbForests(tree: TreeTemplate, spots: TreeCol[]): void {
+    const s = 8.6 / tree.rawHeight
+    const m = new THREE.Matrix4()
+    const q = new THREE.Quaternion()
+    const sc = new THREE.Vector3()
+    const pos = new THREE.Vector3()
+    for (const part of tree.parts) {
+      const geos: THREE.BufferGeometry[] = []
+      for (const t of spots) {
+        pos.set(t.x, terrainH(t.x, t.z) - 0.08, t.z)
+        q.setFromAxisAngle(UP_AXIS, rand(0, Math.PI * 2))
+        const v = rand(0.85, 1.3)
+        sc.set(s * v, s * v, s * v)
+        m.compose(pos, q, sc)
+        const g = part.geo.clone()
+        g.applyMatrix4(m)
+        geos.push(g)
+      }
+      const merged = mergeGeometries(geos, false)
+      for (const g of geos) g.dispose()
+      if (!merged) continue
+      const mesh = new THREE.Mesh(merged, part.mat)
+      // material de la caché compartida: geometría propia (se libera al salir)
+      mesh.userData.sharedMat = true
+      mesh.frustumCulled = false   // geometría gigante: no dejar que el frustum la descarte
+      this.mapScene.add(mesh)
+      this.glbForestMeshes.push(mesh)
+    }
+    this.forestIsProcedural = false
+  }
+
+  /** sustituye los bosques procedurales por Arbol.glb cuando llega tarde */
+  private rebuildForests(tree: TreeTemplate): void {
+    if (!this.forestIsProcedural || !this.trees.length) return
+    for (const mesh of this.procForestMeshes) {
+      this.mapScene.remove(mesh)
+      mesh.geometry.dispose()
+    }
+    this.procForestMeshes = []
+    this.bakeGlbForests(tree, this.trees)
   }
 
   private buildVehicles(): void {
@@ -796,7 +1032,7 @@ export class BattleRoyaleGame {
     const addSpot = (x: number, z: number, kind: LootSpot['kind'], weapon: WeaponId): void => {
       const gy = terrainH(x, z)
       if (gy < -0.8) return
-      this.loot.push({ x, z, kind, weapon, taken: false, mesh: null })
+      this.loot.push({ x, z, kind, weapon, taken: false, mesh: null, item: null })
     }
     // cities: dense floor loot
     for (const c of CITIES) {
@@ -852,7 +1088,9 @@ export class BattleRoyaleGame {
     // floating item
     const item = new THREE.Group()
     if (s.kind === 'weapon') {
-      const model = buildWeaponModel(s.weapon).group
+      // v9.1: el arma real (GLB del usuario) flotando sobre el haz
+      const built = buildGLBWeapon(s.weapon) ?? buildWeaponModel(s.weapon)
+      const model = built.group
       model.scale.setScalar(1.35)
       item.add(model)
     } else if (s.kind === 'crate') {
@@ -881,9 +1119,23 @@ export class BattleRoyaleGame {
     }
     item.position.y = 0.85
     group.add(item)
+    s.item = item
     group.position.set(s.x, gy, s.z)
     this.mapScene.add(group)
     return group
+  }
+
+  /** v9.1: arma GLB flotando (llega tarde el GLB perezoso) */
+  private rebuildLootWeaponItem(s: LootSpot): void {
+    if (!s.mesh || !s.item) return
+    for (const child of [...s.item.children]) {
+      s.item.remove(child)
+      disposeTree(child)
+    }
+    const built = buildGLBWeapon(s.weapon) ?? buildWeaponModel(s.weapon)
+    const model = built.group
+    model.scale.setScalar(1.35)
+    s.item.add(model)
   }
 
   // ----------------------------------------------------------
@@ -986,9 +1238,17 @@ export class BattleRoyaleGame {
     const names = [...SIM_NAMES].sort(() => Math.random() - 0.5)
     for (let i = 0; i < TOTAL - 1; i++) {
       // drop target: weighted to POIs/cities
-      const anchor = Math.random() < 0.62
-        ? (Math.random() < 0.5 ? CITIES : [{ x: rand(-60, 60), z: rand(-60, 60), r: 10 }])[Math.floor(rand(0, 2))]
-        : { x: rand(-MAP + 14, MAP - 14), z: rand(-MAP + 14, MAP - 14), r: 10 }
+      // (v9.1 FIX: la versión anterior indexaba un array de UN elemento con
+      //  Math.floor(rand(0,2)) → undefined → excepción → la sala se quedaba
+      //  con ~4-6 operadores en vez de 20)
+      let anchor: { x: number; z: number; r?: number }
+      if (Math.random() < 0.62) {
+        anchor = Math.random() < 0.5
+          ? CITIES[Math.floor(rand(0, CITIES.length))]
+          : { x: rand(-60, 60), z: rand(-60, 60), r: 10 }
+      } else {
+        anchor = { x: rand(-MAP + 14, MAP - 14), z: rand(-MAP + 14, MAP - 14), r: 10 }
+      }
       const b: BrBot = {
         id: i + 1,
         name: names[i % names.length],
@@ -1007,6 +1267,8 @@ export class BattleRoyaleGame {
         targetBot: -1,
         targetPlayer: false,
         mesh: null,
+        rig: null,
+        tint: i,
         legPhase: rand(0, 10),
         deadAt: 0,
         dropAt: rand(1, 4),
@@ -1020,7 +1282,264 @@ export class BattleRoyaleGame {
     }
   }
 
-  /** low-poly soldier for bots + lobby walkers */
+  // ----------------------------------------------------------
+  // v9.1 — SOLDADO REAL (soldier1.glb del usuario, plantilla por instancia)
+  // ----------------------------------------------------------
+  /** carga y normaliza la plantilla (misma normalización que el juego
+   *  principal: escala a 1,84 m, Sketchfab BLEND→opaco, PBR moderado) */
+  private loadSoldier(): void {
+    if (this.soldierLoading || this.soldierTemplate) return
+    this.soldierLoading = true
+    new GLTFLoader().load(
+      `${ASSET_BASE}/models/soldier1.glb`,
+      gltf => {
+        if (this.disposed) return
+        try {
+          const template = gltf.scene
+          const box = new THREE.Box3().setFromObject(template)
+          const scale = SOLDIER_HEIGHT / Math.max(0.01, box.max.y - box.min.y)
+          template.scale.setScalar(scale)
+          template.position.y = -box.min.y * scale
+          template.traverse(o => {
+            if (!(o instanceof THREE.Mesh)) return
+            o.castShadow = this.effQuality === 'media'
+            o.receiveShadow = false
+            o.frustumCulled = false   // la piel se anima: no dejar que el frustum la descarte
+            const mats = Array.isArray(o.material) ? o.material : [o.material]
+            for (const m of mats) {
+              const std = m as THREE.MeshStandardMaterial
+              if (!std || std.isMeshStandardMaterial !== true) continue
+              // Sketchfab exporta todo como BLEND aunque sea opaco
+              if (std.transparent && (std.opacity ?? 1) >= 0.999) {
+                std.transparent = false
+                std.depthWrite = true
+              }
+              if (std.map) {
+                std.map.colorSpace = THREE.SRGBColorSpace
+                std.metalness = Math.min(std.metalness, 0.25)
+                std.roughness = Math.min(Math.max(std.roughness, 0.55), 0.92)
+                std.envMapIntensity = 0.55
+              }
+            }
+          })
+          this.soldierTemplate = template
+          // sustituir en cascada los cuerpos low-poly (uno por tick)
+          this.swapAllToSoldier()
+        } catch (e) {
+          console.warn('EMERGENCY STRIKE: no se pudo preparar soldier1.glb para el BR', e)
+        }
+      },
+      undefined,
+      () => { /* sin GLB → seguimos con el fallback low-poly */ },
+    )
+  }
+
+  /** clona el soldado con el uniforme teñido de ESTE operador (FFA) */
+  private buildBrSoldier(tintIdx: number): THREE.Object3D | null {
+    if (!this.soldierTemplate) return null
+    const rig = skeletonClone(this.soldierTemplate)
+    const idx = ((tintIdx % BR_TINTS.length) + BR_TINTS.length) % BR_TINTS.length
+    const cache = this.tintCache[idx]
+    const tint = BR_TINTS[idx]
+    rig.traverse(o => {
+      if (!(o instanceof THREE.Mesh)) return
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      const out = mats.map(orig => {
+        if (!TINTABLE_MATS.has(orig.name)) return orig
+        const tinted = cache.get(orig)
+        if (tinted) return tinted
+        const v = orig.clone() as THREE.MeshStandardMaterial
+        if (v.color) v.color = new THREE.Color(tint)
+        cache.set(orig, v)
+        return v
+      })
+      o.material = Array.isArray(o.material) ? out : out[0]
+      o.castShadow = this.effQuality === 'media'
+      o.frustumCulled = false
+    })
+    // pose de reposo por si algo va sin animar
+    const armL = findBone(rig, /^mixamorigLeftArm_/)
+    const armR = findBone(rig, /^mixamorigRightArm_/)
+    if (armL) armL.rotation.set(ARM_REST_X, 0, 0)
+    if (armR) armR.rotation.set(ARM_REST_X, 0, 0)
+    return rig
+  }
+
+  /** cuerpo completo de operador: soldado GLB (con arma real agarrada a las
+   *  manos por IK de una pasada) o fallback low-poly con arma GLB */
+  private buildBotBody(tintIdx: number, weapon: WeaponId): BodyRig {
+    const root = new THREE.Group()
+    const body = new THREE.Group()
+    root.add(body)
+    const weaponHolder = new THREE.Group()
+    const rest = new THREE.Object3D()
+    const rig = this.buildBrSoldier(tintIdx)
+    if (rig) {
+      body.add(rig)
+      // pose de APUNTADO a dos manos (calibración del juego principal)
+      const armT = findBone(rig, /^mixamorigRightArm_/)
+      const armS = findBone(rig, /^mixamorigLeftArm_/)
+      const foreT = findBone(rig, /^mixamorigRightForeArm_/)
+      const foreS = findBone(rig, /^mixamorigLeftForeArm_/)
+      if (armT) armT.rotation.set(SOLDIER_AIM.tArm.x, SOLDIER_AIM.tArm.y, SOLDIER_AIM.tArm.z)
+      if (armS) armS.rotation.set(SOLDIER_AIM.sArm.x, SOLDIER_AIM.sArm.y, SOLDIER_AIM.sArm.z)
+      if (foreT) foreT.rotation.set(SOLDIER_AIM.tFore.x, 0, SOLDIER_AIM.tFore.z)
+      if (foreS) foreS.rotation.set(SOLDIER_AIM.sFore.x, 0, SOLDIER_AIM.sFore.z)
+      const legL = findBone(rig, /^mixamorigLeftUpLeg_/)
+      const legR = findBone(rig, /^mixamorigRightUpLeg_/)
+      const kneeL = findBone(rig, /^mixamorigLeftLeg_/)
+      const kneeR = findBone(rig, /^mixamorigRightLeg_/)
+      if (legL) legL.rotation.x = -0.14
+      if (legR) legR.rotation.x = 0.1
+      if (kneeL) kneeL.rotation.x = 0.16
+      if (kneeR) kneeR.rotation.x = 0.06
+      body.add(weaponHolder)
+      // IK de una sola pasada: manos tras la pose → posición del arma
+      const handT = findBone(rig, /^mixamorigRightHand_/)
+      const handS = findBone(rig, /^mixamorigLeftHand_/)
+      if (handT && handS) {
+        handT.updateWorldMatrix(true, false)
+        handS.updateWorldMatrix(true, false)
+        const v1 = new THREE.Vector3().setFromMatrixPosition(handT.matrixWorld)
+        const v2 = new THREE.Vector3().setFromMatrixPosition(handS.matrixWorld)
+        body.worldToLocal(v1)
+        body.worldToLocal(v2)
+        const dir = v2.clone().sub(v1).multiplyScalar(0.8)
+        dir.y -= 0.06
+        dir.z += 0.85
+        dir.normalize()
+        weaponHolder.position.copy(v1)
+        weaponHolder.position.y += 0.02
+        weaponHolder.quaternion.setFromUnitVectors(Z_AXIS, dir)
+      } else {
+        weaponHolder.position.set(0.22, 1.32, 0.34)
+      }
+      this.attachRigWeapon(weaponHolder, weapon)
+      return {
+        root, body, weaponHolder,
+        legs: [legL ?? rest, legR ?? rest],
+        knees: [kneeL ?? rest, kneeR ?? rest],
+        arms: [armS ?? rest, armT ?? rest],
+        forearms: [foreS ?? rest, foreT ?? rest],
+        usingSoldier: true, tintIdx, weaponId: weapon,
+      }
+    }
+    // ---- fallback low-poly (mientras/lugar donde no hay GLB) ----
+    const uniform = BR_TINTS[((tintIdx % BR_TINTS.length) + BR_TINTS.length) % BR_TINTS.length]
+    const g = this.buildBotMesh(uniform, 0x2c3642)
+    body.add(g)
+    const legs = (g as THREE.Group & { _legs?: THREE.Mesh[] })._legs ?? []
+    const arms = (g as THREE.Group & { _arms?: THREE.Mesh[] })._arms ?? []
+    weaponHolder.position.set(0.2, 1.28, 0.3)
+    weaponHolder.rotation.x = -0.06
+    body.add(weaponHolder)
+    this.attachRigWeapon(weaponHolder, weapon)
+    return {
+      root, body, weaponHolder,
+      legs: [rest, rest], knees: [rest, rest], arms: [rest, rest], forearms: [rest, rest],
+      usingSoldier: false, tintIdx, weaponId: weapon,
+      pLegs: legs, pArms: arms,
+    }
+  }
+
+  /** arma real (GLB del usuario) en el soporte; fallback procedural */
+  private attachRigWeapon(holder: THREE.Group, weapon: WeaponId): void {
+    const built = buildGLBWeapon(weapon) ?? buildWeaponModel(weapon)
+    const group = built.group
+    group.scale.setScalar(0.95)
+    group.rotation.y = Math.PI
+    group.position.set(0, 0.06, 0.05)
+    holder.add(group)
+  }
+
+  /** sustituye el arma del soporte (llega el GLB perezoso) */
+  private rebuildRigWeapon(rig: BodyRig): void {
+    if (!rig.weaponHolder.children.length) return
+    for (const child of [...rig.weaponHolder.children]) {
+      rig.weaponHolder.remove(child)
+      disposeTree(child)
+    }
+    this.attachRigWeapon(rig.weaponHolder, rig.weaponId)
+  }
+
+  /** animación de caminar/caída del cuerpo (huesos del soldado o fallback) */
+  private animateRig(rig: BodyRig, legPhase: number, moving: boolean): void {
+    const swing = moving ? 0.55 : 0
+    const sPh = Math.sin(legPhase) * swing
+    if (rig.usingSoldier) {
+      // piernas: pose base + balanceo; rodillas dobladas en la subida
+      rig.legs[0].rotation.x = -0.14 + sPh
+      rig.legs[1].rotation.x = 0.1 - sPh
+      rig.knees[0].rotation.x = 0.16 + Math.max(0, sPh) * 0.95
+      rig.knees[1].rotation.x = 0.06 + Math.max(0, -sPh) * 0.95
+      // vaivén de cadera + bote vertical (se lee como humano)
+      rig.body.rotation.z = Math.sin(legPhase) * 0.045 * swing
+      rig.body.position.y = Math.abs(Math.sin(legPhase)) * 0.03 * swing
+      // los brazos siguen en el arma (pose de apuntado) con vaivén leve
+      rig.arms[0].rotation.x = SOLDIER_AIM.sArm.x + sPh * 0.05
+      rig.arms[1].rotation.x = SOLDIER_AIM.tArm.x - sPh * 0.05
+    } else {
+      const sw = sPh
+      if (rig.pLegs?.[0]) rig.pLegs[0].rotation.x = sw
+      if (rig.pLegs?.[1]) rig.pLegs[1].rotation.x = -sw
+      if (rig.pArms?.[0]) rig.pArms[0].rotation.x = -sw * 0.6
+      if (rig.pArms?.[1]) rig.pArms[1].rotation.x = sw * 0.6
+    }
+  }
+
+  /** al cargar soldier1.glb: reemplaza los cuerpos low-poly uno a uno */
+  private swapAllToSoldier(): void {
+    const botsPend = this.bots.filter(b => b.rig && !b.rig.usingSoldier)
+    const walkersPend = this.lobbyWalkers.filter(w => !w.rig.usingSoldier)
+    const step = (): void => {
+      if (this.disposed || !this.soldierTemplate) return
+      const b = botsPend.shift()
+      if (b && b.rig && !b.rig.usingSoldier) {
+        const old = b.rig
+        const pos = old.root.position.clone()
+        const yaw = old.root.rotation.y
+        this.mapScene.remove(old.root)
+        disposeTree(old.root)
+        b.rig = this.buildBotBody(b.tint, b.weapon)
+        b.mesh = b.rig.root
+        b.rig.root.position.copy(pos)
+        b.rig.root.rotation.y = yaw
+        this.mapScene.add(b.rig.root)
+      }
+      const w = walkersPend.shift()
+      if (w && !w.rig.usingSoldier) {
+        const old = w.rig
+        const pos = old.root.position.clone()
+        const yaw = old.root.rotation.y
+        this.lobbyScene.remove(old.root)
+        disposeTree(old.root)
+        w.rig = this.buildBotBody(old.tintIdx, old.weaponId)
+        w.rig.root.position.copy(pos)
+        w.rig.root.rotation.y = yaw
+        this.lobbyScene.add(w.rig.root)
+      }
+      if (botsPend.length || walkersPend.length) setTimeout(step, 40)
+    }
+    step()
+  }
+
+  /** v9.1: al llegar un GLB de arma → modelos reales en todos los sitios */
+  private refreshWeaponModels(): void {
+    if (this.disposed) return
+    // viewmodel del jugador (si aún era procedural)
+    if (this.vmIsProcedural && this.weapon) this.attachViewmodel(this.weapon)
+    // manos de bots y caminantes
+    for (const b of this.bots) {
+      if (b.rig) this.rebuildRigWeapon(b.rig)
+    }
+    for (const w of this.lobbyWalkers) this.rebuildRigWeapon(w.rig)
+    // loot de armas flotando
+    for (const s of this.loot) {
+      if (!s.taken && s.kind === 'weapon' && s.mesh) this.rebuildLootWeaponItem(s)
+    }
+  }
+
+  /** low-poly soldier for the fallback body */
   private buildBotMesh(uniform: number, vest: number): THREE.Group {
     const g = new THREE.Group()
     const skin = new THREE.MeshStandardMaterial({ color: 0xb08a60, roughness: 0.85 })
@@ -1054,11 +1573,6 @@ export class BattleRoyaleGame {
       g.add(arm)
       arms.push(arm)
     }
-    // small rifle
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x22262a, roughness: 0.6, metalness: 0.4 })
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.62), gunMat)
-    gun.position.set(0.2, 1.28, 0.24)
-    g.add(gun)
     g.traverse(o => { if ((o as THREE.Mesh).isMesh) o.castShadow = false })
     // animation handles
     ;(g as THREE.Group & { _legs?: THREE.Mesh[] })._legs = legs
@@ -1067,16 +1581,28 @@ export class BattleRoyaleGame {
   }
 
   private ensureBotMesh(b: BrBot): void {
-    if (b.mesh || !b.landed || !b.alive) return
-    const g = this.buildBotMesh(0x4a4636, 0x5a4430)
-    b.mesh = g
-    this.mapScene.add(g)
+    if (b.rig || !b.landed || !b.alive) return
+    const rig = this.buildBotBody(b.tint, b.weapon)
+    b.rig = rig
+    b.mesh = rig.root
+    this.mapScene.add(rig.root)
   }
 
   private updateBots(dt: number, t: number): void {
     if (this.phase !== 'live') return
     for (const b of this.bots) {
-      if (!b.alive) continue
+      if (!b.alive) {
+        // v9.1: caída del soldado con desaceleración natural (easeOutCubic)
+        if (b.rig && b.rig.usingSoldier && this.clock - b.deadAt < 0.7) {
+          const dt2 = this.clock - b.deadAt
+          const fall = Math.min(1, dt2 / 0.6)
+          const ease = 1 - Math.pow(1 - fall, 3)
+          b.rig.body.rotation.x = (Math.PI / 2) * ease
+          b.rig.body.rotation.z = 0.14 * ease
+          b.rig.body.position.y = -0.64 * ease
+        }
+        continue
+      }
       // landing delay after the player jumps
       if (!b.landed) {
         b.dropAt -= dt
@@ -1191,13 +1717,7 @@ export class BattleRoyaleGame {
       if (b.mesh) {
         b.mesh.position.set(b.x, b.y, b.z)
         b.mesh.rotation.y = b.yaw
-        const legs = (b.mesh as THREE.Group & { _legs?: THREE.Mesh[] })._legs ?? []
-        const arms = (b.mesh as THREE.Group & { _arms?: THREE.Mesh[] })._arms ?? []
-        const sw = Math.sin(b.legPhase) * 0.55
-        if (legs[0]) legs[0].rotation.x = sw
-        if (legs[1]) legs[1].rotation.x = -sw
-        if (arms[0]) arms[0].rotation.x = -sw * 0.6
-        if (arms[1]) arms[1].rotation.x = sw * 0.6
+        if (b.rig) this.animateRig(b.rig, b.legPhase, dl > 1.2)
       }
     }
     // bot-vs-bot background attrition so the match always advances
@@ -1224,8 +1744,11 @@ export class BattleRoyaleGame {
     if (!b.alive) return
     b.alive = false
     b.deadAt = this.clock
-    if (b.mesh) {
-      // fall over + stay as a body for a while
+    if (b.rig && b.rig.usingSoldier) {
+      // v9.1: la caída se anima en updateBots (easeOutCubic) — el arma
+      // acompaña al cuerpo porque cuelga del mismo bodyGroup
+    } else if (b.mesh) {
+      // fallback low-poly: fall over + stay as a body for a while
       b.mesh.rotation.x = Math.PI / 2 * 0.92
       b.mesh.position.y = b.y + 0.25
     }
@@ -1236,7 +1759,7 @@ export class BattleRoyaleGame {
       getAudio().killConfirm()
     }
     // drop ammo where they fell
-    this.loot.push({ x: b.x, z: b.z, kind: 'ammo', weapon: b.weapon, taken: false, mesh: null })
+    this.loot.push({ x: b.x, z: b.z, kind: 'ammo', weapon: b.weapon, taken: false, mesh: null, item: null })
     const spot = this.loot[this.loot.length - 1]
     spot.mesh = this.buildLootMesh(spot)
   }
@@ -1255,10 +1778,10 @@ export class BattleRoyaleGame {
         brSet({ queuePlayers: [...this.queue] })
         // a walker appears on the island
         if (this.lobbyWalkers.length < this.queue.length + 1) {
-          const g = this.buildBotMesh(0x3a4a5a, 0x2c3642)
-          g.position.set(rand(-16, 16), 0, rand(-14, 14))
-          this.lobbyScene.add(g)
-          this.lobbyWalkers.push({ group: g, phase: rand(0, 10), dest: [rand(-16, 16), rand(-16, 16)] })
+          const rig = this.buildBotBody(this.lobbyWalkers.length, WEAPON_POOL[this.lobbyWalkers.length % WEAPON_POOL.length])
+          rig.root.position.set(rand(-16, 16), 0, rand(-14, 14))
+          this.lobbyScene.add(rig.root)
+          this.lobbyWalkers.push({ rig, phase: rand(0, 10), dest: [rand(-16, 16), rand(-16, 16)] })
         }
         getAudio().uiClick()
       }
@@ -1287,22 +1810,21 @@ export class BattleRoyaleGame {
         this.startPlane()
       }
     }
-    // lobby walkers wander
+    // lobby walkers wander (soldiers with their weapons on the island)
     for (const w of this.lobbyWalkers) {
-      const dx = w.dest[0] - w.group.position.x
-      const dz = w.dest[1] - w.group.position.z
+      const dx = w.dest[0] - w.rig.root.position.x
+      const dz = w.dest[1] - w.rig.root.position.z
       const d = Math.hypot(dx, dz)
+      let moving = false
       if (d < 1) { w.dest = [rand(-16, 16), rand(-16, 16)] }
       else {
-        w.group.position.x += (dx / d) * 1.5 * dt
-        w.group.position.z += (dz / d) * 1.5 * dt
-        w.group.rotation.y = Math.atan2(dx, dz)
+        w.rig.root.position.x += (dx / d) * 1.5 * dt
+        w.rig.root.position.z += (dz / d) * 1.5 * dt
+        w.rig.root.rotation.y = Math.atan2(dx, dz)
         w.phase += dt * 8
-        const legs = (w.group as THREE.Group & { _legs?: THREE.Mesh[] })._legs ?? []
-        const sw = Math.sin(w.phase) * 0.5
-        if (legs[0]) legs[0].rotation.x = sw
-        if (legs[1]) legs[1].rotation.x = -sw
+        moving = true
       }
+      this.animateRig(w.rig, w.phase, moving)
     }
   }
 
@@ -1555,11 +2077,10 @@ export class BattleRoyaleGame {
     s.taken = true
     if (s.mesh) {
       this.mapScene.remove(s.mesh)
-      s.mesh.traverse(o => {
-        const mesh = o as THREE.Mesh
-        mesh.geometry?.dispose?.()
-      })
+      // v9.1: respeta los recursos compartidos (GLB de armas)
+      disposeTree(s.mesh)
       s.mesh = null
+      s.item = null
     }
   }
 
@@ -1643,13 +2164,21 @@ export class BattleRoyaleGame {
   private attachViewmodel(wid: WeaponId): void {
     if (this.vmGroup) {
       this.camera.remove(this.vmGroup)
-      this.vmGroup.traverse(o => { (o as THREE.Mesh).geometry?.dispose?.() })
+      // libera el modelo (respeta los recursos COMPARTIDOS de los GLB)
+      disposeTree(this.vmGroup)
     }
-    const built = buildWeaponModel(wid)
+    // v9.1: arma real del usuario (GLB) con la misma convención de pose que
+    // el juego principal — el fallback procedural solo si el GLB no llegó
+    const glb = buildGLBWeapon(wid)
+    const built = glb ?? buildWeaponModel(wid)
+    this.vmIsProcedural = !glb
     const model = built.group
     this.vmMuzzle = built.muzzle
-    model.position.set(0.34, -0.3, -0.62)
-    model.rotation.y = Math.PI
+    const pose = weaponPose(wid)
+    this.vmBase.copy(pose.hip)
+    this.vmBaseRot.copy(pose.hipRot)
+    model.position.copy(pose.hip)
+    model.rotation.copy(pose.hipRot)
     model.scale.setScalar(1.0)
     this.vmGroup = model
     this.camera.add(this.vmGroup)
@@ -2022,12 +2551,26 @@ export class BattleRoyaleGame {
     // viewmodel kick recovery + reload finish
     if (this.vmGroup) {
       this.vmKick *= Math.max(0, 1 - dt * 9)
-      this.vmGroup.position.z = -0.62 + this.vmKick * 0.09
-      this.vmGroup.rotation.x = this.vmKick * 0.16
       const bob = this.movingFast() && this.phase === 'live' && !this.inVehicle
         ? Math.sin(this.clock * 9.5) * 0.008
         : 0
-      this.vmGroup.position.y = -0.3 + bob
+      // v9.1: pose base del arma real (weaponPose) + patada y balanceo encima
+      this.vmGroup.position.set(
+        this.vmBase.x,
+        this.vmBase.y + bob,
+        this.vmBase.z + this.vmKick * 0.09,
+      )
+      this.vmGroup.rotation.set(
+        this.vmBaseRot.x + this.vmKick * 0.16,
+        this.vmBaseRot.y,
+        this.vmBaseRot.z,
+      )
+    }
+    // v9.1: el loot flota y gira — se lee como recogible
+    for (const s of this.loot) {
+      if (s.taken || !s.item) continue
+      s.item.rotation.y += dt * 1.4
+      s.item.position.y = 0.85 + Math.sin(this.clock * 2 + s.x * 0.35) * 0.08
     }
     if (this.reloading && now >= this.reloadEndAt) {
       this.reloading = false
@@ -2090,25 +2633,19 @@ export class BattleRoyaleGame {
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
 
     getAudio().setDuck(false)
+    // v9.1: no seguir escuchando llegadas de armas GLB
+    this.weaponGLBUnsub?.()
+    this.weaponGLBUnsub = null
 
-    // free ALL GPU resources (isolated architecture: nothing leaks)
-    const disposeScene = (scene: THREE.Scene | null): void => {
-      if (!scene) return
-      scene.traverse(o => {
-        const mesh = o as THREE.Mesh
-        if (mesh.geometry) mesh.geometry.dispose()
-        const mat = mesh.material
-        if (mat) {
-          for (const m of Array.isArray(mat) ? mat : [mat]) {
-            const mm = m as THREE.MeshStandardMaterial
-            mm.map?.dispose?.()
-            mm.dispose()
-          }
-        }
-      })
-    }
-    disposeScene(this.lobbyScene)
-    disposeScene(this.mapScene)
+    // free ALL GPU resources (isolated architecture: nothing leaks).
+    // v9.1: disposeTree respeta lo COMPARTIDO con la caché global (armas
+    // GLB, materiales de Arbol.glb) y las texturas Pared/Piso del usuario;
+    // el resto (plantilla del soldado por instancia, clones teñidos,
+    // geometría horneada de bosques, props) se libera por completo.
+    disposeTree(this.lobbyScene)
+    disposeTree(this.mapScene)
+    if (this.soldierTemplate) disposeTree(this.soldierTemplate)
+    this.soldierTemplate = null
     try { this.renderer.dispose() } catch { /* ok */ }
 
     useBr.getState().reset()

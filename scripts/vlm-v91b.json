@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Image 1: Flat silhouette (no enemy soldier is visible; only a dark weapon silhouette is present in the foreground).\nImage 2: Photographic texture pattern (the building facades clearly show detailed brick and concrete textures).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1789139070,
+  "id": "20260911230427dbfbde82a5fa4339",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "20260911230427dbfbde82a5fa4339",
+  "usage": {
+    "completion_tokens": 46,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 2192,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 2238
+  }
+}

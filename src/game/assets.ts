@@ -399,6 +399,10 @@ export function buildGLBWeapon(id: WeaponId): { group: THREE.Group; muzzle: THRE
     mesh.position.set(px, py, -gripZ)
     mesh.castShadow = true
     mesh.frustumCulled = false
+    // v9.1: geometría y material salen de la caché compartida — quien
+    // disponga el modelo (el BR libera TODO al salir) no debe liberarlos
+    mesh.userData.sharedGeo = true
+    mesh.userData.sharedMat = true
     group.add(mesh)
   }
 
