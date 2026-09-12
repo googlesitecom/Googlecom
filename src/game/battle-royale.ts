@@ -543,7 +543,7 @@ export class BattleRoyaleGame {
   private buildSeq = 0
   private mats = MATS_START
   private mouseHeld = false
-  private buildMats: { wall: THREE.Material | null; floor: THREE.Material | null } = { wall: null, floor: null }
+  private buildMats: { wall: THREE.Material | null; floor: THREE.Material | null; ramp: THREE.Material | null; frame: THREE.Material | null } = { wall: null, floor: null, ramp: null, frame: null }
   private buildGhostMats: THREE.MeshBasicMaterial[] = []
   // v12: lobby set profesional — pantalla en vivo, gaviotas, olas, baliza, fuego, bandera
   private lobbyBoard: THREE.CanvasTexture | null = null
@@ -568,8 +568,12 @@ export class BattleRoyaleGame {
   /** materiales teñidos por variante de uniforme (compartidos entre clones) */
   private tintCache: Map<THREE.Material, THREE.Material>[] = BR_TINTS.map(() => new Map())
   private weaponGLBUnsub: (() => void) | null = null
-  /** muros/tejados creados sin textura aún — se parchean al llegar Pared/Piso */
-  private texMats: { mat: THREE.MeshStandardMaterial; kind: 'wall' | 'roof'; rx: number; ry: number }[] = []
+  /** muros/tejados creados sin textura aún — se parchean al llegar Pared/Piso.
+   *  v13: + kinds pasto/arena/asfalto/concreto/roca/contenedor/madera/
+   *  ladrillo/metal (texturas nuevas del usuario) y flag `force` para
+   *  reemplazar un mapa provisional (p.ej. el ruido del terreno) cuando
+   *  llega la textura real */
+  private texMats: { mat: THREE.MeshStandardMaterial; kind: 'wall' | 'roof' | 'pasto' | 'arena' | 'asfalto' | 'concreto' | 'roca' | 'contenedor' | 'madera' | 'ladrillo' | 'metal'; rx: number; ry: number; force?: boolean }[] = []
   private repoTexTries = 0
   private forestIsProcedural = false
   private procForestMeshes: THREE.Mesh[] = []
@@ -811,17 +815,17 @@ export class BattleRoyaleGame {
     scene.add(ocean)
 
     // island disc (sand ring + grass core)
-    const sand = new THREE.Mesh(
-      new THREE.CircleGeometry(34, 44),
-      new THREE.MeshStandardMaterial({ color: 0xc9b483, roughness: 1 }),
-    )
+    // v13: texturas reales del usuario (Arena.jpg / Pasto.jpg) — parcheadas
+    // en vivo cuando termina preloadAssets (applyRepoTexToBr)
+    const sandMat = new THREE.MeshStandardMaterial({ color: 0xc9b483, roughness: 1 })
+    this.texMats.push({ mat: sandMat, kind: 'arena', rx: 14, ry: 14 })
+    const sand = new THREE.Mesh(new THREE.CircleGeometry(34, 44), sandMat)
     sand.rotation.x = -Math.PI / 2
     sand.position.y = 0.02
     scene.add(sand)
-    const grass = new THREE.Mesh(
-      new THREE.CircleGeometry(27, 40),
-      new THREE.MeshStandardMaterial({ color: 0x6d8a4c, roughness: 1 }),
-    )
+    const grassMat = new THREE.MeshStandardMaterial({ color: 0x6d8a4c, roughness: 1 })
+    this.texMats.push({ mat: grassMat, kind: 'pasto', rx: 11, ry: 11 })
+    const grass = new THREE.Mesh(new THREE.CircleGeometry(27, 40), grassMat)
     grass.rotation.x = -Math.PI / 2
     grass.position.y = 0.06
     scene.add(grass)
@@ -1266,6 +1270,8 @@ export class BattleRoyaleGame {
     // bushes + rocks (scattered detail)
     const bushMat = new THREE.MeshStandardMaterial({ color: 0x46663a, roughness: 1, flatShading: true })
     const rockMat2 = new THREE.MeshStandardMaterial({ color: 0x7d7a72, roughness: 1, flatShading: true })
+    // v13: Roca.jpg real en las rocas del lobby
+    this.texMats.push({ mat: rockMat2, kind: 'roca', rx: 1.5, ry: 1.5 })
     for (let i = 0; i < 14; i++) {
       const a = rand(0, Math.PI * 2), r = rand(11, 24)
       const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(rand(0.45, 0.85), 0), bushMat)
@@ -1593,10 +1599,28 @@ export class BattleRoyaleGame {
     geo.computeVertexNormals()
     // v10: micro-detalle procedural multiplicado sobre el color por vértice
     // (malla de manchas suaves: mata el aspecto plástico del terreno)
+    // v13: Pasto.jpg real del usuario como base — el color por vértice
+    // sigue modulando el bioma (verde en pradera, gris en roca, blanco
+    // en las cumbres): pasto real con estaciones de altura "gratis".
+    // La textura tarda en llegar → se registra con force para sustituir
+    // al ruido procedural en cuanto preloadAssets resuelva.
     const groundMat = new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.96,
-      ...(this.effQuality !== 'baja' ? { map: makeNoiseDetailTexture(72) } : {}),
     })
+    if (this.effQuality !== 'baja') {
+      const pasto = getRepoTextures().pasto
+      if (pasto) {
+        const t = pasto.clone()
+        t.wrapS = t.wrapT = THREE.RepeatWrapping
+        t.repeat.set(112, 112)   // 560 m / 112 ≈ baldosa de 5 m
+        t.needsUpdate = true
+        groundMat.map = t
+        groundMat.userData.sharedMap = true
+      } else {
+        groundMat.map = makeNoiseDetailTexture(72)
+        this.texMats.push({ mat: groundMat, kind: 'pasto', rx: 112, ry: 112, force: true })
+      }
+    }
     const mesh = new THREE.Mesh(geo, groundMat)
     this.mapScene.add(mesh)
 
@@ -1716,13 +1740,28 @@ export class BattleRoyaleGame {
   private applyRepoTexToBr(): boolean {
     const repo = getRepoTextures()
     if (!repo.pared || !repo.piso) return false
+    const src = (kind: string): THREE.Texture | null =>
+      kind === 'wall' ? repo.pared
+      : kind === 'roof' ? repo.piso
+      : kind === 'pasto' ? repo.pasto
+      : kind === 'arena' ? repo.arena
+      : kind === 'asfalto' ? repo.asfalto
+      : kind === 'concreto' ? repo.concreto
+      : kind === 'roca' ? repo.roca
+      : kind === 'contenedor' ? repo.contenedor
+      : kind === 'madera' ? repo.madera
+      : kind === 'ladrillo' ? repo.ladrillo
+      : kind === 'metal' ? repo.metal
+      : null
     const cloneCache = new Map<string, THREE.Texture>()
-    for (const { mat, kind, rx, ry } of this.texMats) {
-      if (mat.map) continue
+    for (const { mat, kind, rx, ry, force } of this.texMats) {
+      if (mat.map && !force) continue
+      const base = src(kind)
+      if (!base) continue
       const key = `${kind}:${rx}x${ry}`
       let t = cloneCache.get(key)
       if (!t) {
-        t = (kind === 'wall' ? repo.pared : repo.piso).clone()
+        t = base.clone()
         t.wrapS = t.wrapT = THREE.RepeatWrapping
         t.repeat.set(rx, ry)
         t.needsUpdate = true
@@ -1757,35 +1796,82 @@ export class BattleRoyaleGame {
     })
     const winFrame = new THREE.MeshStandardMaterial({ color: 0x2c323a, roughness: 0.7, metalness: 0.25 })
     const concrete = new THREE.MeshStandardMaterial({ color: 0x8f8a80, roughness: 0.95 })
+    // v13: Concreto.jpg real en pretiles/losas de los edificios
+    this.texMats.push({ mat: concrete, kind: 'concreto', rx: 2.5, ry: 2.5 })
     const roofPropMat = new THREE.MeshStandardMaterial({ color: 0x71706b, roughness: 0.6, metalness: 0.45 })
     const doorMat = new THREE.MeshStandardMaterial({ color: 0x33302a, roughness: 0.8 })
     const awningMat = new THREE.MeshStandardMaterial({ color: 0x8f3b2f, roughness: 0.85, side: THREE.DoubleSide })
     const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x9d988e, roughness: 0.95 })
+    // v13: aceras de Concreto.jpg (UVs escaladas por dimensión → repeat 1)
+    this.texMats.push({ mat: sidewalkMat, kind: 'concreto', rx: 1, ry: 1 })
 
     // ---- v10: textured roads (asphalt + lane markings) + sidewalks ----
-    const asphalt = makeAsphaltTexture()
+    // v13: Asfalto.jpg real del usuario — UVs escaladas por dimensión
+    // (UNA textura compartida, baldosa de 8 m) + línea discontinua
+    // central como malla aparte (la textura del usuario no trae marcas).
+    // Si la textura aún no llegó: canvas clásico y parche force al llegar.
+    const roadMat = new THREE.MeshStandardMaterial({ roughness: 0.94 })
+    const repoAsphalt = getRepoTextures().asfalto
+    if (repoAsphalt) {
+      repoAsphalt.wrapS = repoAsphalt.wrapT = THREE.RepeatWrapping
+      repoAsphalt.repeat.set(1, 1)
+      roadMat.map = repoAsphalt
+      roadMat.color.set(0xffffff)
+      roadMat.userData.sharedMap = true
+    } else {
+      const canvasAsphalt = makeAsphaltTexture()
+      roadMat.map = canvasAsphalt
+      roadMat.userData.sharedMap = true
+      this.texMats.push({ mat: roadMat, kind: 'asfalto', rx: 1, ry: 1, force: true })
+    }
+    const dashMat = new THREE.MeshBasicMaterial({ color: 0xe8cf6a })
     const road = (w: number, d: number, x: number, z: number, ry: number): void => {
-      const t = asphalt.clone()
-      t.wrapS = t.wrapT = THREE.RepeatWrapping
-      t.repeat.set(Math.max(1, Math.round(w / 8)), Math.max(1, Math.round(d / 8)))
-      t.needsUpdate = true
-      const r = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ map: t, roughness: 0.94 }))
+      const geo = new THREE.PlaneGeometry(w, d)
+      const uv = geo.attributes.uv as THREE.BufferAttribute
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (w / 8), uv.getY(i) * (d / 8))
+      const r = new THREE.Mesh(geo, roadMat)
       r.rotation.x = -Math.PI / 2
       r.rotation.z = ry
       r.position.set(x, terrainH(x, z) + 0.05, z)
       this.mapScene.add(r)
+      // línea discontinua central (solo con la textura del usuario: el
+      // canvas clásico ya la trae horneada)
+      if (repoAsphalt) {
+        const alongZ = ry !== 0 ? w >= d : w < d
+        const len = alongZ ? d : w
+        const dashGeos: THREE.BufferGeometry[] = []
+        for (let s = -len / 2 + 3; s <= len / 2 - 3; s += 7) {
+          const g = new THREE.PlaneGeometry(alongZ ? 0.18 : 2.2, alongZ ? 2.2 : 0.18)
+          g.rotateX(-Math.PI / 2)
+          g.translate(alongZ ? 0 : s, 0, alongZ ? s : 0)
+          dashGeos.push(g)
+        }
+        if (dashGeos.length) {
+          const merged = mergeGeometries(dashGeos, false)!
+          const dashes = new THREE.Mesh(merged, dashMat)
+          dashes.renderOrder = 2
+          dashes.position.set(x, terrainH(x, z) + 0.07, z)
+          this.mapScene.add(dashes)
+        }
+      }
     }
     const half = 3 * city.r / 2
     road(half, 7, city.x, city.z, 0)
     road(7, half, city.x, city.z, 0)
     road(half, 7, city.x, city.z, Math.PI / 2)
     // sidewalks flanking the two main avenues
+    // v13: Concreto.jpg real (UVs escaladas por dimensión del bordillo)
+    const swTile = (geo: THREE.BoxGeometry, w: number, d: number): THREE.BoxGeometry => {
+      const uv = geo.attributes.uv as THREE.BufferAttribute
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (w / 4), uv.getY(i) * (d / 4))
+      return geo
+    }
     for (const off of [-4.6, 4.6]) {
-      const swA = new THREE.Mesh(new THREE.BoxGeometry(half, 0.16, 1.7), sidewalkMat)
+      const swA = new THREE.Mesh(swTile(new THREE.BoxGeometry(half, 0.16, 1.7), half, 1.7), sidewalkMat)
       swA.position.set(city.x, terrainH(city.x, city.z + off) + 0.12, city.z + off)
       swA.receiveShadow = true
       this.mapScene.add(swA)
-      const swB = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.16, half), sidewalkMat)
+      const swB = new THREE.Mesh(swTile(new THREE.BoxGeometry(1.7, 0.16, half), 1.7, half), sidewalkMat)
       swB.position.set(city.x + off, terrainH(city.x + off, city.z) + 0.12, city.z)
       swB.receiveShadow = true
       this.mapScene.add(swB)
@@ -1821,7 +1907,9 @@ export class BattleRoyaleGame {
     }
 
     // sidewalk props: kiosks + containers (cover)
-    const contMat = new THREE.MeshStandardMaterial({ color: 0x6a7076, roughness: 0.7, metalness: 0.3 })
+    // v13: contenedor corrugado del usuario (gris azulado teñido)
+    const contMat = new THREE.MeshStandardMaterial({ color: 0x8a95a0, roughness: 0.7, metalness: 0.3 })
+    this.texMats.push({ mat: contMat, kind: 'contenedor', rx: 2.2, ry: 1.2 })
     for (let i = 0; i < 14; i++) {
       const ang = wrand(0, Math.PI * 2)
       const rr = wrand(10, city.r - 6)
@@ -2215,7 +2303,11 @@ export class BattleRoyaleGame {
   private scatterProps(): void {
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x7d776e, roughness: 0.95 })
     const rockMat2 = new THREE.MeshStandardMaterial({ color: 0x6b675f, roughness: 0.98 })
+    // v13: Roca.jpg real del usuario en los pedregales de la isla
+    this.texMats.push({ mat: rockMat, kind: 'roca', rx: 2, ry: 2 }, { mat: rockMat2, kind: 'roca', rx: 1.5, ry: 1.5 })
     const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.9 })
+    // v13: cajas de munición con Madera.jpg real del usuario
+    this.texMats.push({ mat: crateMat, kind: 'madera', rx: 1.2, ry: 1.2 })
     const barrelMat = new THREE.MeshStandardMaterial({ color: 0x3f5a3f, roughness: 0.7, metalness: 0.3 })
     const barrelMat2 = new THREE.MeshStandardMaterial({ color: 0x7a3b2f, roughness: 0.7, metalness: 0.3 })
     const inCity = (x: number, z: number): boolean =>
@@ -3931,12 +4023,16 @@ export class BattleRoyaleGame {
     }
   }
 
-  /** visual mesh of a piece (wood + the user's own Pared/Piso textures) */
+  /** visual mesh of a piece — v13: materiales de construcción reales del
+   *  usuario: WALL = Ladrillo.jpg (muro de obra), FLOOR = Madera.jpg
+   *  (plataforma de tablones), RAMP = Metal.jpg (rampa industrial) y
+   *  vigas/travesaños de Metal.jpg oscura */
   private buildPieceMesh(tg: { kind: BuildKind }): THREE.Group {
     const g = new THREE.Group()
     const wallMat = this.buildMats.wall!
     const floorMat = this.buildMats.floor!
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x6e5637, roughness: 0.85 })
+    const rampMat = this.buildMats.ramp!
+    const frameMat = this.buildMats.frame!
     if (tg.kind === 'wall') {
       // panel + cross braces (reads as construction wood)
       const panel = new THREE.Mesh(new THREE.BoxGeometry(4, RISE, 0.22), wallMat)
@@ -3963,8 +4059,9 @@ export class BattleRoyaleGame {
       }
     } else {
       // ramp: inclined slab + rails (the surface matches groundAt())
+      // v13: rampa metálica industrial (Metal.jpg del usuario)
       const len = Math.hypot(GRID, RISE) // 5 m along the slope
-      const slab = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, len), floorMat)
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, len), rampMat)
       slab.position.set(0, RISE / 2, 0)
       slab.rotation.x = -Math.atan2(RISE, GRID)
       g.add(slab)
@@ -3978,29 +4075,46 @@ export class BattleRoyaleGame {
     return g
   }
 
-  /** shared build materials (user's Pared/Piso when available, wood colors as fallback) */
+  /** shared build materials — v13: LADRILLO (wall) · MADERA (floor) ·
+   *  METAL (ramp + vigas), las texturas de construcción del usuario.
+   *  Si aún no llegaron: colores de obra + parche en vivo (applyRepoTexToBr) */
   private ensureBuildMaterials(): void {
-    if (this.buildMats.wall && this.buildMats.floor) return
+    if (this.buildMats.wall && this.buildMats.floor && this.buildMats.ramp && this.buildMats.frame) return
     const repo = getRepoTextures()
-    const woodWall = new THREE.MeshStandardMaterial({ color: 0xa8845a, roughness: 0.88 })
-    const woodFloor = new THREE.MeshStandardMaterial({ color: 0x96744e, roughness: 0.9 })
-    if (repo.pared) {
-      woodWall.map = repo.pared
-      woodWall.userData.sharedMap = true
-      woodWall.needsUpdate = true
-    } else {
-      // sin textura aún → registrado para el parche en vivo (applyRepoTexToBr)
-      this.texMats.push({ mat: woodWall, kind: 'wall', rx: 1.6, ry: 1.2 })
+    // muro de ladrillo de obra (WALL)
+    const brickWall = new THREE.MeshStandardMaterial({ color: 0xb0705c, roughness: 0.92 })
+    // plataforma de tablones (FLOOR)
+    const woodFloor = new THREE.MeshStandardMaterial({ color: 0xa8845a, roughness: 0.9 })
+    // chapa industrial (RAMP)
+    const metalRamp = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.55, metalness: 0.6 })
+    // viga oscura (travesaños/rieles de todas las piezas)
+    const metalFrame = new THREE.MeshStandardMaterial({ color: 0x565c63, roughness: 0.6, metalness: 0.55 })
+    const applyTex = (
+      mat: THREE.MeshStandardMaterial, tex: THREE.Texture | null,
+      kind: 'ladrillo' | 'madera' | 'metal', rx: number, ry: number, tint: number,
+    ): void => {
+      if (tex) {
+        const t = tex.clone()
+        t.wrapS = t.wrapT = THREE.RepeatWrapping
+        t.repeat.set(rx, ry)
+        t.needsUpdate = true
+        mat.map = t
+        mat.color.set(tint)
+        mat.userData.sharedMap = true
+        mat.needsUpdate = true
+      } else {
+        // sin textura aún → registrado para el parche en vivo (applyRepoTexToBr)
+        this.texMats.push({ mat, kind, rx, ry })
+      }
     }
-    if (repo.piso) {
-      woodFloor.map = repo.piso
-      woodFloor.userData.sharedMap = true
-      woodFloor.needsUpdate = true
-    } else {
-      this.texMats.push({ mat: woodFloor, kind: 'roof', rx: 1.6, ry: 1.6 })
-    }
-    this.buildMats.wall = woodWall
+    applyTex(brickWall, repo.ladrillo, 'ladrillo', 2.2, 1.6, 0xffffff)
+    applyTex(woodFloor, repo.madera, 'madera', 1.6, 1.6, 0xffffff)
+    applyTex(metalRamp, repo.metal, 'metal', 2.4, 3, 0xffffff)
+    applyTex(metalFrame, repo.metal, 'metal', 1, 1, 0x6b7076)
+    this.buildMats.wall = brickWall
     this.buildMats.floor = woodFloor
+    this.buildMats.ramp = metalRamp
+    this.buildMats.frame = metalFrame
   }
 
   /** (re)builds the translucent ghost preview */
@@ -5237,6 +5351,8 @@ export class BattleRoyaleGame {
     this.buildMode = null
     this.buildMats.wall = null
     this.buildMats.floor = null
+    this.buildMats.ramp = null
+    this.buildMats.frame = null
     if (this.soldierTemplate) disposeTree(this.soldierTemplate)
     this.soldierTemplate = null
     try { this.renderer.dispose() } catch { /* ok */ }

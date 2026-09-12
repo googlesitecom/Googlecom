@@ -77,15 +77,46 @@ interface WeaponCacheEntry {
 const weaponCache = new Map<string, WeaponCacheEntry>()
 
 // ------------------------------------------------------------
-// Carga de texturas (Pared/Piso/Cielo)
+// Carga de texturas (Pared/Piso/Cielo + v13: las 9 del usuario)
 // ------------------------------------------------------------
 export interface RepoTextures {
   pared: THREE.Texture | null
   piso: THREE.Texture | null
   cielo: THREE.Texture | null
+  /** v13: suelo de césped (BR isla + terreno) */
+  pasto: THREE.Texture | null
+  /** v13: arena del desierto (suelo clásico + playa BR) */
+  arena: THREE.Texture | null
+  /** v13: asfalto (calles ciudad + carreteras BR) */
+  asfalto: THREE.Texture | null
+  /** v13: hormigón (bloques/escaleras/aceras) */
+  concreto: THREE.Texture | null
+  /** v13: roca de granito (rocas y montañas) */
+  roca: THREE.Texture | null
+  /** v13: acero corrugado gris (contenedores, techo, barracones) */
+  contenedor: THREE.Texture | null
+  /** v13: tablones de construcción (cajas, madera del mapa, builds BR) */
+  madera: THREE.Texture | null
+  /** v13: ladrillo cocido (muros de construcción BR) */
+  ladrillo: THREE.Texture | null
+  /** v13: chapa industrial (rampas/vigas de construcción BR) */
+  metal: THREE.Texture | null
 }
 
-let repoTextures: RepoTextures = { pared: null, piso: null, cielo: null }
+/** archivos de textura del usuario (v13: las 12) — [campo, archivo] */
+const REPO_TEX_FILES: [keyof RepoTextures, string][] = [
+  ['pared', 'Pared.jpg'], ['piso', 'Piso.jpg'], ['cielo', 'Cielo.jpg'],
+  ['pasto', 'Pasto.jpg'], ['arena', 'Arena.jpg'], ['asfalto', 'Asfalto.jpg'],
+  ['concreto', 'Concreto.jpg'], ['roca', 'Roca.jpg'],
+  ['contenedor', 'Contenedor.jpg'], ['madera', 'Madera.jpg'],
+  ['ladrillo', 'Ladrillo.jpg'], ['metal', 'Metal.jpg'],
+]
+
+let repoTextures: RepoTextures = {
+  pared: null, piso: null, cielo: null,
+  pasto: null, arena: null, asfalto: null, concreto: null, roca: null,
+  contenedor: null, madera: null, ladrillo: null, metal: null,
+}
 
 export function getRepoTextures(): RepoTextures {
   return repoTextures
@@ -110,12 +141,40 @@ export function getTreeTemplate(): TreeTemplate | null {
 // ------------------------------------------------------------
 let preloadStarted = false
 let preloadDone = false
+/** v13: promesa de la cola en curso — llamadas posteriores esperan a la MISMA cola */
+let preloadPromise: Promise<void> | null = null
+
+/** v13: progreso de la precarga — alimenta la pantalla de carga REAL
+ *  (el juego no arranca hasta que texturas + modelos están listos) */
+export interface AssetProgress {
+  loaded: number
+  total: number
+  label: string
+}
+let progressCb: ((p: AssetProgress) => void) | null = null
+let progressDone = 0
+let progressTotal = 0
+
+export function setAssetProgressCb(cb: ((p: AssetProgress) => void) | null): void {
+  progressCb = cb
+}
+
+function reportProgress(label: string): void {
+  progressDone++
+  try { progressCb?.({ loaded: progressDone, total: progressTotal, label }) } catch { /* UI propia */ }
+}
+
 const weaponListeners: Array<() => void> = []
 /** archivos de arma cuya carga diferida ya está en marcha */
 const pendingFiles = new Set<string>()
 
 export function areWeaponGLBsReady(): boolean {
   return weaponCache.size > 0
+}
+
+/** v13: ¿terminó ya la precarga global? (pantalla de carga) */
+export function isPreloadDone(): boolean {
+  return preloadDone
 }
 
 /** Registra un callback persistente: se dispara cada vez que llega un
@@ -177,20 +236,24 @@ export function ensureWeaponGLB(id: WeaponId): void {
  * armas GLB YA NO se precargan: carga perezosa por arma
  * (ensureWeaponGLB) — el modo que juegas baja solo lo que usa.
  * `opts.weapons = true` restaura el comportamiento clásico.
+ * v13: `opts.soldier = true` calienta también soldier1.glb (fetch completo
+ * → queda en la caché HTTP: remote-players y el BR lo instancian al vuelo).
  * Resuelve siempre (los fallos dejan fallbacks procedurales).
+ * El progreso se reporta por setAssetProgressCb (pantalla de carga real).
  */
-export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean }): Promise<void> {
-  if (preloadStarted) return Promise.resolve()
+export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean; soldier?: boolean }): Promise<void> {
+  if (preloadStarted) return preloadPromise ?? Promise.resolve()
   preloadStarted = true
   const loadTrees = opts?.trees !== false
   const loadWeapons = opts?.weapons === true
+  const warmSoldier = opts?.soldier === true
 
   const loader = new GLTFLoader()
   const texLoader = new THREE.TextureLoader()
 
   const tasks: Promise<void>[] = []
 
-  // ---- texturas ----
+  // ---- texturas (v13: las 12 del usuario, Pared…Metal) ----
   const loadTex = (url: string, repeat: [number, number] | null): Promise<THREE.Texture | null> =>
     new Promise(resolve => {
       texLoader.load(
@@ -207,11 +270,11 @@ export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean }): Pr
       )
     })
 
-  tasks.push(
-    loadTex(`${ASSET_BASE}/textures/Pared.jpg`, null).then(t => { repoTextures.pared = t }),
-    loadTex(`${ASSET_BASE}/textures/Piso.jpg`, null).then(t => { repoTextures.piso = t }),
-    loadTex(`${ASSET_BASE}/textures/Cielo.jpg`, null).then(t => { repoTextures.cielo = t }),
-  )
+  for (const [field, file] of REPO_TEX_FILES) {
+    tasks.push(
+      loadTex(`${ASSET_BASE}/textures/${file}`, null).then(t => { repoTextures[field] = t }),
+    )
+  }
 
   // ---- armas: solo con opts.weapons (v7: por defecto perezosas) ----
   if (loadWeapons) {
@@ -260,10 +323,45 @@ export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean }): Pr
     )
   }
 
-  return Promise.allSettled(tasks).then(() => {
+  // ---- v13: soldier1.glb (calentamiento de caché HTTP) ----
+  // el soldado lo instancian remote-players.ts y battle-royale.ts con su
+  // propio GLTFLoader; aquí solo se descarga COMPLETO para que esos
+  // cargadores posteriores salgan de la caché del navegador (instantáneo)
+  if (warmSoldier) {
+    tasks.push(
+      fetch(`${ASSET_BASE}/models/soldier1.glb`)
+        .then(r => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
+        .then(() => undefined, () => undefined),
+    )
+  }
+
+  // v13: contar TAREAS para el progreso real de la pantalla de carga
+  progressDone = 0
+  progressTotal = tasks.length
+  tasks.forEach((task, i) => {
+    const label = i < REPO_TEX_FILES.length
+      ? `TEXTURA · ${REPO_TEX_FILES[i][1]}`
+      : 'MODELO 3D'
+    task.then(() => reportProgress(label), () => reportProgress(label))
+  })
+
+  preloadPromise = Promise.allSettled(tasks).then(() => {
     preloadDone = true
     if (weaponCache.size > 0) notifyWeaponReady()
   })
+  return preloadPromise
+}
+
+/**
+ * v13 — PUERTA DE CARGA: precarga TODO (12 texturas + Arbol + 4 armas GLB
+ * + soldier1) y reporta el progreso. La pantalla de arranque espera a
+ * esta promesa: el juego NO comienza hasta que texturas y modelos están
+ * en memoria (con fallbacks procedurales si algún archivo faltara).
+ */
+export function preloadAllAssets(onProgress?: (p: AssetProgress) => void): Promise<void> {
+  if (onProgress) setAssetProgressCb(onProgress)
+  // si otra llamada ya inició la precarga, espera a la MISMA cola
+  return preloadAssets({ trees: true, weapons: true, soldier: true })
 }
 
 // ------------------------------------------------------------

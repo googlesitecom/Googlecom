@@ -1441,16 +1441,14 @@ export function MainMenu() {
                 </div>
                 <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
                   <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-2 flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5" /> What's new in v7
+                    <Clock className="w-3.5 h-3.5" /> What's new in v13
                   </h4>
                   <ul className="space-y-1.5">
                     {[
-                      'Full English translation across the entire game',
-                      'Rebuilt OPERATION ASHFALL campaign: long Halo-style cinematics with dialogue and live battle fronts, fewer guards',
-                      'Redesigned HUD, circular rotating minimap with compass, and a reworked armory',
-                      'Multi-kill banners now show ONLY for your own kills',
-                      'Sharper damage feedback: blood bursts, hit glow, scaled hitmarkers',
-                      'Faster loading: weapon models download on demand — only what the mode you play uses',
+                      '9 new real textures: grass, sand, asphalt, concrete, rock, container, wood, brick and metal across every mode',
+                      'Battle Royale builds with real materials: WALL = brick · FLOOR = wood planks · RAMP = steel',
+                      'REAL loading gate: the game now waits until every texture and 3D model is fully loaded',
+                      'Loading screen shows live progress of each texture and model as it downloads',
                     ].map(t => (
                       <li key={t} className="text-stone-400 text-[11px] leading-snug flex gap-2">
                         <span className="text-amber-400/70 mt-0.5">·</span> {t}
@@ -2051,7 +2049,7 @@ export function ConnectingScreen() {
               </p>
             </div>
           )}
-          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v7</div>
+          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v13</div>
         </div>
       )}
     </div>

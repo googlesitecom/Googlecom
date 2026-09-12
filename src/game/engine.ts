@@ -448,7 +448,11 @@ export class Game {
       if (parts.includes('all') || parts.includes('tree')) this.applyRepoTrees()
     })
     onWeaponGLBsReady(() => {
-      if (this.disposed) return
+      // v13: con la puerta de carga de arranque los GLB ya están en caché
+      // → este callback puede dispararse EN SINCRONÍA durante el propio
+      // constructor, antes de crear vmHolder/remotes → esperar al siguiente
+      // tick de construcción (setWeapon inicial ya usará el GLB real)
+      if (this.disposed || !this.vmHolder || !this.remotes) return
       // refrescar el arma en mano y las de los remotos con los modelos GLB
       // (v7: se dispara cada vez que llega un GLB nuevo — carga perezosa)
       this.setWeapon(this.weapon, true)
@@ -1573,6 +1577,17 @@ export class Game {
     const sidewalk = new THREE.MeshStandardMaterial({ color: 0x8f9296, roughness: ultra ? 0.62 : 0.78, envMapIntensity: ultra ? 0.9 : 0.55 })
     this.streetMats = { asphalt, sidewalk }   // v6.4: brillo húmedo regulable en vivo
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8d8c8 })
+    // v13: escala de UVs por dimensión — con la Asfalto.jpg/Concreto.jpg
+    // del usuario (parcheadas en vivo por applyRepoTextures) cada plano
+    // muestra su tamaño real de baldosa con UNA textura compartida
+    // (asfalto: 6 m por repetición · aceras: 3 m)
+    const scaleUVs = (geo: THREE.PlaneGeometry, w: number, d: number, tile: number): THREE.PlaneGeometry => {
+      const uv = geo.attributes.uv as THREE.BufferAttribute
+      for (let i = 0; i < uv.count; i++) {
+        uv.setXY(i, uv.getX(i) * (w / tile), uv.getY(i) * (d / tile))
+      }
+      return geo
+    }
     // alturas escalonadas para evitar z-fighting con el terreno (mm → cm)
     const Y_ASPHALT = 0.03
     const Y_SIDEWALK = 0.06
@@ -1586,18 +1601,28 @@ export class Game {
       [0, 35, 8, 140], [0, -35, 8, 140],    // secundarias E-O
     ]
     for (const [cx, cz, w, d] of planes) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), asphalt)
+      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 6), asphalt)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_ASPHALT, cz)
       m.receiveShadow = true
       this.scene.add(m)
     }
     // rotonda: anillo de asfalto + pavimento interior
-    const ring = new THREE.Mesh(new THREE.RingGeometry(2.8, 9.8, 40), asphalt)
+    const ringGeo = new THREE.RingGeometry(2.8, 9.8, 40)
+    {
+      const uv = ringGeo.attributes.uv as THREE.BufferAttribute
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 3, uv.getY(i) * 3)
+    }
+    const ring = new THREE.Mesh(ringGeo, asphalt)
     ring.rotation.x = -Math.PI / 2
     ring.position.set(0, Y_RING, 0)
     this.scene.add(ring)
-    const inner = new THREE.Mesh(new THREE.CircleGeometry(2.9, 32), sidewalk)
+    const innerGeo = new THREE.CircleGeometry(2.9, 32)
+    {
+      const uv = innerGeo.attributes.uv as THREE.BufferAttribute
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2, uv.getY(i) * 2)
+    }
+    const inner = new THREE.Mesh(innerGeo, sidewalk)
     inner.rotation.x = -Math.PI / 2
     inner.position.set(0, Y_RING + 0.01, 0)
     this.scene.add(inner)
@@ -1609,7 +1634,7 @@ export class Game {
       [4.6, 35, 1.2, 140], [-4.6, 35, 1.2, 140], [4.6, -35, 1.2, 140], [-4.6, -35, 1.2, 140],
     ]
     for (const [cx, cz, w, d] of walks) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), sidewalk)
+      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 3), sidewalk)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_SIDEWALK, cz)
       m.receiveShadow = true
@@ -1872,7 +1897,7 @@ export class Game {
   // ----------------------------------------------------------
   private applyRepoTextures(): void {
     const quality = useGame.getState().settings.quality
-    const { pared, piso, cielo } = getRepoTextures()
+    const { pared, piso, cielo, arena, asfalto, concreto, roca, contenedor, madera } = getRepoTextures()
     // --- cielo del usuario (Cielo.jpg) ---
     if (cielo && this.skyMesh) {
       const mat = this.skyMesh.material as THREE.MeshBasicMaterial
@@ -1926,18 +1951,108 @@ export class Game {
         }
       }
     }
-    if (piso) {
+    // v13: el suelo exterior prefiere la Arena.jpg del usuario (desierto
+    // real, 1024 px); si no existiera, mantiene el comportamiento clásico
+    // (Piso.jpg con tinte arena)
+    if ((arena || piso) && this.groundMesh) {
       const g = this.groundMesh
-      if (g) {
-        const mat = g.material as THREE.MeshStandardMaterial
-        const tex = piso.clone()
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-        tex.repeat.set(58, 58)
-        tex.needsUpdate = true
-        mat.map = tex
-        mat.color.set(0xb9ad93)
-        mat.needsUpdate = true
+      const mat = g.material as THREE.MeshStandardMaterial
+      const tex = (arena ?? piso)!.clone()
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+      tex.repeat.set(arena ? 46 : 58, arena ? 46 : 58)
+      tex.anisotropy = 8
+      tex.needsUpdate = true
+      mat.map = tex
+      mat.color.set(arena ? 0xffffff : 0xb9ad93)
+      mat.needsUpdate = true
+    }
+    // v13: bloques/escaleras de hormigón — Concreto.jpg real (antes tocaba
+    // el ladrillo de Pared con tinte); si faltara, conserva el Pared
+    if (concreto) {
+      const cTex = concreto
+      cTex.wrapS = cTex.wrapT = THREE.RepeatWrapping
+      for (const m of this.mapMeshes) {
+        const mat = m.material as THREE.MeshStandardMaterial
+        if (!mat || !mat.map) continue
+        if (m.userData.matKey === 'concrete') {
+          mat.map = cTex
+          mat.color.set(0xffffff)
+          mat.needsUpdate = true
+        }
       }
+    }
+    // v13: rocas del mapa — Roca.jpg real (las UVs de las cajas ya vienen
+    // escaladas por cara: densidad de texel constante, repeat 1)
+    if (roca) {
+      const rTex = roca
+      rTex.wrapS = rTex.wrapT = THREE.RepeatWrapping
+      for (const m of this.mapMeshes) {
+        const mat = m.material as THREE.MeshStandardMaterial
+        if (!mat || !mat.map) continue
+        if (m.userData.matKey === 'rock') {
+          mat.map = rTex
+          mat.color.set(0xffffff)
+          mat.needsUpdate = true
+        }
+      }
+    }
+    // v13: contenedores/barracones/techos — Contenedor.jpg (acero
+    // corrugado GRIS del usuario) teñido con el color original de cada
+    // material: metalRed/Blue/Green/Orange/Grey + roof. Los coches del
+    // mapa comparten matKey con los contenedores → mismo acero (estética
+    // chatarrera coherente con el Warzone)
+    if (contenedor) {
+      const cTex = contenedor
+      cTex.wrapS = cTex.wrapT = THREE.RepeatWrapping
+      const CONT_TINTS: Record<string, number> = {
+        metalRed: 0x9c4a38, metalBlue: 0x36647a, metalGreen: 0x547840,
+        metalOrange: 0xc07430, metalGrey: 0x9a9da3, roof: 0x8a8d90,
+      }
+      for (const m of this.mapMeshes) {
+        const mat = m.material as THREE.MeshStandardMaterial
+        if (!mat || !mat.map) continue
+        const key = m.userData.matKey as string
+        if (key in CONT_TINTS) {
+          mat.map = cTex
+          mat.color.set(CONT_TINTS[key])
+          mat.needsUpdate = true
+        }
+      }
+    }
+    // v13: maderas del mapa (marcas de spawn, cajas, estructuras wood) —
+    // Madera.jpg real del usuario (tablones de construcción)
+    if (madera) {
+      const wTex = madera
+      wTex.wrapS = wTex.wrapT = THREE.RepeatWrapping
+      for (const m of this.mapMeshes) {
+        const mat = m.material as THREE.MeshStandardMaterial
+        if (!mat || !mat.map) continue
+        const key = m.userData.matKey as string
+        if (key === 'wood' || key === 'crate') {
+          mat.map = wTex
+          mat.color.set(key === 'crate' ? 0xffffff : 0xd9c4a0)
+          mat.needsUpdate = true
+        }
+      }
+    }
+    // v13: calles de la ciudad — asfalto real + aceras de hormigón
+    // (las UVs de los planos ya se escalan por dimensión en buildStreets:
+    // UNA textura compartida, densidad constante, cero clonado por malla)
+    if (asfalto && this.streetMats) {
+      asfalto.wrapS = asfalto.wrapT = THREE.RepeatWrapping
+      asfalto.repeat.set(1, 1)
+      this.streetMats.asphalt.map = asfalto
+      this.streetMats.asphalt.color.set(0xffffff)
+      this.streetMats.asphalt.needsUpdate = true
+    }
+    if (concreto && this.streetMats) {
+      const swTex = concreto.clone()
+      swTex.wrapS = swTex.wrapT = THREE.RepeatWrapping
+      swTex.repeat.set(1, 1)
+      swTex.needsUpdate = true
+      this.streetMats.sidewalk.map = swTex
+      this.streetMats.sidewalk.color.set(0xffffff)
+      this.streetMats.sidewalk.needsUpdate = true
     }
     // --- árboles GLB (Arbol.glb) ---
   }

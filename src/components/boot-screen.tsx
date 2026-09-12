@@ -1,13 +1,15 @@
 'use client'
 
 // ============================================================
-// EMERGENCY STRIKE — Loading screen (v7)
-// Full-bleed combat artwork (img/carga.jpg) with tactical
-// typography, thin progress bar, rotating English tips and
-// percentage readout.
+// EMERGENCY STRIKE — Loading screen (v13: CARGA REAL)
+// El juego NO comienza hasta que TODAS las texturas (12) y TODOS
+// los modelos GLB (Arbol + 4 armas + soldado) están en memoria.
+// La barra muestra el progreso real de la precarga; se mantiene
+// un mínimo visual de 2.4 s para el logo/tips.
 // ============================================================
 import { useEffect, useRef, useState } from 'react'
 import { ASSET_BASE } from '@/game/shared'
+import { preloadAllAssets } from '@/game/assets'
 
 const TIPS = [
   'TIP: crouch while sprinting to slide down ramps',
@@ -18,49 +20,83 @@ const TIPS = [
   'TIP: red barrels explode — use them to your advantage',
   'TIP: press E to grab ziplines and plant charges',
   'TIP: headshots deal up to 4x damage',
+  'TIP: in Battle Royale, Q/C/Z build walls, ramps and floors',
 ]
 
-const DURATION = 3000   // ms — 3 second loading screen
+/** mínimo visual del arranque (el logo y el tip deben ser legibles) */
+const MIN_TIME = 2400
+/** espera extra tras el 100 % antes de fundir (evita un cierre en seco) */
+const HOLD_TIME = 420
 
 export function BootScreen({ onDone }: { onDone: () => void }) {
-  const [progress, setProgress] = useState(0)
-  // the initial tip is NOT randomized on first render (prerendered HTML
-  // must match so hydration doesn't fail)
-  const [tip, setTip] = useState(0)
+  const [label, setLabel] = useState('CONNECTING')
+  const [assetsDone, setAssetsDone] = useState(false)
+  const [shown, setShown] = useState(0)
   const [fading, setFading] = useState(false)
   const doneRef = useRef(false)
+  const assetsDoneRef = useRef(false)
+  // progreso real de assets — REF (el bucle RAF lee siempre el valor vivo)
+  const assetPRef = useRef(0)
+  // el tip inicial NO se aleatoriza en el primer render (el HTML
+  // prerenderizado debe coincidir para que la hidratación no falle)
+  const [tip, setTip] = useState(0)
 
   useEffect(() => {
-    // randomize ONLY on the client (already mounted)
+    // randomize ONLY on the client (already mounted) — el HTML prerenderizado
+    // debe coincidir para que la hidratación no falle, por eso va en el efecto
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTip(Math.floor(Math.random() * TIPS.length))
+
+    // ---- v13: PUERTA DE CARGA — texturas + modelos, progreso real ----
+    let alive = true
+    preloadAllAssets(p => {
+      if (!alive) return
+      assetPRef.current = p.total > 0 ? p.loaded / p.total : 0
+      setLabel(p.label)
+    }).then(() => {
+      if (!alive) return
+      assetsDoneRef.current = true
+      setAssetsDone(true)
+    })
+
+    // animación: rampa temporal + progreso real (nunca llega a 100 %
+    // hasta que assets Y tiempo mínimo se cumplen)
     const start = performance.now()
     let raf = 0
+    let holdStart = 0
     const step = (now: number): void => {
-      const t = Math.min(1, (now - start) / DURATION)
-      // smooth easing (fast at the start, precise at the end)
-      const eased = 1 - (1 - t) ** 2.2
-      setProgress(eased)
-      if (t < 1) {
-        raf = requestAnimationFrame(step)
-      } else {
-        setFading(true)
-        setTimeout(() => {
-          if (!doneRef.current) {
-            doneRef.current = true
-            onDone()
-          }
-        }, 550)
+      if (!alive) return
+      const elapsed = now - start
+      const timeP = Math.min(1, elapsed / MIN_TIME)
+      const target = Math.min(assetPRef.current, timeP * 0.96)
+      const ready = assetsDoneRef.current && timeP >= 1
+      setShown(ready ? 1 : Math.min(target, 0.98))
+      if (ready) {
+        if (!holdStart) holdStart = now
+        if (now - holdStart >= HOLD_TIME) {
+          setFading(true)
+          setTimeout(() => {
+            if (!doneRef.current) {
+              doneRef.current = true
+              onDone()
+            }
+          }, 550)
+          return   // detener el bucle: la pantalla se funde
+        }
       }
+      raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
+
     const tipTimer = setInterval(() => setTip(i => (i + 1) % TIPS.length), 950)
     return () => {
+      alive = false
       cancelAnimationFrame(raf)
       clearInterval(tipTimer)
     }
   }, [onDone])
 
-  const pct = Math.round(progress * 100)
+  const pct = Math.round(shown * 100)
 
   return (
     <div
@@ -103,24 +139,24 @@ export function BootScreen({ onDone }: { onDone: () => void }) {
           <span className="h-px w-12 bg-stone-500/70" />
         </div>
         <p className="font-tac-md mt-4 text-[11px] tracking-[0.4em] text-stone-400">
-          Operation Ashfall · v7
+          Operation Ashfall · v13
         </p>
       </div>
 
-      {/* thin progress bar */}
+      {/* thin progress bar — progreso REAL de texturas y modelos */}
       <div className="relative mt-10 w-72 sm:w-96">
         <div className="h-[3px] w-full rounded-full bg-stone-800/90 overflow-hidden">
           <div
             className="h-full rounded-full transition-none tac-glow"
             style={{
-              width: `${progress * 100}%`,
+              width: `${shown * 100}%`,
               background: 'linear-gradient(90deg, #8a6b3d, #e7b56a)',
             }}
           />
         </div>
         <div className="mt-2.5 flex items-center justify-between">
-          <span className="font-tac-md text-[10px] text-stone-400">
-            {pct < 100 ? 'LOADING SYSTEMS' : 'READY'}
+          <span className="font-tac-md text-[10px] text-stone-400 truncate max-w-[70%]">
+            {assetsDone && pct >= 100 ? 'ALL SYSTEMS READY' : `LOADING · ${label}`}
           </span>
           <span className="font-tac text-[11px] tabular-nums tracking-widest text-amber-200/80">
             {pct}%
