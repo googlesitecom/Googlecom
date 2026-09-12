@@ -11,11 +11,11 @@ import { useBr, BR_RARITIES } from '@/game/br-store'
 import { getBrGame } from '@/game/br-instance'
 import { Button } from '@/components/ui/button'
 import { ChatBox } from './chat-box'
-import { KeybindsPanel, SettingsPanel, InfoPanel } from './menus'
+import { KeybindsPanel, SettingsPanel, InfoPanel, ProfileContent } from './menus'
 import { useAuth } from '@/game/auth'
 import {
   Users, Skull, Wind, Rocket, Plane, Heart, LogOut, Crown,
-  Timer, Gauge, Loader2, Eye, Car, Keyboard, Settings, Info, Play,
+  Timer, Gauge, Loader2, Eye, Car, Keyboard, Settings, Info, Play, User, Hammer,
 } from 'lucide-react'
 
 export function BrHud() {
@@ -252,7 +252,11 @@ function LiveHud() {
   const hint = useBr(s => s.hint)
   const inStorm = useBr(s => s.inStorm)
   const inVehicle = useBr(s => s.inVehicle)
-  const showCrosshair = phase === 'live' && !inVehicle
+  // v12: construcción
+  const mats = useBr(s => s.mats)
+  const buildMode = useBr(s => s.buildMode)
+  const buildPlaceable = useBr(s => s.buildPlaceable)
+  const showCrosshair = phase === 'live' && !inVehicle && !buildMode
   // v10: rareza estilo Fortnite del arma equipada
   const rar = weaponRarity >= 0 && weaponRarity < BR_RARITIES.length ? BR_RARITIES[weaponRarity] : null
   const scope = useBr(s => s.scope)
@@ -318,7 +322,7 @@ function LiveHud() {
         </div>
       )}
 
-      {/* bottom left: HP */}
+      {/* bottom left: HP + v12 MATERIALS */}
       <div className="absolute bottom-6 left-6 w-60">
         <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded-md px-4 py-3 shadow-xl tac-corner">
           <div className="flex items-center justify-between mb-2">
@@ -335,7 +339,48 @@ function LiveHud() {
             />
           </div>
         </div>
+        {/* v12: build materials */}
+        <div className={`mt-2 bg-stone-950/85 backdrop-blur-sm border rounded-md px-4 py-2.5 shadow-xl tac-corner flex items-center gap-2.5 ${
+          buildMode ? 'border-sky-500/70' : 'border-stone-700/70'
+        }`}>
+          <Hammer className={`w-4 h-4 ${buildMode ? 'text-sky-300' : 'text-amber-300/80'}`} />
+          <div className="flex-1">
+            <span className="font-tac-md text-[9px] text-stone-500 block leading-none">MATERIALS</span>
+            <span className={`font-tac text-lg tabular-nums leading-none block mt-0.5 ${mats >= 10 ? 'text-stone-100' : 'text-red-300'}`}>{mats}</span>
+          </div>
+          {mats < 10 && (
+            <span className="font-tac-md text-[9px] text-red-300/80">LOW</span>
+          )}
+        </div>
       </div>
+
+      {/* v12: build mode piece bar (Q · C · Z) */}
+      {buildMode && phase === 'live' && (
+        <div className="absolute bottom-[15%] left-1/2 -translate-x-1/2">
+          <div className="bg-stone-950/85 backdrop-blur-sm border border-sky-700/60 rounded-lg px-4 py-2.5 shadow-2xl tac-corner">
+            <div className="flex items-center gap-2">
+              {(['wall', 'ramp', 'floor'] as const).map(k => {
+                const key = k === 'wall' ? 'Q' : k === 'ramp' ? 'C' : 'Z'
+                const active = buildMode === k
+                return (
+                  <div key={k} className={`rounded px-2.5 py-1.5 flex items-center gap-2 border ${
+                    active ? 'bg-sky-500/20 border-sky-400/70' : 'bg-stone-900/60 border-stone-800'
+                  }`}>
+                    <span className={`font-tac text-[11px] px-1 rounded ${active ? 'text-sky-200' : 'text-stone-400'}`}>{key}</span>
+                    <span className={`font-tac-md text-[10px] tracking-widest ${active ? 'text-sky-200' : 'text-stone-500'}`}>
+                      {k === 'wall' ? 'WALL' : k === 'ramp' ? 'RAMP' : 'FLOOR'}
+                    </span>
+                  </div>
+                )
+              })}
+              <span className="w-px h-6 bg-stone-700" />
+              <span className={`font-tac-md text-[10px] tracking-wider ${buildPlaceable ? 'text-emerald-300' : 'text-red-300'}`}>
+                {buildPlaceable ? 'LMB BUILD · 10 MATS' : 'BLOCKED'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* bottom right: weapon */}
       <div className="absolute bottom-6 right-6">
@@ -443,11 +488,13 @@ function SniperScope() {
 
 // ------------------------------------------------------------
 // v11.2 — BR PAUSE MENU (the same menu as the normal modes)
+// v12: + pestaña PROFILE (récord de carrera + stats por modo)
 // ------------------------------------------------------------
-type BrPauseTab = 'controls' | 'settings' | 'info'
+type BrPauseTab = 'profile' | 'controls' | 'settings' | 'info'
 
 function BrPauseMenu() {
   const [tab, setTab] = useState<BrPauseTab>('controls')
+  const user = useAuth(s => s.user)
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto"
       style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
@@ -464,7 +511,15 @@ function BrPauseMenu() {
           </Button>
         </div>
 
-        <div className="px-5 sm:px-7 pt-4 flex gap-1 border-b border-stone-800">
+        <div className="px-5 sm:px-7 pt-4 flex flex-wrap gap-1 border-b border-stone-800">
+          {user && (
+            <button
+              onClick={() => setTab('profile')}
+              className={`flex items-center gap-1.5 px-3 py-2 font-tac-md text-[11px] tracking-widest uppercase border-b-2 transition-colors ${tab === 'profile' ? 'border-amber-400 text-amber-200' : 'border-transparent text-stone-500 hover:text-stone-300'}`}
+            >
+              <User className="w-3.5 h-3.5" /> Profile
+            </button>
+          )}
           <button
             onClick={() => setTab('controls')}
             className={`flex items-center gap-1.5 px-3 py-2 font-tac-md text-[11px] tracking-widest uppercase border-b-2 transition-colors ${tab === 'controls' ? 'border-amber-400 text-amber-200' : 'border-transparent text-stone-500 hover:text-stone-300'}`}
@@ -486,7 +541,38 @@ function BrPauseMenu() {
         </div>
 
         <div className="p-5 sm:p-7">
-          {tab === 'controls' && <KeybindsPanel />}
+          {tab === 'profile' && user && <ProfileContent user={user} />}
+          {tab === 'controls' && (
+            <div className="space-y-5">
+              <KeybindsPanel />
+              {/* v12: construcción estilo Fortnite — teclas propias del BR */}
+              <div className="bg-stone-950/60 border border-stone-800 rounded-lg p-4">
+                <h4 className="font-tac-md text-amber-200/90 text-[11px] mb-3 flex items-center gap-2">
+                  <Hammer className="w-4 h-4" /> Battle Royale — Fortnite-style building
+                </h4>
+                <div className="grid sm:grid-cols-3 gap-2.5 text-[11px]">
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">Q</span>
+                    <span className="text-stone-300">Wall piece</span>
+                  </div>
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">C</span>
+                    <span className="text-stone-300">Stairs / ramp</span>
+                  </div>
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">Z</span>
+                    <span className="text-stone-300">Floor piece</span>
+                  </div>
+                </div>
+                <p className="text-stone-600 text-[10px] mt-2.5 leading-relaxed">
+                  Pick a piece and LEFT-CLICK to place it on the grid (hold for turbo-build).
+                  Each piece costs <b className="text-stone-400">10 materials</b>; destroy enemy
+                  structures by shooting them. Crates and ammo boxes give materials, and every
+                  elimination pays +60. Walls give real cover — even against bot fire.
+                </p>
+              </div>
+            </div>
+          )}
           {tab === 'settings' && <SettingsPanel />}
           {tab === 'info' && <InfoPanel />}
         </div>

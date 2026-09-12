@@ -11,9 +11,10 @@ import { useEffect, useState } from 'react'
 import { useGame } from '@/game/store'
 import { WEAPONS, TEAM_INFO, keyLabel, type Team } from '@/game/shared'
 import { getGame } from '@/game/game-instance'
-import { Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target, Crosshair, ShieldCheck, HardHat, Flame, Syringe } from 'lucide-react'
+import { Shield, Heart, Skull, Coins, Zap, Timer, MapPin, Gamepad2, Copy, Users, Wifi, Flag, Swords, Radio, Target, Crosshair, ShieldCheck, HardHat, Flame, Syringe, Mic, MicOff, Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ChatBox } from './chat-box'
+import { useVoice } from '@/game/voice'
 
 export function Hud() {
   const hp = useGame(s => s.hp)
@@ -65,6 +66,9 @@ export function Hud() {
     <div className="fixed inset-0 z-30 pointer-events-none" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
       {/* v10: chat de partida ([T]) */}
       <ChatBox />
+
+      {/* v12: proximity voice chat — mic status + speaking operators */}
+      <VoiceIndicator />
 
       {/* ===== Top bar: mode, objective and score ===== */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3">
@@ -594,6 +598,78 @@ export function StoryVictory() {
           Back to menu
         </Button>
       </div>
+    </div>
+  )
+}
+
+// ============================================================
+// v12 — PROXIMITY VOICE CHAT indicator
+// Mic state + push-to-talk hint + speaking teammates with their
+// live proximity level. Only renders in rooms with REAL operators
+// (bots never speak — they have no client).
+// ============================================================
+function VoiceIndicator() {
+  const active = useVoice(s => s.active)
+  const mic = useVoice(s => s.mic)
+  const transmitting = useVoice(s => s.transmitting)
+  const ptt = useVoice(s => s.ptt)
+  const mode = useVoice(s => s.mode)
+  const speakers = useVoice(s => s.speakers)
+  if (!active) return null
+
+  return (
+    <div className="absolute bottom-[23%] left-6 space-y-1.5 w-[220px]">
+      {/* my mic */}
+      <div className={`rounded-md px-3 py-2 border backdrop-blur-sm shadow-xl tac-corner flex items-center gap-2.5 ${
+        transmitting
+          ? 'bg-emerald-950/85 border-emerald-500/70'
+          : mic === 'denied'
+            ? 'bg-red-950/85 border-red-700/70'
+            : 'bg-stone-950/80 border-stone-700/60'
+      }`}>
+        {transmitting
+          ? <Mic className="w-4 h-4 text-emerald-300" />
+          : mic === 'denied'
+            ? <MicOff className="w-4 h-4 text-red-300" />
+            : <Volume2 className="w-4 h-4 text-stone-400" />}
+        <div className="flex-1 min-w-0">
+          <p className={`font-tac-md text-[10px] tracking-[0.18em] uppercase leading-none ${
+            transmitting ? 'text-emerald-200' : mic === 'denied' ? 'text-red-200' : 'text-stone-400'
+          }`}>
+            {transmitting ? 'ON AIR' : mic === 'denied' ? 'MIC BLOCKED' : mic === 'ready' ? 'VOICE READY' : 'PROXIMITY VOICE'}
+          </p>
+          <p className="font-tac-md text-[9px] text-stone-500 mt-1 leading-none truncate">
+            {mic === 'denied'
+              ? 'Allow the microphone in the browser'
+              : mode === 'open'
+                ? 'Open mic · VAD gated'
+                : ptt ? 'Hold [V] to talk' : 'Hold [V] to talk · real operators only'}
+          </p>
+        </div>
+        {/* live level bar */}
+        <div className="w-8 h-1.5 rounded-full overflow-hidden bg-stone-800 shrink-0">
+          <div
+            className="h-full rounded-full bg-emerald-400 transition-all duration-100"
+            style={{ width: transmitting ? '86%' : '0%' }}
+          />
+        </div>
+      </div>
+      {/* speaking teammates (with distance) */}
+      {speakers.filter(s => s.level > 0.06).map(s => (
+        <div key={s.name} className="rounded-md px-3 py-1.5 bg-stone-950/75 border border-stone-800 backdrop-blur-sm flex items-center gap-2.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          <span className="font-tac-md text-[10px] text-stone-200 truncate flex-1">{s.name}</span>
+          {s.dist >= 0 && (
+            <span className="font-tac-md text-[9px] text-stone-500 tabular-nums shrink-0">{Math.round(s.dist)}m</span>
+          )}
+          <span className="w-8 h-1 rounded-full overflow-hidden bg-stone-800 shrink-0">
+            <span
+              className="block h-full bg-amber-300"
+              style={{ width: `${Math.round(s.level * 100)}%` }}
+            />
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

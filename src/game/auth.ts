@@ -16,6 +16,31 @@ export interface SquadGroup {
   members: string[]
 }
 
+/** v12: estadísticas POR MODO de juego (una fila por modo en el perfil) */
+export interface ModeStats {
+  plays: number
+  wins: number
+  kills: number
+  deaths: number
+  headshots: number
+  timePlayed: number      // segundos
+}
+export const EMPTY_MODE_STATS: ModeStats = {
+  plays: 0, wins: 0, kills: 0, deaths: 0, headshots: 0, timePlayed: 0,
+}
+
+/** claves de modo reconocidas en el perfil (el resto se guarda igual, pero no se lista) */
+export const MODE_STAT_KEYS = ['escaramuza', 'ffa', 'bandera', 'dominacion', 'historia', 'br'] as const
+export type ModeStatKey = (typeof MODE_STAT_KEYS)[number]
+export const MODE_STAT_LABELS: Record<ModeStatKey, string> = {
+  escaramuza: 'TEAM COMBAT (TDM)',
+  ffa: 'FREE-FOR-ALL',
+  bandera: 'CAPTURE THE FLAG',
+  dominacion: 'DOMINATION',
+  historia: 'CAMPAIGN',
+  br: 'BATTLE ROYALE',
+}
+
 /** v11: a REAL friend — identified by their Operator ID */
 export interface FriendEntry {
   oid: string
@@ -40,6 +65,8 @@ export interface CareerProfile {
   timePlayed: number       // seconds
   createdAt: number
   lastPlayed: number
+  /** v12: desglose por modo — combate de equipos, campaña, BR y todo lo demás */
+  modeStats: Record<string, ModeStats>
   /** v11: real friends (accepted through the network) */
   friends: FriendEntry[]
   /** v10 (legacy, kept for compatibility — real squads are v11 parties) */
@@ -50,7 +77,7 @@ export const EMPTY_PROFILE: CareerProfile = {
   kills: 0, deaths: 0, headshots: 0, wins: 0, losses: 0, matches: 0,
   winStreak: 0, bestWinStreak: 0, brPlays: 0, brWins: 0, brTop: 0, brKills: 0,
   storyWins: 0, timePlayed: 0, createdAt: 0, lastPlayed: 0,
-  friends: [], groups: [],
+  modeStats: {}, friends: [], groups: [],
 }
 
 interface AccountRow {
@@ -243,6 +270,11 @@ export function recordMatch(r: MatchResult): void {
     p.losses += 1
     p.winStreak = 0
   }
+  // v12: cubo por modo (combate de equipos, FFA, bandera, dominación, campaña…)
+  bumpMode(p, r.mode, {
+    plays: 1, wins: r.win ? 1 : 0, kills: r.kills, deaths: r.deaths,
+    headshots: r.headshots, timePlayed: Math.round(r.duration),
+  })
   saveProfile(p)
 }
 
@@ -272,7 +304,30 @@ export function recordBr(r: BrResult): void {
     p.winStreak = 0
   }
   if (p.brTop === 0 || r.placement < p.brTop) p.brTop = r.placement
+  // v12: el BR también alimenta su fila del desglose por modo
+  bumpMode(p, 'br', {
+    plays: 1, wins: r.placement === 1 ? 1 : 0, kills: r.kills,
+    deaths: 1, headshots: 0, timePlayed: Math.round(r.duration),
+  })
   saveProfile(p)
+}
+
+/** v12: suma un delta al cubo de estadísticas de un modo */
+function bumpMode(p: CareerProfile, mode: string, d: Partial<ModeStats>): void {
+  const key = String(mode || 'escaramuza').toLowerCase()
+  const cur = { ...EMPTY_MODE_STATS, ...(p.modeStats?.[key] ?? {}) }
+  cur.plays += d.plays ?? 0
+  cur.wins += d.wins ?? 0
+  cur.kills += d.kills ?? 0
+  cur.deaths += d.deaths ?? 0
+  cur.headshots += d.headshots ?? 0
+  cur.timePlayed += d.timePlayed ?? 0
+  p.modeStats = { ...(p.modeStats ?? {}), [key]: cur }
+}
+
+/** v12: lee el cubo de un modo (normalizado, nunca undefined) */
+export function getModeStats(p: CareerProfile, mode: string): ModeStats {
+  return { ...EMPTY_MODE_STATS, ...(p.modeStats?.[mode] ?? {}) }
 }
 
 /** runtime kill/death tally for the CURRENT match (reset per match) */

@@ -15,6 +15,7 @@ import { useGame } from './store'
 import { liveTally, recordMatch } from './auth'
 import { esNet } from './esnet'
 import { pushNetChatLine, setRoomChatRelay } from './chat'
+import { voiceChat } from './voice'
 import {
   GAME, generateRoomCode, peerIdForRoom,
   type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId, type Team,
@@ -254,6 +255,18 @@ export class NetClient {
         }
         return true
       })
+      // v12: proximity VOICE — the host relays its mic to every guest
+      // (team rooms: guests' voice arrives in the slot handler below)
+      voiceChat.setRoom(true)
+      voiceChat.setRelay(b64 => {
+        if (this.roomKind === '1v1') {
+          this.forwardToGuest({ e: 'voice', d: { from: this.hostName, b64 } })
+        } else {
+          for (const g of this.duoSlots) {
+            this.sendToSlot(g, { e: 'voice', d: { from: this.hostName, b64 } })
+          }
+        }
+      })
     })
 
     // si el servidor de señalización se cae, reconectar para que la sala
@@ -306,6 +319,12 @@ export class NetClient {
           const d = msg.d as { text?: string }
           const gname = String((this.guestNameCache ?? '') || 'Rival').slice(0, 16)
           if (d?.text) pushNetChatLine(gname, String(d.text))
+          return
+        }
+        // v12: VOICE del invitado (1v1) — reproducción local (no hay más invitados)
+        if (msg.e === 'voice') {
+          const d = msg.d as { b64?: string }
+          if (d?.b64) voiceChat.onRemoteVoice(String((this.guestNameCache ?? '') || 'Rival'), String(d.b64))
           return
         }
         // entradas de juego del invitado → worker
@@ -424,6 +443,18 @@ export class NetClient {
           pushNetChatLine(slot.name || 'Operator', String(d.text))
           for (const g of this.duoSlots) {
             if (g !== slot) this.sendToSlot(g, { e: 'chat', d: { from: slot.name || 'Operator', text: String(d.text) } })
+          }
+        }
+        return
+      }
+      // v12: VOICE de un invitado → reproducción local + relay al resto
+      // (los bots no mandan voz: solo operadores reales tienen cliente)
+      if (msg.e === 'voice') {
+        const d = msg.d as { b64?: string }
+        if (d?.b64) {
+          voiceChat.onRemoteVoice(slot.name || 'Operator', String(d.b64))
+          for (const g of this.duoSlots) {
+            if (g !== slot) this.sendToSlot(g, { e: 'voice', d: { from: slot.name || 'Operator', b64: String(d.b64) } })
           }
         }
         return
@@ -624,6 +655,11 @@ export class NetClient {
           this.sendToPeer(conn, { e: 'chat', d: { text: clean } })
           return true
         })
+        // v12: my VOICE travels to the host (they relay it to the team)
+        voiceChat.setRoom(true)
+        voiceChat.setRelay(b64 => {
+          this.sendToPeer(conn, { e: 'voice', d: { b64 } })
+        })
       })
 
       conn.on('data', (raw: unknown) => {
@@ -642,6 +678,12 @@ export class NetClient {
           // v11: chat line from the host / another operator
           const d = msg.d as { from?: string; text?: string }
           if (d?.text) pushNetChatLine(String(d.from ?? 'Operator'), String(d.text))
+          return
+        }
+        // v12: VOICE from the host / a teammate (relayed by the host)
+        if (msg.e === 'voice') {
+          const d = msg.d as { from?: string; b64?: string }
+          if (d?.b64) voiceChat.onRemoteVoice(String(d.from ?? 'Operator'), String(d.b64))
           return
         }
         if (msg.e === 'lobbyAck' || msg.e === 'lobby') {
@@ -843,6 +885,9 @@ export class NetClient {
   disconnect(): void {
     this.disposed = true
     setRoomChatRelay(null)
+    // v12: voice chat goes down with the room
+    voiceChat.setRelay(null)
+    voiceChat.setRoom(false)
     if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
     if (this.matchReturnTimer) { clearTimeout(this.matchReturnTimer); this.matchReturnTimer = null }
     this.stopStorySync()

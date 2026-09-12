@@ -12,8 +12,9 @@ import { useGame } from '@/game/store'
 import { getGame } from '@/game/game-instance'
 import { getAudio } from '@/game/audio'
 import { ASSET_BASE, GAME } from '@/game/shared'
-import { useAuth, getProfile, fmtKD, myOid, type CareerProfile } from '@/game/auth'
+import { useAuth, getProfile, fmtKD, myOid, MODE_STAT_KEYS, MODE_STAT_LABELS, getModeStats, type CareerProfile } from '@/game/auth'
 import { esNet, useNet, useFriends, useParty, useNetToasts, type FriendEntryUI, type PartyMemberUI } from '@/game/esnet'
+import { useVoice, voiceChat } from '@/game/voice'
 import { useBr, BR_RARITIES } from '@/game/br-store'
 import { teamSlotsFor, roomCapacity, type RoomKind } from '@/game/net'
 import { Button } from '@/components/ui/button'
@@ -25,7 +26,7 @@ import {
   Heart, Plane,
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
-  User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X, Wifi, WifiOff,
+  User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X, Wifi, WifiOff, Mic,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
@@ -112,7 +113,7 @@ function TabButton({ icon: Icon, label, active, onClick }: {
 // CONTROLS panel (rebindable) — shared menu/pause
 // ============================================================
 const MOVEMENT: ActionId[] = ['fwd', 'back', 'left', 'right', 'sprint', 'crouch', 'jump', 'zipline']
-const COMBAT: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'flare', 'stim', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3']
+const COMBAT: ActionId[] = ['shoot', 'aim', 'reload', 'grenadeFrag', 'grenadeSmoke', 'flare', 'stim', 'buy', 'lastWeapon', 'slot1', 'slot2', 'slot3', 'voice']
 
 function useKeyCapture() {
   const [capture, setCapture] = useState<ActionId | null>(null)
@@ -327,9 +328,60 @@ export function SettingsPanel() {
           }}
         />
         <p className="text-stone-600 text-[10px] leading-relaxed">
-          Music (Musica.mp3) plays in the menu and ducks during combat. Gunshots use the
-          repository MP3s (Pistol · SMG · Rifle · Sniper). Settings save automatically.
+          Music plays in the menu and ducks during combat — v12: <b className="text-stone-300">two tracks
+          alternate</b> (Musica → Musica2 → back again). Gunshots use the repository MP3s
+          (Pistol · SMG · Rifle · Sniper). Settings save automatically.
         </p>
+
+        {/* v12 — VOICE CHAT (proximity, real operators only) */}
+        <div className="bg-stone-950/60 border border-stone-800 rounded-lg p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2">
+              <Mic className="w-4 h-4" /> Voice chat · proximity
+            </h4>
+            <button
+              onClick={() => {
+                const v = useVoice.getState()
+                v.set({ enabled: !v.enabled })
+                if (v.enabled && v.mic === 'ready') voiceChat.disable()
+              }}
+              className={`rounded px-3 py-1.5 font-tac-md text-[10px] border transition-colors ${
+                useVoice.getState().enabled
+                  ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-200'
+                  : 'bg-stone-900/60 border-stone-700 text-stone-400'
+              }`}
+            >
+              {useVoice.getState().enabled ? 'ENABLED' : 'MUTED'}
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {(['ptt', 'open'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => useVoice.getState().set({ mode: m })}
+                className={`rounded-md py-2 font-tac-md text-[10px] border uppercase tracking-widest transition-colors ${
+                  useVoice.getState().mode === m
+                    ? 'bg-amber-500/15 border-amber-400/70 text-amber-200'
+                    : 'bg-stone-900/60 border-stone-700 text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                {m === 'ptt' ? 'PUSH TO TALK [V]' : 'OPEN MIC'}
+              </button>
+            ))}
+          </div>
+          <SliderRow
+            icon={<Volume2 className="w-4 h-4" />}
+            label="VOICE VOLUME"
+            value={useVoice.getState().volume} min={0} max={1} step={0.05}
+            format={v => `${Math.round(v * 100)}%`}
+            onChange={v => voiceChat.setVolume(v)}
+          />
+          <p className="text-stone-600 text-[10px] leading-relaxed">
+            Proximity voice between <b className="text-stone-300">REAL online operators</b> in team matches and
+            co-op: hold <b className="text-stone-300">[V]</b> to talk (or switch to open mic). Voices fade with
+            distance and pan left/right around you — silent past 26 m. Bots never speak.
+          </p>
+        </div>
       </section>
 
       {/* ---- CONTROL ---- */}
@@ -802,12 +854,6 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
   const user = useAuth(s => s.user)
   const logout = useAuth(s => s.logout)
   if (!user) return null
-  const p = getProfile()
-  const rank = rankOf(p)
-  const initials = user.slice(0, 2).toUpperCase()
-  const time = p.timePlayed
-  const hours = Math.floor(time / 3600)
-  const mins = Math.floor((time % 3600) / 60)
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
@@ -820,44 +866,120 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
         <button onClick={onClose} className="absolute top-4 right-4 text-stone-500 hover:text-stone-200 transition-colors">
           <X className="w-5 h-5" />
         </button>
+        <ProfileContent user={user} showLogout onLogout={() => { onClose(); logout() }} />
+      </div>
+    </div>
+  )
+}
 
-        <div className="flex items-center gap-4 mb-5">
-          <span
-            className="w-14 h-14 rounded-md flex items-center justify-center font-tac text-xl border shrink-0"
-            style={{
-              background: 'linear-gradient(160deg, #20262b, #0e1114)',
-              borderColor: `${rank.color}55`,
-              color: rank.color,
-            }}
-          >
-            {initials}
-          </span>
-          <div>
-            <h3 className="font-tac text-xl tracking-[0.12em] text-stone-100 uppercase leading-none">{user}</h3>
-            <p className="font-tac-md text-[10px] mt-1.5 tracking-widest" style={{ color: rank.color }}>
-              {rank.label} · CAREER RECORD
-            </p>
-          </div>
+// ============================================================
+// v12 — CAREER PROFILE content (shared by the main-menu modal
+// AND the pause menu's PROFILE tab): stat grid + PER-MODE
+// breakdown (team combat, FFA, CTF, domination, campaign, BR)
+// + friends/squad panel.
+// ============================================================
+export function ProfileContent({ user, showLogout, onLogout }: {
+  user: string
+  showLogout?: boolean
+  onLogout?: () => void
+}) {
+  const p = getProfile()
+  const rank = rankOf(p)
+  const initials = user.slice(0, 2).toUpperCase()
+  const time = p.timePlayed
+  const hours = Math.floor(time / 3600)
+  const mins = Math.floor((time % 3600) / 60)
+  const fmtTime = (s: number): string => {
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+  }
+  return (
+    <div>
+      <div className="flex items-center gap-4 mb-5">
+        <span
+          className="w-14 h-14 rounded-md flex items-center justify-center font-tac text-xl border shrink-0"
+          style={{
+            background: 'linear-gradient(160deg, #20262b, #0e1114)',
+            borderColor: `${rank.color}55`,
+            color: rank.color,
+          }}
+        >
+          {initials}
+        </span>
+        <div>
+          <h3 className="font-tac text-xl tracking-[0.12em] text-stone-100 uppercase leading-none">{user}</h3>
+          <p className="font-tac-md text-[10px] mt-1.5 tracking-widest" style={{ color: rank.color }}>
+            {rank.label} · CAREER RECORD
+          </p>
         </div>
+      </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-          <StatCell icon={<Skull className="w-3.5 h-3.5" />} label="TOTAL KILLS" value={String(p.kills)} />
-          <StatCell icon={<Crown className="w-3.5 h-3.5" />} label="TOTAL WINS" value={String(p.wins)} />
-          <StatCell icon={<Activity className="w-3.5 h-3.5" />} label="BEST WIN STREAK" value={String(p.bestWinStreak)} />
-          <StatCell icon={<Swords className="w-3.5 h-3.5" />} label="K/D RATIO" value={fmtKD(p)} />
-          <StatCell icon={<Crosshair className="w-3.5 h-3.5" />} label="DEATHS" value={String(p.deaths)} />
-          <StatCell icon={<Target className="w-3.5 h-3.5" />} label="HEADSHOTS" value={String(p.headshots)} />
-          <StatCell icon={<Package className="w-3.5 h-3.5" />} label="MATCHES" value={String(p.matches)} />
-          <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="CURRENT STREAK" value={String(p.winStreak)} />
-          <StatCell icon={<Clock className="w-3.5 h-3.5" />} label="TIME PLAYED" value={hours > 0 ? `${hours}h ${mins}m` : `${mins}m`} />
-          <StatCell icon={<Rocket className="w-3.5 h-3.5" />} label="BR MATCHES" value={String(p.brPlays)} />
-          <StatCell icon={<Medal className="w-3.5 h-3.5" />} label="BR VICTORIES" value={String(p.brWins)} />
-          <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST BR PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+        <StatCell icon={<Skull className="w-3.5 h-3.5" />} label="TOTAL KILLS" value={String(p.kills)} />
+        <StatCell icon={<Crown className="w-3.5 h-3.5" />} label="TOTAL WINS" value={String(p.wins)} />
+        <StatCell icon={<Activity className="w-3.5 h-3.5" />} label="BEST WIN STREAK" value={String(p.bestWinStreak)} />
+        <StatCell icon={<Swords className="w-3.5 h-3.5" />} label="K/D RATIO" value={fmtKD(p)} />
+        <StatCell icon={<Crosshair className="w-3.5 h-3.5" />} label="DEATHS" value={String(p.deaths)} />
+        <StatCell icon={<Target className="w-3.5 h-3.5" />} label="HEADSHOTS" value={String(p.headshots)} />
+        <StatCell icon={<Package className="w-3.5 h-3.5" />} label="MATCHES" value={String(p.matches)} />
+        <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="CURRENT STREAK" value={String(p.winStreak)} />
+        <StatCell icon={<Clock className="w-3.5 h-3.5" />} label="TIME PLAYED" value={hours > 0 ? `${hours}h ${mins}m` : `${mins}m`} />
+        <StatCell icon={<Rocket className="w-3.5 h-3.5" />} label="BR MATCHES" value={String(p.brPlays)} />
+        <StatCell icon={<Medal className="w-3.5 h-3.5" />} label="BR VICTORIES" value={String(p.brWins)} />
+        <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST BR PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
+      </div>
+
+      {/* v12: per-mode stats — team combat, FFA, CTF, domination, campaign, BR */}
+      <div className="mt-5">
+        <h4 className="font-tac-md text-amber-200/90 text-[11px] tracking-[0.22em] uppercase mb-2.5 flex items-center gap-2">
+          <Swords className="w-4 h-4" /> Stats by game mode
+        </h4>
+        <div className="overflow-x-auto rounded-lg border border-stone-800">
+          <table className="w-full text-left font-tac-md text-[11px]">
+            <thead>
+              <tr className="bg-stone-900/80 text-stone-500 text-[9px] tracking-[0.18em] uppercase">
+                <th className="px-3 py-2">Mode</th>
+                <th className="px-2 py-2 text-center">Played</th>
+                <th className="px-2 py-2 text-center">W</th>
+                <th className="px-2 py-2 text-center">K</th>
+                <th className="px-2 py-2 text-center">D</th>
+                <th className="px-2 py-2 text-center">HS</th>
+                <th className="px-3 py-2 text-right">Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {MODE_STAT_KEYS.map((k, i) => {
+                const m = getModeStats(p, k)
+                const fresh = m.plays > 0
+                return (
+                  <tr
+                    key={k}
+                    className={`${i % 2 ? 'bg-stone-950/60' : 'bg-stone-900/40'} ${fresh ? 'text-stone-200' : 'text-stone-600'}`}
+                  >
+                    <td className="px-3 py-2 tracking-[0.14em]">{MODE_STAT_LABELS[k]}</td>
+                    <td className="px-2 py-2 text-center tabular-nums">{m.plays}</td>
+                    <td className="px-2 py-2 text-center tabular-nums text-amber-200/90">{m.wins}</td>
+                    <td className="px-2 py-2 text-center tabular-nums">{m.kills}</td>
+                    <td className="px-2 py-2 text-center tabular-nums">{m.deaths}</td>
+                    <td className="px-2 py-2 text-center tabular-nums">{m.headshots}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-stone-500">{fmtTime(m.timePlayed)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
+        <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
+          Every mode feeds this table: team combat, free-for-all, CTF, domination, the campaign and
+          Battle Royale — wins, kills, deaths, headshots and time per mode, saved on this device.
+        </p>
+      </div>
 
-        {/* v10: amigos + grupos (despliegue en escuadra) */}
-        <SquadSection />
+      {/* v10: amigos + grupos (despliegue en escuadra) */}
+      <SquadSection />
 
+      {showLogout && (
         <div className="mt-5 flex items-center justify-between gap-3 border-t border-stone-800 pt-4">
           <p className="text-stone-600 text-[10px] leading-relaxed max-w-[300px]">
             Stats persist on this device and are recorded after every match — PvP,
@@ -866,12 +988,12 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
           <Button
             variant="secondary"
             className="h-9 font-tac-md text-[11px] bg-stone-800 border border-stone-600 hover:bg-red-950/60 hover:border-red-800/70 hover:text-red-200"
-            onClick={() => { onClose(); logout() }}
+            onClick={onLogout}
           >
             <LogOut className="w-3.5 h-3.5 mr-1.5" /> LOG OUT
           </Button>
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -1939,10 +2061,11 @@ export function ConnectingScreen() {
 // ============================================================
 // Pause menu
 // ============================================================
-type PauseTab = 'controls' | 'settings' | 'info'
+type PauseTab = 'profile' | 'controls' | 'settings' | 'info'
 
 export function PauseMenu() {
   const phase = useGame(s => s.phase)
+  const user = useAuth(s => s.user)
   const [tab, setTab] = useState<PauseTab>('controls')
   if (phase !== 'paused') return null
 
@@ -1962,12 +2085,14 @@ export function PauseMenu() {
         </div>
 
         <div className="px-5 sm:px-7 pt-4 flex gap-1 border-b border-stone-800">
+          {user && <TabButton icon={User} label="Profile" active={tab === 'profile'} onClick={() => setTab('profile')} />}
           <TabButton icon={Keyboard} label="Controls" active={tab === 'controls'} onClick={() => setTab('controls')} />
           <TabButton icon={Settings} label="Settings" active={tab === 'settings'} onClick={() => setTab('settings')} />
           <TabButton icon={Info} label="Info" active={tab === 'info'} onClick={() => setTab('info')} />
         </div>
 
         <div className="p-5 sm:p-7">
+          {tab === 'profile' && user && <ProfileContent user={user} />}
           {tab === 'controls' && <KeybindsPanel />}
           {tab === 'settings' && <SettingsPanel />}
           {tab === 'info' && <InfoPanel />}

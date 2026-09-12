@@ -8,6 +8,9 @@ import { create } from 'zustand'
 
 export type BrPhase = 'queue' | 'plane' | 'live' | 'dead' | 'victory'
 
+/** v12: pieza de construcción activa (estilo Fortnite) */
+export type BrBuildKind = 'wall' | 'ramp' | 'floor'
+
 export interface BrQueuePlayer {
   name: string
   real: boolean      // human connection (vs bot filler)
@@ -103,6 +106,12 @@ interface BrState {
   feed: BrFeedEntry[]
   /** interaction hint (loot / vehicle) */
   hint: string
+  /** v12: materiales de construcción */
+  mats: number
+  /** v12: modo construcción activo (null = disparando) */
+  buildMode: BrBuildKind | null
+  /** v12: HP de la pieza fantasma (preview) — ya colocada no se muestra */
+  buildPlaceable: boolean
 
   set: (p: Partial<BrState>) => void
   addFeed: (text: string, mine: boolean) => void
@@ -145,6 +154,9 @@ const initial = {
   showLeave: true,
   feed: [] as BrFeedEntry[],
   hint: '',
+  mats: 0,
+  buildMode: null,
+  buildPlaceable: true,
 }
 
 export const useBr = create<BrState>((set) => ({

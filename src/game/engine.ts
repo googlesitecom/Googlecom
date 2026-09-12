@@ -29,6 +29,13 @@ import { useChat } from './chat'
 import { NetClient } from './net'
 import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
 import { StoryDirector, type StorySyncData, type StoryRemoteMsg } from './story'
+import { voiceChat, useVoice, type RemotePos } from './voice'
+
+/** v12: helpers del voice chat (import ligero para el bucle) */
+const voiceChatActive = (): boolean => useVoice.getState().active
+const voiceChatTick = (local: { x: number; y: number; z: number; yaw: number }, remotes: RemotePos[]): void => {
+  voiceChat.tick(local, remotes)
+}
 
 interface DamageNumber { x: number; y: number; amount: number; t: number; headshot: boolean }
 interface HitMarker { t: number; headshot: boolean; dmg?: number }
@@ -2121,6 +2128,7 @@ export class Game {
     else if (code === this.kb('stim')) this.useStim()
     else if (code === this.kb('lastWeapon')) this.switchTo(this.lastWeapon)
     else if (code === this.kb('zipline')) this.tryAttachZipline()
+    else if (code === this.kb('voice')) voiceChat.setPtt(true)   // v12: push-to-talk
     else if (code === this.kb('slot1')) {
       // v6.1: hueco 1 asignado en la tienda (antes era por preferencia fija)
       const p = this.slots[0]
@@ -2136,6 +2144,8 @@ export class Game {
       useGame.getState().setHud({ scoreboardOpen: false })
       return
     }
+    // v12: soltar el push-to-talk
+    if (e.code === this.kb('voice')) voiceChat.setPtt(false)
     this.keys.delete(e.code)
   }
 
@@ -2449,6 +2459,16 @@ export class Game {
     const renderT = performance.now() - GAME.INTERP_DELAY
     const states = this.remotes.update(dt, renderT, this.team, this.camera.position, this.cine.active)
     this.updateRemoteFootsteps(dt, states)
+
+    // v12: proximidad del VOICE CHAT — posiciones de los operadores reales
+    // (atenuación + pan estéreo por distancia; los bots no hablan)
+    if (voiceChatActive()) {
+      const voiceRemotes: RemotePos[] = []
+      for (const rp of this.remotes.map.values()) {
+        voiceRemotes.push({ name: rp.name, x: rp.root.position.x, y: rp.root.position.y, z: rp.root.position.z })
+      }
+      voiceChatTick({ x: this.pos.x, y: this.pos.y, z: this.pos.z, yaw: this.yaw }, voiceRemotes)
+    }
 
     // granadas visibles
     this.updateGrenadeViews(dt)
@@ -3800,6 +3820,7 @@ export class Game {
     this.yaw = yaw
     this.pitch = 0
     this.dead = false
+    voiceChat.setDead(false)
     this.deathT = 0
     this.hp = hp
     this.shield = shield
@@ -3832,6 +3853,7 @@ export class Game {
 
   onDeath(killerName: string, respawnIn: number): void {
     this.dead = true
+    voiceChat.setDead(true)   // v12: los caídos no transmiten voz
     this.deathT = 0
     this.audio.deathSound()
     this.trauma = 1

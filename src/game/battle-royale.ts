@@ -279,10 +279,53 @@ function terrainH(x: number, z: number): number {
 }
 
 interface AABB { minX: number; maxX: number; minZ: number; maxZ: number; h: number }
+
+// ------------------------------------------------------------
+// v12 — FORTNITE-STYLE BUILDING (BR)
+// Grid 4 m × levels of 3 m. Pieces: wall (4×3, edge), ramp
+// (4×4 cell rising 3 m) and floor (4×4 slab). Ghost preview +
+// turbo build (hold LMB), materials economy, destructible HP,
+// walkable floors/ramps, network replication.
+// ------------------------------------------------------------
+const GRID = 4                // m per build cell
+const RISE = 3                // m of vertical grid per level
+const BUILD_COST = 10         // materials per piece
+const BUILD_MAX = 120         // max pieces per player
+const MATS_START = 300        // starting materials
+const MATS_PER_KILL = 60      // materials per elimination
+const MATS_CRATE = 80         // supply crate bonus
+const MATS_AMMO = 40          // ammo box bonus
+const MATS_PALLET = 60        // material pallet pickup
+const BUILD_HP: Record<BuildKind, number> = { wall: 260, ramp: 200, floor: 200 }
+type BuildKind = 'wall' | 'ramp' | 'floor'
+const BUILD_KEYS: Record<string, BuildKind> = { KeyQ: 'wall', KeyC: 'ramp', KeyZ: 'floor' }
+const BUILD_LABEL: Record<BuildKind, string> = { wall: 'WALL', ramp: 'RAMP', floor: 'FLOOR' }
+
+interface BuildPiece {
+  id: string
+  kind: BuildKind
+  cx: number; cz: number       // grid cell (integer coords)
+  edge: number                 // wall edge 0..3 (N E S W) / ramp facing 0..3
+  lv: number                   // vertical level (baseY = lv * RISE)
+  baseY: number
+  hp: number
+  mesh: THREE.Group
+  owner: string
+  mine: boolean
+  dead: boolean
+}
+/** collision box registered by a build piece (bullets always, walls also block movement) */
+interface BuildCol {
+  piece: BuildPiece
+  minX: number; maxX: number
+  minZ: number; maxZ: number
+  y0: number; y1: number
+  blocks: boolean
+}
 interface TreeCol { x: number; z: number; r: number }
 interface LootSpot {
   x: number; z: number
-  kind: 'weapon' | 'ammo' | 'med' | 'crate'
+  kind: 'weapon' | 'ammo' | 'med' | 'crate' | 'mats'
   weapon: WeaponId
   /** v10: índice de rareza (BR_RARITIES) para loot de armas/cajas */
   rarity: number
@@ -489,6 +532,29 @@ export class BattleRoyaleGame {
 
   // lobby extras
   private lobbyWalkers: { rig: BodyRig; phase: number; dest: [number, number] }[] = []
+  // v12: construcción estilo Fortnite
+  private builds: BuildPiece[] = []
+  private buildCols: BuildCol[] = []
+  private buildMode: BuildKind | null = null
+  private buildGhost: THREE.Group | null = null
+  private buildGhostKind: BuildKind | null = null
+  private buildGhostOk = false
+  private buildAt = 0                    // turbo-build rate limiter
+  private buildSeq = 0
+  private mats = MATS_START
+  private mouseHeld = false
+  private buildMats: { wall: THREE.Material | null; floor: THREE.Material | null } = { wall: null, floor: null }
+  private buildGhostMats: THREE.MeshBasicMaterial[] = []
+  // v12: lobby set profesional — pantalla en vivo, gaviotas, olas, baliza, fuego, bandera
+  private lobbyBoard: THREE.CanvasTexture | null = null
+  private lobbyBoardAt = -1
+  private lobbyGulls: { mesh: THREE.Group; r: number; a: number; h: number; s: number }[] = []
+  private lobbyWaves: { mesh: THREE.Mesh; ph: number }[] = []
+  private lobbyBeacon: THREE.PointLight | null = null
+  private lobbyBeaconMat: THREE.MeshStandardMaterial | null = null
+  private lobbyFlag: THREE.Mesh | null = null
+  private lobbyFire: THREE.PointLight | null = null
+  private lobbyFireMat: THREE.MeshBasicMaterial | null = null
 
   private hudAt = 0
   private botThink = 0
@@ -639,6 +705,12 @@ export class BattleRoyaleGame {
     }
     if (e.code === 'KeyR' && this.phase === 'live') this.startReload()
     if (e.code === 'KeyE') this.wantJump = true   // interaction flag
+    // v12: construcción estilo Fortnite — Q wall · C ramp · Z floor
+    // (la misma tecla de la pieza activa sale del modo construcción)
+    if (this.phase === 'live' && !this.inVehicle && BUILD_KEYS[e.code]) {
+      const kind = BUILD_KEYS[e.code]
+      this.setBuildMode(this.buildMode === kind ? null : kind)
+    }
     // v11.2: ESC opens the SAME pause menu as the normal modes
     if (e.code === 'Escape') {
       if (this.paused) {
@@ -663,10 +735,20 @@ export class BattleRoyaleGame {
   private onMouseDown = (e: MouseEvent): void => {
     if (!this.locked) { this.requestLock(); return }
     if (this.paused) return
-    if (e.button === 0) this.tryShoot()
-    if (e.button === 2) this.ads = true      // v11.2: aim down sights
+    if (e.button === 0) {
+      this.mouseHeld = true
+      // v12: en modo construcción el clic COLOCA la pieza (turbo al mantener)
+      if (this.buildMode && this.phase === 'live' && !this.inVehicle) { this.tryPlaceBuild(); return }
+      this.tryShoot()
+    }
+    if (e.button === 2) {
+      // v12: RMB con construcción activa → salir del modo (como soltar la herramienta)
+      if (this.buildMode) { this.setBuildMode(null); return }
+      this.ads = true      // v11.2: aim down sights
+    }
   }
   private onMouseUp = (e: MouseEvent): void => {
+    if (e.button === 0) this.mouseHeld = false
     if (e.button === 2) this.ads = false
   }
   private onContextMenu = (e: Event): void => { e.preventDefault() }
@@ -704,7 +786,9 @@ export class BattleRoyaleGame {
   }
 
   // ----------------------------------------------------------
-  // LOBBY ISLAND
+  // LOBBY ISLAND (v12: Professional staging area — command plaza
+  // with a LIVE countdown board, helipad, dock, watchtower,
+  // tents + campfire, sandbags, antenna, gulls and shore waves)
   // ----------------------------------------------------------
   private buildLobbyScene(): THREE.Scene {
     const scene = new THREE.Scene()
@@ -742,10 +826,415 @@ export class BattleRoyaleGame {
     grass.position.y = 0.06
     scene.add(grass)
 
-    // palms (trunk + fan of leaves)
+    // ---------------- COMMAND PLAZA (concrete, painted) ----------------
+    // canvas-painted concrete: grid + amber ring + EMS emblem
+    const plzC = document.createElement('canvas')
+    plzC.width = plzC.height = 512
+    const pc = plzC.getContext('2d')!
+    pc.fillStyle = '#585c60'
+    pc.fillRect(0, 0, 512, 512)
+    // panel tiles
+    for (let ty = 0; ty < 4; ty++) for (let tx = 0; tx < 4; tx++) {
+      pc.fillStyle = (tx + ty) % 2 ? '#5b5f63' : '#54585c'
+      pc.fillRect(tx * 128 + 3, ty * 128 + 3, 122, 122)
+    }
+    // subtle noise
+    for (let i = 0; i < 900; i++) {
+      pc.fillStyle = `rgba(255,255,255,${Math.random() * 0.05})`
+      pc.fillRect(Math.random() * 512, Math.random() * 512, 2, 2)
+    }
+    // amber tactical ring
+    pc.strokeStyle = '#e7b56a'
+    pc.lineWidth = 7
+    pc.beginPath(); pc.arc(256, 256, 215, 0, Math.PI * 2); pc.stroke()
+    pc.strokeStyle = 'rgba(231,181,106,0.35)'
+    pc.lineWidth = 2
+    pc.beginPath(); pc.arc(256, 256, 190, 0, Math.PI * 2); pc.stroke()
+    // center emblem
+    pc.fillStyle = 'rgba(231,181,106,0.9)'
+    pc.font = 'bold 56px monospace'
+    pc.textAlign = 'center'
+    pc.fillText('E M S', 256, 250)
+    pc.font = '16px monospace'
+    pc.fillText('STAGING · ASHFALL', 256, 286)
+    const plazaTex = new THREE.CanvasTexture(plzC)
+    plazaTex.anisotropy = 4
+    const plaza = new THREE.Mesh(
+      new THREE.CircleGeometry(10.5, 40),
+      new THREE.MeshStandardMaterial({ map: plazaTex, roughness: 0.94 }),
+    )
+    plaza.rotation.x = -Math.PI / 2
+    plaza.position.y = 0.09
+    scene.add(plaza)
+    // path: plaza → dock / plaza → helipad (darker gravel strips)
+    const pathMat = new THREE.MeshStandardMaterial({ color: 0x8a7f66, roughness: 1 })
+    for (const [ax, az, bx, bz, w] of [
+      [0, 9, 0, 22, 2.4],        // plaza → dock
+      [7.5, 7.5, 19, 19, 2.0],   // plaza → helipad
+      [-7.5, -7.5, -19, -15, 1.8], // plaza → watchtower
+    ] as const) {
+      const len = Math.hypot(bx - ax, bz - az)
+      const path = new THREE.Mesh(new THREE.PlaneGeometry(w, len), pathMat)
+      path.rotation.x = -Math.PI / 2
+      path.rotation.z = Math.atan2(bx - ax, bz - az)
+      path.position.set((ax + bx) / 2, 0.085, (az + bz) / 2)
+      scene.add(path)
+    }
+
+    // ---------------- LIVE COUNTDOWN BOARD (north) ----------------
+    // 6×3 m screen on a mast frame; a CanvasTexture refreshed 1×/s
+    const bdC = document.createElement('canvas')
+    bdC.width = 512; bdC.height = 288
+    const boardTex = new THREE.CanvasTexture(bdC)
+    boardTex.anisotropy = 4
+    this.lobbyBoard = boardTex
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.6, metalness: 0.3 })
+    const board = new THREE.Group()
+    for (const lx of [-2.9, 2.9]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 5.4, 8), frameMat)
+      leg.position.set(lx, 2.7, 0)
+      board.add(leg)
+    }
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(6, 3.2),
+      new THREE.MeshBasicMaterial({ map: boardTex }),
+    )
+    screen.position.set(0, 5.6, 0.12)
+    board.add(screen)
+    const bezel = new THREE.Mesh(
+      new THREE.BoxGeometry(6.4, 3.6, 0.18),
+      new THREE.MeshStandardMaterial({ color: 0x22262a, roughness: 0.5, metalness: 0.4 }),
+    )
+    bezel.position.set(0, 5.6, 0)
+    board.add(bezel)
+    board.position.set(0, 0, -15.5)
+    board.rotation.y = 0
+    scene.add(board)
+
+    // ---------------- HELIPAD (SE) ----------------
+    const hpC = document.createElement('canvas')
+    hpC.width = hpC.height = 256
+    const hc = hpC.getContext('2d')!
+    hc.fillStyle = '#3f4448'; hc.fillRect(0, 0, 256, 256)
+    hc.strokeStyle = '#e7e2d5'; hc.lineWidth = 10
+    hc.beginPath(); hc.arc(128, 128, 108, 0, Math.PI * 2); hc.stroke()
+    hc.fillStyle = '#e7e2d5'
+    hc.font = 'bold 110px monospace'; hc.textAlign = 'center'
+    hc.fillText('H', 128, 166)
+    hc.strokeStyle = '#e7b56a'; hc.lineWidth = 6
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      hc.beginPath()
+      hc.moveTo(128 + Math.cos(a) * 96, 128 + Math.sin(a) * 96)
+      hc.lineTo(128 + Math.cos(a) * 118, 128 + Math.sin(a) * 118)
+      hc.stroke()
+    }
+    const hpTex = new THREE.CanvasTexture(hpC)
+    hpTex.anisotropy = 4
+    const helipad = new THREE.Mesh(
+      new THREE.CircleGeometry(6.5, 32),
+      new THREE.MeshStandardMaterial({ map: hpTex, roughness: 0.9 }),
+    )
+    helipad.rotation.x = -Math.PI / 2
+    helipad.position.set(19, 0.085, 19)
+    scene.add(helipad)
+    // windsock
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 4.2, 6), frameMat)
+    pole.position.set(23.5, 2.1, 15.5)
+    scene.add(pole)
+    const sock = new THREE.Mesh(
+      new THREE.ConeGeometry(0.5, 2.2, 8, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0xe77a3f, roughness: 0.8, side: THREE.DoubleSide }),
+    )
+    sock.rotation.z = Math.PI / 2.3
+    sock.rotation.y = -0.5
+    sock.position.set(23.5, 4.0, 15.5)
+    scene.add(sock)
+
+    // ---------------- DOCK + BOAT (S) ----------------
+    const dock = new THREE.Group()
+    const dockMat = new THREE.MeshStandardMaterial({ color: 0x9a7a52, roughness: 0.85 })
+    for (let i = 0; i < 9; i++) {
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 1.55), dockMat)
+      plank.position.set(0, 0.9, i * 1.6)
+      dock.add(plank)
+      if (i % 3 === 1) {
+        for (const px of [-1.55, 1.55]) {
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 2.6, 6), dockMat)
+          post.position.set(px, -0.3, i * 1.6)
+          dock.add(post)
+        }
+      }
+    }
+    dock.position.set(0, 0, 20)
+    scene.add(dock)
+    // small boat moored at the dock end
+    const boat = new THREE.Group()
+    const hull = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.1, 0.7, 4.6, 6),
+      new THREE.MeshStandardMaterial({ color: 0xd9d4c5, roughness: 0.6 }),
+    )
+    hull.rotation.x = Math.PI / 2
+    hull.rotation.z = Math.PI / 6
+    hull.position.y = 0.25
+    boat.add(hull)
+    const cabin = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 0.8, 1.4),
+      new THREE.MeshStandardMaterial({ color: 0x2f4a5f, roughness: 0.5 }),
+    )
+    cabin.position.set(0, 0.85, -0.4)
+    boat.add(cabin)
+    boat.position.set(2.6, -0.05, 33)
+    boat.rotation.y = 0.6
+    scene.add(boat)
+
+    // ---------------- WATCHTOWER (NW) + blinking beacon ----------------
+    const tower = new THREE.Group()
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x6b5638, roughness: 0.85 })
+    for (const [lx, lz] of [[-1.5, -1.5], [1.5, -1.5], [-1.5, 1.5], [1.5, 1.5]] as const) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 7.2, 6), legMat)
+      leg.position.set(lx * 0.82, 3.6, lz * 0.82)
+      leg.rotation.x = -lz * 0.045
+      leg.rotation.z = -lx * 0.045
+      tower.add(leg)
+    }
+    const plat = new THREE.Mesh(
+      new THREE.BoxGeometry(4, 0.25, 4),
+      new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.9 }),
+    )
+    plat.position.y = 7.2
+    tower.add(plat)
+    for (let i = 0; i <= 8; i++) {
+      const step = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.1, 0.34), legMat)
+      step.position.set(1.55, 0.8 + i * 0.78, -1.55 + i * 0.38)
+      tower.add(step)
+    }
+    for (let i = 0; i < 4; i++) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(4, 0.08, 0.08), legMat)
+      rail.position.y = 8.15
+      rail.rotation.y = (i / 4) * Math.PI * 2
+      if (i % 2 === 0) rail.rotation.y = i === 0 ? 0 : Math.PI / 2
+      rail.scale.set(i % 2 === 0 ? 1 : 1, 1, 1)
+      rail.position.x = i % 2 === 0 ? 0 : 0
+      rail.position.z = i % 2 === 0 ? (i === 0 ? 2 : -2) : 0
+      tower.add(rail)
+    }
+    const roof = new THREE.Mesh(
+      new THREE.ConeGeometry(3.2, 1.6, 4),
+      new THREE.MeshStandardMaterial({ color: 0x54462e, roughness: 1 }),
+    )
+    roof.position.y = 9.4
+    roof.rotation.y = Math.PI / 4
+    tower.add(roof)
+    const beaconMat = new THREE.MeshStandardMaterial({
+      color: 0xff3b30, emissive: 0xff3b30, emissiveIntensity: 2,
+    })
+    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), beaconMat)
+    beacon.position.set(0, 10.4, 0)
+    tower.add(beacon)
+    const beaconLight = new THREE.PointLight(0xff3b30, 0, 26)
+    beaconLight.position.copy(beacon.position)
+    tower.add(beaconLight)
+    this.lobbyBeacon = beaconLight
+    this.lobbyBeaconMat = beaconMat
+    tower.position.set(-19, 0, -15)
+    tower.rotation.y = 0.4
+    scene.add(tower)
+
+    // ---------------- TENT CAMP + CAMPFIRE (E) ----------------
+    const tentMat = new THREE.MeshStandardMaterial({ color: 0x4a5b3c, roughness: 0.95, side: THREE.DoubleSide })
+    for (const [tx, tz, ry] of [[15, -6, 0.3], [17.5, -1.5, -0.2], [13, 9.5, 0.9]] as const) {
+      const tent = new THREE.Group()
+      for (const half of [-1, 1]) {
+        const side = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.6), tentMat)
+        side.position.set(0, 1.0, half * 0.85)
+        side.rotation.x = -half * 0.62
+        tent.add(side)
+      }
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 2.2), tentMat)
+      back.position.set(-1.6, 0.9, 0)
+      back.rotation.y = Math.PI / 2
+      tent.add(back)
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(3.4, 1.9),
+        new THREE.MeshStandardMaterial({ color: 0x3a3a30, roughness: 1 }),
+      )
+      floor.rotation.x = -Math.PI / 2
+      floor.position.y = 0.05
+      tent.add(floor)
+      tent.position.set(tx, 0, tz)
+      tent.rotation.y = ry
+      scene.add(tent)
+    }
+    // campfire: logs + emissive flame + flickering light
+    const fire = new THREE.Group()
+    const logMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 1 })
+    for (let i = 0; i < 4; i++) {
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 1.1, 6), logMat)
+      log.rotation.z = Math.PI / 2.4
+      log.rotation.y = (i / 4) * Math.PI * 2
+      log.position.y = 0.16
+      fire.add(log)
+    }
+    const fireMat = new THREE.MeshBasicMaterial({ color: 0xffa03c, transparent: true, opacity: 0.9 })
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.9, 8), fireMat)
+    flame.position.y = 0.62
+    fire.add(flame)
+    const fireLight = new THREE.PointLight(0xff9040, 2.2, 12)
+    fireLight.position.y = 1.0
+    fire.add(fireLight)
+    // stone ring
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x6e6a63, roughness: 1, flatShading: true })
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      const st = new THREE.Mesh(new THREE.DodecahedronGeometry(0.22, 0), stoneMat)
+      st.position.set(Math.cos(a) * 1.05, 0.14, Math.sin(a) * 1.05)
+      st.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3))
+      fire.add(st)
+    }
+    fire.position.set(11.5, 0, 2.5)
+    scene.add(fire)
+    this.lobbyFire = fireLight
+    this.lobbyFireMat = fireMat
+
+    // ---------------- SANDBAGS + BARRELS + CRATES (plaza ring) ----------------
+    const bagMat = new THREE.MeshStandardMaterial({ color: 0x9a8a5e, roughness: 1 })
+    const bagGeo = new THREE.CapsuleGeometry(0.2, 0.42, 4, 8)
+    const sandbagRow = (x: number, z: number, ry: number, n: number): void => {
+      const row = new THREE.Group()
+      for (let layer = 0; layer < 2; layer++) for (let i = 0; i < n; i++) {
+        const bag = new THREE.Mesh(bagGeo, bagMat)
+        bag.rotation.z = Math.PI / 2
+        bag.rotation.y = (i % 2) * 0.06
+        bag.position.set((i - n / 2) * 0.62 + (layer % 2) * 0.3, 0.22 + layer * 0.38, 0)
+        row.add(bag)
+      }
+      row.position.set(x, 0, z)
+      row.rotation.y = ry
+      scene.add(row)
+    }
+    sandbagRow(-6.5, -8.5, 1.35, 5)
+    sandbagRow(6.5, -8.5, -1.35, 5)
+    sandbagRow(-8.8, 5, 0.5, 4)
+    sandbagRow(8.8, 5, -0.5, 4)
+    // barrels
+    const barrelRed = new THREE.MeshStandardMaterial({ color: 0x9c3b2e, roughness: 0.55, metalness: 0.35 })
+    const barrelGray = new THREE.MeshStandardMaterial({ color: 0x5d6a72, roughness: 0.55, metalness: 0.35 })
+    for (const [bx, bz, m] of [
+      [12.5, -11, 0], [13.6, -10.2, 1], [13, -12, 0], [-12.8, -10.5, 1], [-11.9, -9.4, 0],
+    ] as const) {
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.15, 12), m ? barrelGray : barrelRed)
+      b.position.set(bx, 0.58, bz)
+      b.rotation.y = rand(0, 3)
+      scene.add(b)
+    }
+    // supply crate stacks + weapon racks (flank the board)
+    const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.85 })
+    const strpMat = new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.7 })
+    for (const [cx, cz, rot, stack] of [
+      [-6, -13.5, 0.3, 2], [-5, -12.6, 0.9, 1], [6, 4, 0.2, 3], [5.6, 3, 1.2, 1],
+      [-13, 12, 0.5, 2], [18.5, 11.5, 1.1, 2],
+    ] as const) {
+      for (let s = 0; s < stack; s++) {
+        const c = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.0, 1.4), crateMat)
+        c.position.set(cx + rand(-0.12, 0.12), 0.5 + s * 1.02, cz + rand(-0.12, 0.12))
+        c.rotation.y = rot + rand(-0.15, 0.15)
+        const strp = new THREE.Mesh(new THREE.BoxGeometry(1.44, 0.14, 1.44), strpMat)
+        strp.position.y = 0
+        c.add(strp)
+        scene.add(c)
+      }
+    }
+    // weapon rack: frame + 3 rifles at rest
+    const rack = new THREE.Group()
+    const rackMat = new THREE.MeshStandardMaterial({ color: 0x4c423a, roughness: 0.9 })
+    const rackBase = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.12, 0.5), rackMat)
+    rackBase.position.y = 0.06
+    rack.add(rackBase)
+    for (const rx of [-1.1, 1.1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.5, 0.4), rackMat)
+      post.position.set(rx, 0.75, 0)
+      rack.add(post)
+    }
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 0.1), rackMat)
+    bar.position.y = 1.45
+    rack.add(bar)
+    const gunMat = new THREE.MeshStandardMaterial({ color: 0x2b2b28, roughness: 0.5, metalness: 0.5 })
+    for (const gx of [-0.7, 0, 0.7]) {
+      const g = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.15, 0.2), gunMat)
+      g.position.set(gx, 0.78, 0.05)
+      g.rotation.z = -0.28
+      rack.add(g)
+    }
+    rack.position.set(6.2, 0, -14.2)
+    rack.rotation.y = 0.2
+    scene.add(rack)
+
+    // ---------------- ANTENNA MAST (W) ----------------
+    const mast = new THREE.Group()
+    const mastMat = new THREE.MeshStandardMaterial({ color: 0x8a8f94, roughness: 0.4, metalness: 0.7 })
+    const pole2 = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.16, 12, 8), mastMat)
+    pole2.position.y = 6
+    mast.add(pole2)
+    for (let i = 0; i < 4; i++) {
+      const cross = new THREE.Mesh(new THREE.BoxGeometry(1.8 - i * 0.3, 0.07, 0.07), mastMat)
+      cross.position.y = 4.5 + i * 2.2
+      mast.add(cross)
+      const dish = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshStandardMaterial({ color: 0xd9d4c5, roughness: 0.4, side: THREE.DoubleSide }),
+      )
+      dish.position.set(0.9 - i * 0.15, 5.2 + i * 2.2, 0)
+      dish.rotation.z = -1.2
+      mast.add(dish)
+    }
+    const topLight = new THREE.Mesh(
+      new THREE.SphereGeometry(0.16, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0xff3b30, emissive: 0xff3b30, emissiveIntensity: 1.5 }),
+    )
+    topLight.position.y = 12.2
+    mast.add(topLight)
+    mast.position.set(-21, 0, 10)
+    scene.add(mast)
+
+    // ---------------- FLAG POLE (plaza center) ----------------
+    const fpole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 8.5, 8), mastMat)
+    fpole.position.set(0, 4.25, 0)
+    scene.add(fpole)
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.4, 1.4, 6, 3),
+      new THREE.MeshStandardMaterial({
+        color: 0xe7b56a, roughness: 0.8, side: THREE.DoubleSide,
+        emissive: 0x3d2c12, emissiveIntensity: 0.4,
+      }),
+    )
+    flag.position.set(1.28, 7.6, 0)
+    scene.add(flag)
+    this.lobbyFlag = flag
+
+    // ---------------- STRING LIGHTS (plaza ↔ camp) ----------------
+    const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffd9a8, emissive: 0xffc678, emissiveIntensity: 1.6 })
+    const bulbGeo = new THREE.SphereGeometry(0.07, 6, 5)
+    for (const [sxA, szA, sxB, szB] of [
+      [8, -8, 14.5, -4], [8, 8, 15.5, 6],
+    ] as const) {
+      for (let i = 1; i < 9; i++) {
+        const t = i / 9
+        const bx = sxA + (sxB - sxA) * t
+        const bz = szA + (szB - szA) * t
+        const sag = Math.sin(t * Math.PI) * 0.55
+        const bulb = new THREE.Mesh(bulbGeo, bulbMat)
+        bulb.position.set(bx, 3.1 - sag, bz)
+        scene.add(bulb)
+      }
+    }
+
+    // palms (trunk + fan of leaves + coconuts)
     const palmPositions: [number, number][] = [
       [-20, 8], [18, -12], [-14, -18], [22, 14], [0, 24], [-24, -4], [12, 22], [4, -24],
+      [-26, 20], [24, -20], [-8, 26], [26, 2],
     ]
+    const cocoMat = new THREE.MeshStandardMaterial({ color: 0x5a4526, roughness: 0.9 })
     for (const [tx, tz] of palmPositions) {
       const palm = new THREE.Group()
       const trunk = new THREE.Mesh(
@@ -765,17 +1254,63 @@ export class BattleRoyaleGame {
         leaf.position.z = Math.sin((i / 6) * Math.PI * 2) * 1.0
         palm.add(leaf)
       }
+      for (let i = 0; i < 3; i++) {
+        const coco = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), cocoMat)
+        coco.position.set(Math.cos(i * 2.1) * 0.3, 4.95, Math.sin(i * 2.1) * 0.3)
+        palm.add(coco)
+      }
       palm.position.set(tx, 0, tz)
       scene.add(palm)
     }
 
-    // crates + weapon rack (set dressing)
-    const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.85 })
-    for (const [cx, cz, rot] of [[-6, -3, 0.3], [-5, -2, 0.9], [6, 4, 0.2], [5.6, 3, 1.2]] as const) {
-      const c = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.1, 1.4), crateMat)
-      c.position.set(cx, 0.55, cz)
-      c.rotation.y = rot
-      scene.add(c)
+    // bushes + rocks (scattered detail)
+    const bushMat = new THREE.MeshStandardMaterial({ color: 0x46663a, roughness: 1, flatShading: true })
+    const rockMat2 = new THREE.MeshStandardMaterial({ color: 0x7d7a72, roughness: 1, flatShading: true })
+    for (let i = 0; i < 14; i++) {
+      const a = rand(0, Math.PI * 2), r = rand(11, 24)
+      const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(rand(0.45, 0.85), 0), bushMat)
+      bush.position.set(Math.cos(a) * r, 0.35, Math.sin(a) * r)
+      bush.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3))
+      scene.add(bush)
+    }
+    for (let i = 0; i < 8; i++) {
+      const a = rand(0, Math.PI * 2), r = rand(12, 25)
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(rand(0.3, 0.7), 0), rockMat2)
+      rock.position.set(Math.cos(a) * r, 0.2, Math.sin(a) * r)
+      rock.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3))
+      scene.add(rock)
+    }
+
+    // ---------------- SEAGULLS (circling) ----------------
+    for (let i = 0; i < 5; i++) {
+      const gull = new THREE.Group()
+      const wingMat = new THREE.MeshBasicMaterial({ color: 0xf2f2ee, side: THREE.DoubleSide })
+      const body = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.7, 5), wingMat)
+      body.rotation.x = Math.PI / 2
+      gull.add(body)
+      for (const s of [-1, 1]) {
+        const wing = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.26), wingMat)
+        wing.position.x = s * 0.45
+        wing.rotation.y = s * 0.12
+        gull.add(wing)
+      }
+      scene.add(gull)
+      this.lobbyGulls.push({
+        mesh: gull, r: rand(14, 26), a: rand(0, Math.PI * 2),
+        h: rand(11, 19), s: rand(0.14, 0.3) * (Math.random() < 0.5 ? -1 : 1),
+      })
+    }
+
+    // ---------------- SHORE WAVES (expanding rings) ----------------
+    const waveMat = new THREE.MeshBasicMaterial({
+      color: 0xe8f2f6, transparent: true, opacity: 0.28, side: THREE.DoubleSide,
+    })
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(new THREE.RingGeometry(26, 26.7, 40), waveMat.clone())
+      ring.rotation.x = -Math.PI / 2
+      ring.position.y = 0.16
+      scene.add(ring)
+      this.lobbyWaves.push({ mesh: ring, ph: i * 1.9 })
     }
 
     // waiting operators on the island as they "connect"
@@ -798,6 +1333,113 @@ export class BattleRoyaleGame {
     scene.add(ridge)
 
     return scene
+  }
+
+  /** v12: paints the lobby countdown board (1 Hz — operators + countdown) */
+  private updateLobbyBoard(): void {
+    if (!this.lobbyBoard) return
+    const c = this.lobbyBoard.image as HTMLCanvasElement
+    const ctx = c.getContext('2d')
+    if (!ctx) return
+    const real = this.queue.filter(p => p.real).length
+    ctx.fillStyle = '#06090c'
+    ctx.fillRect(0, 0, 512, 288)
+    // frame + header
+    ctx.strokeStyle = '#2c3a44'
+    ctx.lineWidth = 6
+    ctx.strokeRect(6, 6, 500, 276)
+    ctx.fillStyle = '#e7b56a'
+    ctx.font = 'bold 40px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText('BATTLE ROYALE', 256, 62)
+    ctx.fillStyle = '#3f5561'
+    ctx.fillRect(40, 84, 432, 3)
+    // operators meter
+    const need = REAL_TARGET
+    ctx.fillStyle = '#8fa3ad'
+    ctx.font = '22px monospace'
+    ctx.fillText(`OPERATORS ONLINE  ${real} / ${need}`, 256, 130)
+    for (let i = 0; i < need; i++) {
+      const x = 256 - (need * 46) / 2 + i * 46
+      ctx.fillStyle = i < real ? '#57d867' : '#1d2a30'
+      ctx.fillRect(x, 146, 36, 18)
+      ctx.strokeStyle = '#3f5561'
+      ctx.lineWidth = 2
+      ctx.strokeRect(x, 146, 36, 18)
+    }
+    // countdown / waiting
+    if (this.countdownRunning) {
+      const s = Math.max(0, Math.ceil(this.countdown))
+      ctx.fillStyle = s <= 10 ? '#ff5f52' : '#e7e2d5'
+      ctx.font = 'bold 88px monospace'
+      ctx.fillText(`${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`, 256, 246)
+      ctx.fillStyle = '#8fa3ad'
+      ctx.font = '18px monospace'
+      ctx.fillText('DEPLOYING — STAND BY', 256, 272)
+    } else {
+      ctx.fillStyle = '#e7e2d5'
+      ctx.font = 'bold 46px monospace'
+      ctx.fillText('WAITING…', 256, 232)
+      ctx.fillStyle = '#8fa3ad'
+      ctx.font = '16px monospace'
+      ctx.fillText('COUNTDOWN STARTS AT 4 OPERATORS', 256, 266)
+    }
+    this.lobbyBoard.needsUpdate = true
+  }
+
+  /** v12: ambient life of the lobby island — gulls, waves, beacon,
+   *  campfire, flag and the 1 Hz board repaint */
+  private updateLobbyLife(t: number, dt: number): void {
+    // gulls circle + bank
+    for (const g of this.lobbyGulls) {
+      g.a += g.s * dt
+      const x = Math.cos(g.a) * g.r
+      const z = Math.sin(g.a) * g.r
+      g.mesh.position.set(x, g.h + Math.sin(t * 0.9 + g.r) * 0.8, z)
+      g.mesh.rotation.y = -g.a + (g.s > 0 ? Math.PI / 2 : -Math.PI / 2)
+      // wing flap
+      const flap = Math.sin(t * 9 + g.r) * 0.35
+      g.mesh.children[1].rotation.z = flap
+      g.mesh.children[2].rotation.z = -flap
+    }
+    // shore waves: expanding + fading rings (26 → 34 m, 6 s loop)
+    for (const w of this.lobbyWaves) {
+      w.ph += dt * 1.6
+      const p = w.ph % 6
+      const r = 26 + p * 1.35
+      const scale = r / 26
+      w.mesh.scale.setScalar(scale)
+      const mat = w.mesh.material as THREE.MeshBasicMaterial
+      mat.opacity = 0.3 * Math.max(0, 1 - p / 6)
+    }
+    // beacon: 1 s pulse
+    if (this.lobbyBeacon && this.lobbyBeaconMat) {
+      const pulse = t % 1.2
+      const on = pulse < 0.18 ? 1 : 0
+      this.lobbyBeacon.intensity = on * 4
+      this.lobbyBeaconMat.emissiveIntensity = 0.3 + on * 2.4
+    }
+    // campfire flicker
+    if (this.lobbyFire && this.lobbyFireMat) {
+      this.lobbyFire.intensity = 1.7 + Math.sin(t * 11) * 0.5 + Math.random() * 0.5
+      this.lobbyFireMat.opacity = 0.65 + Math.sin(t * 8.3) * 0.25
+    }
+    // flag sway (bend on the X vertices)
+    if (this.lobbyFlag) {
+      const pos = this.lobbyFlag.geometry.attributes.position as THREE.BufferAttribute
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i)
+        const k = (x + 1.2) / 2.4          // 0 at the pole → 1 at the free edge
+        pos.setZ(i, Math.sin(t * 2.6 + k * 2.2) * 0.16 * k)
+      }
+      pos.needsUpdate = true
+    }
+    // board repaint at 1 Hz
+    const sec = Math.floor(t)
+    if (sec !== this.lobbyBoardAt) {
+      this.lobbyBoardAt = sec
+      this.updateLobbyBoard()
+    }
   }
 
   // ----------------------------------------------------------
@@ -1750,10 +2392,17 @@ export class BattleRoyaleGame {
         else addSpot(p.x + wrand(-p.r, p.r), p.z + wrand(-p.r, p.r), 'med', 'p9')
       }
     }
-    // scattered countryside loot
+    // scattered countryside loot (v12: + material pallets)
     for (let i = 0; i < 22; i++) {
       addSpot(wrand(-MAP + 10, MAP - 10), wrand(-MAP + 10, MAP - 10),
         wrnd() < 0.5 ? 'ammo' : 'med', 'p9')
+    }
+    // v12: material pallets — the building economy's floor loot
+    for (let i = 0; i < 26; i++) {
+      addSpot(wrand(-MAP + 10, MAP - 10), wrand(-MAP + 10, MAP - 10), 'mats', 'p9')
+    }
+    for (const p of POIS) {
+      addSpot(p.x + wrand(-p.r * 0.7, p.r * 0.7), p.z + wrand(-p.r * 0.7, p.r * 0.7), 'mats', 'p9')
     }
     // meshes (lazy built once the map is active — they belong to mapScene)
     for (const s of this.loot) s.mesh = this.buildLootMesh(s)
@@ -1762,6 +2411,31 @@ export class BattleRoyaleGame {
   private buildLootMesh(s: LootSpot): THREE.Group {
     const group = new THREE.Group()
     const gy = terrainH(s.x, s.z)
+    // v12: MATERIAL pallet — wooden slats + straps, reads as build supplies
+    if (s.kind === 'mats') {
+      const wood = new THREE.MeshStandardMaterial({ color: 0xb08a54, roughness: 0.85 })
+      const strap = new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.7 })
+      for (let i = 0; i < 3; i++) {
+        const slat = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.16, 0.85), wood)
+        slat.position.set(0, 0.1 + i * 0.17, 0)
+        slat.rotation.y = (i % 2) * 0.05
+        group.add(slat)
+      }
+      for (const sx of [-0.42, 0.42]) {
+        const st = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.62, 0.9), strap)
+        st.position.set(sx, 0.26, 0)
+        group.add(st)
+      }
+      const glow = new THREE.Mesh(
+        new THREE.RingGeometry(0.75, 0.9, 24),
+        new THREE.MeshBasicMaterial({ color: 0xd9a441, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }),
+      )
+      glow.rotation.x = -Math.PI / 2
+      glow.position.y = 0.04
+      group.add(glow)
+      group.position.set(s.x, gy, s.z)
+      return group
+    }
     // v10: el color del haz/anillo lo manda la RAREZA del arma
     // (cajas de suministro: ámbar propio; bots/municiones: colores de tipo)
     const rarity = BR_RARITIES[Math.max(0, Math.min(BR_RARITIES.length - 1, s.rarity))]
@@ -2391,7 +3065,13 @@ export class BattleRoyaleGame {
               const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
               const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult
               if (b.targetPlayer) {
-                this.damagePlayer(dmg, b.name)
+                // v12: player-built WALLS soak bot fire — building is real cover
+                const wall = this.wallOnSegment(b.x, b.z, b.y + 1.4, this.px, this.pz, this.py - 0.35)
+                if (wall) {
+                  this.damageBuild(wall.piece, dmg * 0.8, false)
+                } else {
+                  this.damagePlayer(dmg, b.name)
+                }
               } else if (b.targetOp) {
                 // v11: the damage lands on the REAL operator's client
                 esNet.brPublishEv({ ty: 'hit', o: myOid(), tgt: b.targetOp, by: '', byN: b.name, dmg: R1(dmg), w: b.weapon })
@@ -2523,6 +3203,9 @@ export class BattleRoyaleGame {
     if (byPlayer) {
       this.kills++
       getAudio().killConfirm()
+      // v12: every elimination pays materials (Fortnite economy)
+      this.mats = Math.min(999, this.mats + MATS_PER_KILL)
+      useBr.getState().set({ mats: this.mats })
     }
     // drop ammo where they fell
     this.spawnLootDrop(b.x, b.z, b.weapon)
@@ -2580,6 +3263,7 @@ export class BattleRoyaleGame {
   // ----------------------------------------------------------
   private updateQueue(t: number, dt: number): void {
     const brSet = useBr.getState().set
+    this.updateLobbyLife(t, dt)
     if (!this.countdownRunning) {
       // online: waiting for REAL operators (nothing to simulate — the
       // roster arrives over the network). practice: short local warmup.
@@ -2854,7 +3538,14 @@ export class BattleRoyaleGame {
       this.phase = 'live'
       useBr.getState().set({ phase: 'live' })
       getAudio().land()
+      // v12: fresh building economy for this match
+      this.mats = MATS_START
+      this.builds = []
+      this.buildCols = []
+      useBr.getState().set({ mats: this.mats, buildMode: null })
+      this.buildMode = null
       useBr.getState().addFeed('BOOTS ON THE GROUND — loot fast, the storm comes', false)
+      useBr.getState().addFeed('BUILD MODE: [Q] WALL · [C] RAMP · [Z] FLOOR — materials ready', false)
     }
   }
 
@@ -2900,8 +3591,9 @@ export class BattleRoyaleGame {
       if (this.onGround && Math.random() < dt * 6) getAudio().footstep(sprint ? 1.4 : 1)
     }
 
-    // jump + gravity on the terrain
-    const groundY = terrainH(this.px, this.pz) + EYE
+    // jump + gravity on the terrain (v12: + build floors/ramps via groundAt)
+    const feet = this.py - EYE
+    const groundY = this.groundAt(this.px, this.pz, feet) + EYE
     if (this.onGround && this.keys.has('Space')) {
       this.vy = 6.4
       this.onGround = false
@@ -2916,19 +3608,32 @@ export class BattleRoyaleGame {
         this.onGround = true
         getAudio().land()
       }
+    } else if (this.py > groundY + 0.65) {
+      // the ground dropped (a piece was destroyed / walked off an edge) → fall
+      this.onGround = false
+      this.vy = 0
     } else {
-      // follow the terrain (also handles walking uphill)
+      // follow the terrain (also handles walking uphill + ramps)
       this.py = groundY
     }
 
     // interaction (E): loot + vehicles
     this.updateInteraction()
+    // v12: ghost preview + turbo-build
+    this.updateBuild(performance.now())
   }
 
-  /** circle collision vs buildings + trees */
+  /** circle collision vs buildings + trees + v12 build walls (with vertical overlap) */
   private blocked(x: number, z: number, r: number): boolean {
     for (const b of this.aabbs) {
       if (x > b.minX - r && x < b.maxX + r && z > b.minZ - r && z < b.maxZ + r) return true
+    }
+    const feet = this.py - EYE
+    for (const c of this.buildCols) {
+      if (!c.blocks || c.piece.dead) continue
+      // vertical overlap: blocked only if the body intersects the wall span
+      if (feet + 1.7 < c.y0 + 0.05 || feet > c.y1 - 0.3) continue
+      if (x > c.minX - r && x < c.maxX + r && z > c.minZ - r && z < c.maxZ + r) return true
     }
     for (const t of this.trees) {
       const dx = x - t.x, dz = z - t.z
@@ -2953,7 +3658,8 @@ export class BattleRoyaleGame {
         ? `${BR_RARITIES[bestLoot.rarity]?.label ?? 'COMMON'} · ${WEAPONS[bestLoot.weapon].name.toUpperCase()}`
         : bestLoot.kind === 'crate'
           ? `SUPPLY CRATE · ${BR_RARITIES[bestLoot.rarity]?.label ?? 'RARE'} ${WEAPONS[bestLoot.weapon].name.toUpperCase()}`
-          : bestLoot.kind === 'med' ? 'MEDKIT' : 'AMMO BOX'
+          : bestLoot.kind === 'med' ? 'MEDKIT'
+            : bestLoot.kind === 'mats' ? 'MATERIALS' : 'AMMO BOX'
       hint = `[E]  ${label}`
       if (this.wantJump) this.takeLoot(bestLoot)
     }
@@ -2980,7 +3686,16 @@ export class BattleRoyaleGame {
 
   private takeLoot(s: LootSpot): void {
     if (s.taken) return
-    if (s.kind === 'weapon' || s.kind === 'crate') {
+    // v12: material pickups (pallets) + crate/ammo bonuses feed the build economy
+    const addMats = (n: number): void => {
+      this.mats = Math.min(999, this.mats + n)
+      useBr.getState().set({ mats: this.mats })
+    }
+    if (s.kind === 'mats') {
+      addMats(MATS_PALLET)
+      getAudio().buy()
+      useBr.getState().addFeed(`+${MATS_PALLET} MATERIALS — build with [Q] [C] [Z]`, true)
+    } else if (s.kind === 'weapon' || s.kind === 'crate') {
       const wid = s.weapon
       this.weapon = wid
       this.weaponRarity = s.rarity
@@ -2990,8 +3705,10 @@ export class BattleRoyaleGame {
       this.attachViewmodel(wid)
       getAudio().draw()
       if (s.kind === 'crate') {
-        // crates also patch you up
+        // crates also patch you up (+ materials for building)
         this.hp = Math.min(100, this.hp + 45)
+        addMats(MATS_CRATE)
+        useBr.getState().addFeed(`+${MATS_CRATE} MATERIALS from the supply crate`, true)
         getAudio().pickup(true)
       }
       const rar = BR_RARITIES[s.rarity]
@@ -3001,8 +3718,9 @@ export class BattleRoyaleGame {
       this.hp = Math.min(100, this.hp + 55)
       getAudio().pickup(false)
     } else {
-      // ammo: refill current weapon reserves
+      // ammo: refill current weapon reserves (+ a few materials)
       if (this.weapon) this.reserve += WEAPONS[this.weapon].mag * 2
+      addMats(MATS_AMMO)
       getAudio().pickup(true)
     }
     s.taken = true
@@ -3019,9 +3737,414 @@ export class BattleRoyaleGame {
     }
   }
 
+  // ------------------------------------------------------------
+  // v12 — FORTNITE-STYLE BUILDING (clean & smooth)
+  // Q wall · C ramp · Z floor → ghost preview snaps to the 4 m
+  // grid; LEFT-CLICK places (hold = turbo-build). Pieces cost 10
+  // materials, have HP, block bullets AND bot fire (real cover),
+  // floors/ramps are walkable, everything replicates over the net.
   // ----------------------------------------------------------
+  /** enters/exits build mode with a piece selected */
+  setBuildMode(kind: BuildKind | null): void {
+    this.buildMode = kind
+    useBr.getState().set({ buildMode: kind })
+    if (kind) {
+      this.ads = false
+      getAudio().draw()
+    }
+  }
+
+  /** per-frame: ghost placement + turbo-build while holding LMB */
+  private updateBuild(t: number): void {
+    if (this.phase !== 'live') { this.hideGhost(); return }
+    if (!this.buildMode || this.inVehicle) { this.hideGhost(); return }
+    // rebuild the ghost if the piece changed
+    if (this.buildGhostKind !== this.buildMode) this.rebuildGhost()
+    // target cell from the look direction (3.2 m ahead of the camera)
+    const tg = this.buildTarget()
+    if (!tg) { this.hideGhost(); return }
+    // orient the ghost
+    if (this.buildGhost) {
+      const center = this.pieceCenter(tg)
+      this.buildGhost.position.set(center.x, center.y, center.z)
+      this.buildGhost.rotation.y = this.pieceYaw(tg)
+      this.buildGhostOk = this.canPlacePiece(tg)
+      const col = this.buildGhostOk ? 0x4fd2ff : 0xff5f52
+      for (const m of this.buildGhostMats) m.color.setHex(col)
+      this.buildGhost.visible = true
+      useBr.getState().set({ buildPlaceable: this.buildGhostOk && this.mats >= BUILD_COST })
+    }
+    // turbo-build: holding LMB keeps placing
+    if (this.mouseHeld && this.locked && t > this.buildAt) this.tryPlaceBuild()
+  }
+
+  /** target placement: cell + facing + level, all snapped */
+  private buildTarget(): { kind: BuildKind; cx: number; cz: number; edge: number; lv: number } | null {
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+    dir.y = 0
+    if (dir.lengthSq() < 1e-6) return null
+    dir.normalize()
+    // point 3.2 m ahead of the camera
+    const ax = this.px + dir.x * 3.2
+    const az = this.pz + dir.z * 3.2
+    const cx = Math.floor((ax + MAP) / GRID)
+    const cz = Math.floor((az + MAP) / GRID)
+    if (cx < 0 || cz < 0 || cx > (2 * MAP) / GRID - 1 || cz > (2 * MAP) / GRID - 1) return null
+    // facing quantized to 4 directions (N=-Z, E=+X, S=+Z, W=-X)
+    let yaw = Math.atan2(dir.x, -dir.z)
+    if (yaw < 0) yaw += Math.PI * 2
+    const edge = Math.round(yaw / (Math.PI / 2)) % 4
+    // vertical level from the player's feet (walkable ramp chaining)
+    const feet = this.py - EYE
+    const lv = Math.round(feet / RISE)
+    return { kind: this.buildMode!, cx, cz, edge, lv }
+  }
+
+  /** world-space center of a piece */
+  private pieceCenter(tg: { kind: BuildKind; cx: number; cz: number; edge: number; lv: number }): { x: number; y: number; z: number } {
+    const x = tg.cx * GRID - MAP + GRID / 2
+    const z = tg.cz * GRID - MAP + GRID / 2
+    const y = tg.lv * RISE
+    if (tg.kind === 'wall') {
+      // on the NEAR edge of the target cell (the one facing the player)
+      const off = 2
+      switch (tg.edge) {
+        case 0: return { x, y, z: z - off }
+        case 1: return { x: x + off, y, z }
+        case 2: return { x, y, z: z + off }
+        default: return { x: x - off, y, z }
+      }
+    }
+    return { x, y, z }
+  }
+
+  /** yaw of a piece (walls face across the edge; ramps rise along facing) */
+  private pieceYaw(tg: { kind: BuildKind; edge: number }): number {
+    if (tg.kind === 'wall') return (tg.edge % 2 === 1 ? Math.PI / 2 : 0)
+    // ramp: the local +Z end is the HIGH end — rotate it to the facing dir
+    // (N=-Z → π, E=+X → π/2, S=+Z → 0, W=-X → -π/2)
+    return tg.edge === 0 ? Math.PI : tg.edge === 2 ? 0 : tg.edge === 1 ? Math.PI / 2 : -Math.PI / 2
+  }
+
+  /** can this piece be placed here? (no duplicates, no static overlap, in bounds) */
+  private canPlacePiece(tg: { kind: BuildKind; cx: number; cz: number; edge: number; lv: number }): boolean {
+    // duplicate piece in the same cell/edge/level
+    for (const b of this.builds) {
+      if (b.dead) continue
+      if (b.kind !== tg.kind) continue
+      if (b.cx !== tg.cx || b.cz !== tg.cz || b.lv !== tg.lv) continue
+      if (tg.kind === 'wall' && b.edge !== tg.edge) continue
+      return false
+    }
+    // piece bounding box
+    const c = this.pieceCenter(tg)
+    const wHalf = tg.kind === 'wall' ? (tg.edge % 2 === 1 ? 0.16 : 2) : 2
+    const dHalf = tg.kind === 'wall' ? (tg.edge % 2 === 1 ? 2 : 0.16) : 2
+    const minX = c.x - wHalf, maxX = c.x + wHalf
+    const minZ = c.z - dHalf, maxZ = c.z + dHalf
+    const y0 = tg.lv * RISE
+    const y1 = y0 + (tg.kind === 'wall' ? RISE : tg.kind === 'ramp' ? RISE : 0.22)
+    // static map geometry overlap (only serious for walls/floors at their heights)
+    for (const a of this.aabbs) {
+      if (maxX > a.minX - 0.1 && minX < a.maxX + 0.1 && maxZ > a.minZ - 0.1 && minZ < a.maxZ + 0.1) {
+        if (y1 > 0.4 && y0 < a.h) return false
+      }
+    }
+    // trees
+    for (const t of this.trees) {
+      if (t.x > minX - 0.6 && t.x < maxX + 0.6 && t.z > minZ - 0.6 && t.z < maxZ + 0.6) {
+        if (y0 < 5.5) return false
+      }
+    }
+    return true
+  }
+
+  /** places the ghost piece (called by LMB and turbo-build) */
+  private tryPlaceBuild(): void {
+    if (!this.buildMode) return
+    const tg = this.buildTarget()
+    if (!tg) return
+    const now = performance.now()
+    if (now < this.buildAt) return
+    if (this.mats < BUILD_COST) {
+      if (now > this.buildAt) {
+        useBr.getState().set({ hint: 'NOT ENOUGH MATERIALS — loot pallets, crates and ammo boxes' })
+        this.buildAt = now + 900
+      }
+      return
+    }
+    if (!this.canPlacePiece(tg)) return
+    if (this.builds.filter(b => b.mine && !b.dead).length >= BUILD_MAX) return
+    this.buildAt = now + 150          // turbo-build cadence (smooth, not spammy)
+    this.mats -= BUILD_COST
+    useBr.getState().set({ mats: this.mats })
+    const id = `l${++this.buildSeq}`
+    this.spawnBuildPiece(tg, id, myOid(), true)
+    getAudio().reload('end')          // wood thunk (two-stage latch sound)
+    // replicate to the other operators
+    if (!this.practice && this.matchId) {
+      esNet.brPublishEv({ ty: 'build', o: myOid(), id, k: tg.kind, cx: tg.cx, cz: tg.cz, e: tg.edge, lv: tg.lv })
+    }
+  }
+
+  /** creates the piece: mesh + collision columns */
+  private spawnBuildPiece(tg: { kind: BuildKind; cx: number; cz: number; edge: number; lv: number }, id: string, owner: string, mine: boolean): void {
+    this.ensureBuildMaterials()
+    const c = this.pieceCenter(tg)
+    const baseY = tg.lv * RISE
+    const mesh = this.buildPieceMesh(tg)
+    mesh.position.set(c.x, baseY, c.z)
+    mesh.rotation.y = this.pieceYaw(tg)
+    this.mapScene.add(mesh)
+    const piece: BuildPiece = {
+      id, kind: tg.kind, cx: tg.cx, cz: tg.cz, edge: tg.edge, lv: tg.lv,
+      baseY, hp: BUILD_HP[tg.kind], mesh, owner, mine, dead: false,
+    }
+    this.builds.push(piece)
+    // collision columns
+    const mk = (minX: number, maxX: number, minZ: number, maxZ: number, y0: number, y1: number, blocks: boolean): void => {
+      this.buildCols.push({ piece, minX, maxX, minZ, maxZ, y0, y1, blocks })
+    }
+    if (tg.kind === 'wall') {
+      // N/S edges (0/2): the wall spans X (±2) and is thin in Z (±0.16);
+      // E/W edges (1/3): thin in X, spans Z. Matches the visible slab.
+      const xHalf = tg.edge % 2 === 1 ? 0.16 : 2
+      const zHalf = tg.edge % 2 === 1 ? 2 : 0.16
+      mk(c.x - xHalf, c.x + xHalf, c.z - zHalf, c.z + zHalf, baseY, baseY + RISE, true)
+    } else if (tg.kind === 'floor') {
+      mk(c.x - 2, c.x + 2, c.z - 2, c.z + 2, baseY, baseY + 0.22, false)
+    } else {
+      // ramp: 4 stair columns (each 1 m of run, 0.75 m of rise)
+      // the ramp rises TOWARD the facing direction
+      const fx = tg.edge === 1 ? 1 : tg.edge === 3 ? -1 : 0
+      const fz = tg.edge === 2 ? 1 : tg.edge === 0 ? -1 : 0
+      for (let s = 0; s < 4; s++) {
+        // strip s along the facing axis: s=3 is the HIGH end
+        const lo = -2 + s
+        const hi = lo + 1
+        const y0 = baseY + s * 0.75
+        const y1 = y0 + 0.75
+        if (fx !== 0) mk(c.x + lo, c.x + hi, c.z - 2, c.z + 2, y0, y1, false)
+        else mk(c.x - 2, c.x + 2, c.z + lo, c.z + hi, y0, y1, false)
+      }
+      void fx; void fz
+    }
+  }
+
+  /** visual mesh of a piece (wood + the user's own Pared/Piso textures) */
+  private buildPieceMesh(tg: { kind: BuildKind }): THREE.Group {
+    const g = new THREE.Group()
+    const wallMat = this.buildMats.wall!
+    const floorMat = this.buildMats.floor!
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x6e5637, roughness: 0.85 })
+    if (tg.kind === 'wall') {
+      // panel + cross braces (reads as construction wood)
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(4, RISE, 0.22), wallMat)
+      panel.position.y = RISE / 2
+      g.add(panel)
+      for (const y of [0.35, RISE - 0.35, RISE / 2]) {
+        const brace = new THREE.Mesh(new THREE.BoxGeometry(3.9, 0.16, 0.3), frameMat)
+        brace.position.y = y
+        brace.rotation.z = y === RISE / 2 ? 0.72 : 0
+        g.add(brace)
+      }
+    } else if (tg.kind === 'floor') {
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(4, 0.22, 4), floorMat)
+      slab.position.y = 0.11
+      g.add(slab)
+      // edge beams
+      for (const [ex, ez, w] of [[0, 2, 4], [0, -2, 4], [2, 0, 0], [-2, 0, 0]] as const) {
+        const beam = new THREE.Mesh(
+          ex !== 0 ? new THREE.BoxGeometry(0.24, 0.3, 4) : new THREE.BoxGeometry(4, 0.3, 0.24),
+          frameMat,
+        )
+        beam.position.set(ex, 0.05, ez)
+        g.add(beam)
+      }
+    } else {
+      // ramp: inclined slab + rails (the surface matches groundAt())
+      const len = Math.hypot(GRID, RISE) // 5 m along the slope
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, len), floorMat)
+      slab.position.set(0, RISE / 2, 0)
+      slab.rotation.x = -Math.atan2(RISE, GRID)
+      g.add(slab)
+      for (const sx of [-1.9, 1.9]) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.2, len), frameMat)
+        rail.position.set(sx, RISE / 2 + 0.18, 0)
+        rail.rotation.x = -Math.atan2(RISE, GRID)
+        g.add(rail)
+      }
+    }
+    return g
+  }
+
+  /** shared build materials (user's Pared/Piso when available, wood colors as fallback) */
+  private ensureBuildMaterials(): void {
+    if (this.buildMats.wall && this.buildMats.floor) return
+    const repo = getRepoTextures()
+    const woodWall = new THREE.MeshStandardMaterial({ color: 0xa8845a, roughness: 0.88 })
+    const woodFloor = new THREE.MeshStandardMaterial({ color: 0x96744e, roughness: 0.9 })
+    if (repo.pared) {
+      woodWall.map = repo.pared
+      woodWall.userData.sharedMap = true
+      woodWall.needsUpdate = true
+    } else {
+      // sin textura aún → registrado para el parche en vivo (applyRepoTexToBr)
+      this.texMats.push({ mat: woodWall, kind: 'wall', rx: 1.6, ry: 1.2 })
+    }
+    if (repo.piso) {
+      woodFloor.map = repo.piso
+      woodFloor.userData.sharedMap = true
+      woodFloor.needsUpdate = true
+    } else {
+      this.texMats.push({ mat: woodFloor, kind: 'roof', rx: 1.6, ry: 1.6 })
+    }
+    this.buildMats.wall = woodWall
+    this.buildMats.floor = woodFloor
+  }
+
+  /** (re)builds the translucent ghost preview */
+  private rebuildGhost(): void {
+    this.hideGhost()
+    const kind = this.buildMode!
+    this.buildGhostKind = kind
+    this.buildGhostMats = []
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x4fd2ff, transparent: true, opacity: 0.3, depthWrite: false,
+    })
+    this.buildGhostMats.push(mat)
+    const g = new THREE.Group()
+    const dims = kind === 'wall' ? [4, RISE, 0.22] : kind === 'floor' ? [4, 0.22, 4] : [4, 0.2, Math.hypot(GRID, RISE)]
+    const body = new THREE.Mesh(new THREE.BoxGeometry(dims[0], dims[1], dims[2]), mat)
+    if (kind === 'wall') body.position.y = RISE / 2
+    else if (kind === 'floor') body.position.y = 0.11
+    else { body.position.y = RISE / 2; body.rotation.x = -Math.atan2(RISE, GRID) }
+    g.add(body)
+    // wire outline for the crisp Fortnite-style snap read
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(body.geometry),
+      new THREE.LineBasicMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.9 }),
+    )
+    edges.position.copy(body.position)
+    edges.rotation.copy(body.rotation)
+    g.add(edges)
+    this.buildGhost = g
+    this.mapScene.add(g)
+  }
+
+  private hideGhost(): void {
+    if (this.buildGhost) {
+      this.mapScene.remove(this.buildGhost)
+      disposeTree(this.buildGhost)
+      this.buildGhost = null
+    }
+    this.buildGhostKind = null
+  }
+
+  /** damages a build piece (player bullets, bot fire) */
+  private damageBuild(piece: BuildPiece, dmg: number, byMe: boolean): void {
+    if (piece.dead) return
+    piece.hp -= dmg
+    // visual crack: scale down slightly as it weakens? cheap: opacity flash via emissive
+    const frac = Math.max(0, piece.hp) / BUILD_HP[piece.kind]
+    piece.mesh.traverse(o => {
+      const m = (o as THREE.Mesh).material
+      if (m && (m as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+        ;(m as THREE.MeshStandardMaterial).emissive?.setHex(0x331a08)
+      }
+    })
+    if (piece.hp <= 0) this.destroyBuild(piece, byMe)
+  }
+
+  /** destroys a piece: mesh + collision + (broadcast if it was my shot) */
+  private destroyBuild(piece: BuildPiece, broadcast: boolean): void {
+    if (piece.dead) return
+    piece.dead = true
+    this.mapScene.remove(piece.mesh)
+    disposeTree(piece.mesh)
+    this.buildCols = this.buildCols.filter(c => c.piece !== piece)
+    this.builds = this.builds.filter(b => b !== piece)
+    getAudio().impact(0)
+    if (broadcast && !this.practice && this.matchId) {
+      esNet.brPublishEv({ ty: 'bdes', o: piece.owner, id: piece.id })
+    }
+  }
+
+  /** removes a piece by id (network 'bdes') */
+  private destroyBuildById(owner: string, id: string): void {
+    const p = this.builds.find(b => b.owner === owner && b.id === id)
+    if (p) this.destroyBuild(p, false)
+  }
+
+  /** walkable ground under (x,z): terrain + build floors/ramps */
+  private groundAt(x: number, z: number, feetY: number): number {
+    let ground = terrainH(x, z)
+    for (const b of this.builds) {
+      if (b.dead) continue
+      if (b.kind === 'wall') continue
+      const cx = b.cx * GRID - MAP + GRID / 2
+      const cz = b.cz * GRID - MAP + GRID / 2
+      if (Math.abs(x - cx) > 2 || Math.abs(z - cz) > 2) continue
+      let surface: number
+      if (b.kind === 'floor') {
+        surface = b.baseY + 0.22
+      } else {
+        // ramp: progress along the facing axis (0 at the low end → 1 at the high end)
+        let u: number
+        if (b.edge === 1) u = (x - (cx - 2)) / GRID
+        else if (b.edge === 3) u = 1 - (x - (cx - 2)) / GRID
+        else if (b.edge === 2) u = (z - (cz - 2)) / GRID
+        else u = 1 - (z - (cz - 2)) / GRID
+        surface = b.baseY + Math.max(0, Math.min(1, u)) * RISE
+      }
+      // stand on it only if it is at/below our feet (+ step-up margin)
+      if (surface <= feetY + 0.62 && surface > ground) ground = surface
+    }
+    return ground
+  }
+
+  /** first WALL between two points (bot → player cover check) */
+  private wallOnSegment(x1: number, z1: number, y1: number, x2: number, z2: number, y2: number): BuildCol | null {
+    const dx = x2 - x1, dz = z2 - z1
+    const len = Math.hypot(dx, dz)
+    if (len < 0.4) return null
+    let best: BuildCol | null = null
+    let bestT = 1
+    for (const c of this.buildCols) {
+      if (!c.blocks || c.piece.dead) continue
+      // slab method in 2D
+      const tmin = 0, tmax = 1
+      let tt0 = tmin, tt1 = tmax
+      let ok = true
+      for (const [p, d, mn, mx] of [
+        [x1, dx, c.minX, c.maxX], [z1, dz, c.minZ, c.maxZ],
+      ] as const) {
+        if (Math.abs(d) < 1e-8) {
+          if (p < mn || p > mx) { ok = false; break }
+        } else {
+          let a = (mn - p) / d, b = (mx - p) / d
+          if (a > b) { const tmp = a; a = b; b = tmp }
+          tt0 = Math.max(tt0, a)
+          tt1 = Math.min(tt1, b)
+          if (tt0 > tt1) { ok = false; break }
+        }
+      }
+      if (!ok) continue
+      const t = tt0
+      if (t >= bestT) continue
+      // height at the crossing point must overlap the wall span
+      const y = y1 + (y2 - y1) * t
+      if (y > c.y0 - 0.2 && y < c.y1 + 0.2) {
+        best = c
+        bestT = t
+      }
+    }
+    return best
+  }
+
+  // ------------------------------------------------------------
   // VEHICLES
-  // ----------------------------------------------------------
+  // ------------------------------------------------------------
   private enterVehicle(v: BrVehicle): void {
     v.occupied = true
     this.inVehicle = v
@@ -3225,13 +4348,23 @@ export class BattleRoyaleGame {
     }
     if (buildingT < bestT) { bestT = buildingT; hitBot = null; hitOp = null }
 
+    // v12: BUILD pieces (ray vs their columns — walls/floors/ramps)
+    let buildCol: BuildCol | null = null
+    let buildT = 220
+    for (const c of this.buildCols) {
+      if (c.piece.dead) continue
+      const t = this.rayBuildCol(origin, dir, c)
+      if (t >= 0 && t < buildT) { buildT = t; buildCol = c }
+    }
+    if (buildT < bestT) { bestT = buildT; hitBot = null; hitOp = null; buildingT = buildT }
+
     // terrain (coarse march)
     let terrainT = 220
     for (let d = 2; d < 220; d += 1.5) {
       const p = origin.clone().addScaledVector(dir, d)
       if (p.y <= terrainH(p.x, p.z)) { terrainT = d; break }
     }
-    if (terrainT < bestT) { bestT = terrainT; hitBot = null; hitOp = null }
+    if (terrainT < bestT) { bestT = terrainT; hitBot = null; hitOp = null; buildCol = null }
 
     hitPoint = origin.clone().addScaledVector(dir, Math.min(bestT, 220))
     this.spawnTracer(origin.clone().addScaledVector(dir, 1.2), hitPoint)
@@ -3243,6 +4376,14 @@ export class BattleRoyaleGame {
     if (bestT > w2.falloffStart) {
       const f = clamp((bestT - w2.falloffStart) / Math.max(1, w2.falloffEnd - w2.falloffStart), 0, 1)
       dmg *= 1 - f * (1 - w2.falloffMin)
+    }
+
+    // v12: BUILD piece hit — the structure takes the damage (flat, no HS)
+    if (buildCol && buildT <= bestT + 1e-6) {
+      this.damageBuild(buildCol.piece, w2.damage * (BR_RARITIES[this.weaponRarity]?.dmgMult ?? 1), true)
+      getAudio().impact(clamp(bestT / 8, 0, 30))
+      useBr.getState().set({ hitAt: performance.now(), hitHead: false })
+      return
     }
 
     if (hitOp) {
@@ -3270,6 +4411,26 @@ export class BattleRoyaleGame {
     } else {
       getAudio().impact(clamp(bestT / 8, 0, 30))
     }
+  }
+
+  /** v12: ray vs a build column (slab method with real y0/y1 span) */
+  private rayBuildCol(o: THREE.Vector3, d: THREE.Vector3, c: BuildCol): number {
+    const min = new THREE.Vector3(c.minX, c.y0, c.minZ)
+    const max = new THREE.Vector3(c.maxX, c.y1, c.maxZ)
+    let tmin = 0, tmax = 300
+    for (const axis of ['x', 'y', 'z'] as const) {
+      const dv = d[axis], ov = o[axis], mn = min[axis], mx = max[axis]
+      if (Math.abs(dv) < 1e-8) {
+        if (ov < mn || ov > mx) return -1
+      } else {
+        let t1 = (mn - ov) / dv, t2 = (mx - ov) / dv
+        if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+        tmin = Math.max(tmin, t1)
+        tmax = Math.min(tmax, t2)
+        if (tmin > tmax) return -1
+      }
+    }
+    return tmin >= 0 ? tmin : (tmax >= 0 ? 0 : -1)
   }
 
   private raySphere(o: THREE.Vector3, d: THREE.Vector3, c: THREE.Vector3, r: number): number {
@@ -3599,6 +4760,27 @@ export class BattleRoyaleGame {
       const z = Number(p.z)
       const w = String(p.w ?? 'p9') as WeaponId
       if (Number.isFinite(x) && Number.isFinite(z)) this.spawnLootDrop(x, z, w)
+      return
+    }
+    // v12: another operator placed a build piece → replicate locally
+    if (ty === 'build') {
+      const k = String(p.k) as BuildKind
+      const cx = Number(p.cx), cz = Number(p.cz), e = Number(p.e), lv = Number(p.lv)
+      const id = String(p.id ?? '')
+      if ((k === 'wall' || k === 'ramp' || k === 'floor')
+        && Number.isInteger(cx) && Number.isInteger(cz)
+        && Number.isFinite(e) && Number.isFinite(lv) && id) {
+        const owner = String(p.o ?? '')
+        // guard: not a duplicate (rejoined/replayed events)
+        if (!this.builds.some(b => b.owner === owner && b.id === id)) {
+          this.spawnBuildPiece({ kind: k, cx, cz, edge: Math.max(0, Math.min(3, Math.round(e))), lv: Math.round(lv) }, id, owner, false)
+        }
+      }
+      return
+    }
+    // v12: a build piece was destroyed somewhere
+    if (ty === 'bdes') {
+      this.destroyBuildById(String(p.o ?? ''), String(p.id ?? ''))
       return
     }
     if (ty === 'veh') {
@@ -4044,6 +5226,17 @@ export class BattleRoyaleGame {
     // geometría horneada de bosques, props) se libera por completo.
     disposeTree(this.lobbyScene)
     disposeTree(this.mapScene)
+    // v12: build pieces belong to mapScene but tracked separately — free cleanly
+    this.hideGhost()
+    for (const b of this.builds) {
+      this.mapScene.remove(b.mesh)
+      disposeTree(b.mesh)
+    }
+    this.builds = []
+    this.buildCols = []
+    this.buildMode = null
+    this.buildMats.wall = null
+    this.buildMats.floor = null
     if (this.soldierTemplate) disposeTree(this.soldierTemplate)
     this.soldierTemplate = null
     try { this.renderer.dispose() } catch { /* ok */ }

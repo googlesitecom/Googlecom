@@ -5,6 +5,9 @@
 // volúmenes (general / música / efectos) y recarga procedural
 // en capas (liberación → cargador fuera → cargador dentro →
 // cerrojo). Fallback procedural si falta algún archivo.
+// v12: DOS pistas de fondo (Musica + Musica2) en lista de
+// reproducción ALTERNANTE — suena primero una completa, luego
+// la otra, y vuelve a empezar (loop de la lista, no del tema).
 // ============================================================
 import { ASSET_BASE } from './shared'
 
@@ -23,7 +26,11 @@ const SAMPLE_FILES: Record<string, string> = {
   rifle: 'Rifle.mp3',
   sniper: 'Sniper.mp3',
   music: 'Musica.mp3',
+  music2: 'Musica2.mp3',
 }
+
+/** v12: la lista de reproducción de fondo — Musica, luego Musica2, en bucle */
+const MUSIC_PLAYLIST = ['music', 'music2'] as const
 
 export class AudioEngine {
   ctx: AudioContext | null = null
@@ -40,6 +47,8 @@ export class AudioEngine {
   private samples = new Map<string, AudioBuffer>()
   private musicSrc: AudioBufferSourceNode | null = null
   private musicPlaying = false
+  /** v12: índice del tema ACTUAL de la lista (empieza en Musica) */
+  private musicTrack = 0
   private ambientNodes: AudioNode[] = []
   private started = false
 
@@ -84,7 +93,7 @@ export class AudioEngine {
         .then(buf => this.ctx!.decodeAudioData(buf))
         .then(audio => {
           this.samples.set(key, audio)
-          if (key === 'music' && this.musicPlaying) this.startMusicSource()
+          if ((key === 'music' || key === 'music2') && this.musicPlaying) this.startMusicSource()
         })
         .catch(() => { /* sin archivo: queda el sonido procedural */ })
     }
@@ -119,7 +128,10 @@ export class AudioEngine {
   }
 
   // ----------------------------------------------------------
-  // Música de fondo (Musica.mp3 en bucle)
+  // Música de fondo (v12: lista ALTERNANTE — Musica → Musica2 → …)
+  // Cada tema suena COMPLETO; al acabar su onended pasa al
+  // siguiente y da la vuelta a la lista. Con una sola pista
+  // disponible se queda en bucle con esa (comportamiento v5).
   // ----------------------------------------------------------
   playMusic(): void {
     if (!this.ctx) return
@@ -135,19 +147,52 @@ export class AudioEngine {
     }
   }
 
+  /** nombre (para depuración/UI) del tema que suena ahora */
+  get currentTrack(): string {
+    return MUSIC_PLAYLIST[this.musicTrack] ?? 'music'
+  }
+
   private startMusicSource(): void {
     if (!this.ctx || this.musicSrc) return
-    const buf = this.samples.get('music')
-    if (!buf) return
+    // el tema actual, y si aún no llegó, el primero que SÍ esté
+    const available = MUSIC_PLAYLIST.filter(k => this.samples.has(k))
+    if (available.length === 0) return
+    let key: (typeof MUSIC_PLAYLIST)[number] = MUSIC_PLAYLIST[this.musicTrack]
+    if (!available.includes(key)) key = available[0]
+    const buf = this.samples.get(key)!
+    this.musicTrack = MUSIC_PLAYLIST.indexOf(key)
     const src = this.ctx.createBufferSource()
     src.buffer = buf
-    src.loop = true
+    // v12: sin loop por tema — el onended avanza la lista;
+    // si solo hay UN tema cargado, loop directo (v5 compatible)
+    const single = MUSIC_PLAYLIST.filter(k => this.samples.has(k)).length <= 1
+    src.loop = single
     src.connect(this.musicBus)
+    if (!single) {
+      src.onended = () => {
+        if (this.musicSrc !== src || !this.musicPlaying) return
+        this.musicSrc = null
+        // siguiente tema de la lista (vuelta al empezar de nuevo)
+        for (let i = 1; i <= MUSIC_PLAYLIST.length; i++) {
+          const next = MUSIC_PLAYLIST[(this.musicTrack + i) % MUSIC_PLAYLIST.length]
+          if (this.samples.has(next)) {
+            this.musicTrack = (this.musicTrack + i) % MUSIC_PLAYLIST.length
+            break
+          }
+        }
+        this.startMusicSource()
+      }
+    }
+    // entrada suave de 0.5 s (evita el clic al arrancar un tema)
+    try {
+      const t0 = this.ctx.currentTime
+      this.musicBus.gain.cancelScheduledValues(t0)
+      this.musicBus.gain.setValueAtTime(Math.max(0.0001, this.musicVol * this.duck * 0.25), t0)
+      this.musicBus.gain.linearRampToValueAtTime(this.musicVol * this.duck, t0 + 0.5)
+    } catch { /* planning fallido: ganancia fija */ }
     src.start()
     this.musicSrc = src
   }
-
-  get musicReady(): boolean { return this.samples.has('music') }
 
   // ----------------------------------------------------------
   // Utilidades de síntesis

@@ -284,6 +284,7 @@ export type ActionId =
   | 'flare' | 'stim' | 'buy' | 'lastWeapon' | 'zipline'
   | 'slot1' | 'slot2' | 'slot3'
   | 'shoot' | 'aim'
+  | 'voice'
 
 /** Los binds de DISPARAR y APUNTAR aceptan botones del ratón (Mouse0..4)
  *  o cualquier tecla — por fin se pueden reasignar. */
@@ -308,6 +309,7 @@ export const DEFAULT_KEYBINDS: Record<ActionId, string> = {
   slot3: 'Digit3',
   shoot: 'Mouse0',
   aim: 'Mouse2',
+  voice: 'KeyV',
 }
 
 export const ACTION_LABELS: Record<ActionId, string> = {
@@ -331,6 +333,7 @@ export const ACTION_LABELS: Record<ActionId, string> = {
   slot3: 'Knife',
   shoot: 'Fire',
   aim: 'Aim (ADS)',
+  voice: 'Voice — push to talk',
 }
 
 /** ¿El código corresponde a un botón del ratón? */
