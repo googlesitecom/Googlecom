@@ -5,7 +5,8 @@ import dynamic from 'next/dynamic'
 import { useGame } from '@/game/store'
 import { useAuth, restoreSession } from '@/game/auth'
 import { useBr } from '@/game/br-store'
-import { MainMenu, ConnectingScreen, PauseMenu } from '@/components/game/menus'
+import { MainMenu, ConnectingScreen, PauseMenu, NetToasts } from '@/components/game/menus'
+import { esNet } from '@/game/esnet'
 import { Hud, DeathOverlay, StoryVictory } from '@/components/game/hud'
 import { BuyMenu } from '@/components/game/buy-menu'
 import { Scoreboard } from '@/components/game/scoreboard'
@@ -63,6 +64,13 @@ export default function Home() {
     if (booted) restoreSession()
   }, [booted])
 
+  // v11: connect the REAL social network (presence, friends, squads)
+  // whenever an operator is logged in; disconnect on logout
+  useEffect(() => {
+    if (authUser) esNet.connect()
+    else esNet.disconnect()
+  }, [authUser])
+
   const onBootDone = useCallback(() => setBooted(true), [])
 
   return (
@@ -83,6 +91,7 @@ export default function Home() {
               {inGame && <StoryVictory />}
               {phase === 'menu' && <MainMenu />}
               {phase === 'connecting' && <ConnectingScreen />}
+              <NetToasts />
             </>
           )}
         </>

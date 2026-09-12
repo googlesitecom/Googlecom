@@ -12,7 +12,9 @@
 import { Peer, type DataConnection } from 'peerjs'
 import type { Game } from './engine'
 import { useGame } from './store'
-import { liveTally, recordMatch, activeSquadMembers, useSquad } from './auth'
+import { liveTally, recordMatch } from './auth'
+import { esNet } from './esnet'
+import { pushNetChatLine, setRoomChatRelay } from './chat'
 import {
   GAME, generateRoomCode, peerIdForRoom,
   type WeaponId, type NetSnapshot, type NetRoundState, type BotDifficulty, type GrenadeKind, type GameMode, type MapId, type Team,
@@ -132,6 +134,8 @@ export class NetClient {
   // v9: registro de fin de partida (solo una vez por sesión)
   private matchRecorded = false
   private matchReturnTimer: ReturnType<typeof setTimeout> | null = null
+  /** v11: name of the 1v1 guest for chat attribution */
+  private guestNameCache = ''
 
   // ------------------------------------------------------------
   // SIMULACIÓN EN WEB WORKER (solo / anfitrión)
@@ -191,14 +195,6 @@ export class NetClient {
     const bots = gameMode === 'historia' ? 5 : Math.floor(GAME.BOT_COUNT / 2)
     this.startSimWorker(difficulty, bots, gameMode)
     this.sendToSim({ e: 'join', d: { id: HOST_ID, name, team: 'A', announce: false } })
-    // v10: el GRUPO activo de amigos entra contigo en CUALQUIER modo
-    // (los miembros juegan con IA y aparecen como operadores humanos).
-    // Battle Royale es SIEMPRE solos — nunca se llama desde ahí.
-    const squad = activeSquadMembers()
-    if (squad.length > 0) {
-      this.sendToSim({ e: 'joinSquad', d: { id: HOST_ID, team: 'A', members: squad } })
-      useGame.getState().addAnnouncement(`SQUAD "${useSquad.getState().name}" DEPLOYED — ${squad.length} operator${squad.length > 1 ? 's' : ''} joined your side`, 'team')
-    }
     useGame.getState().setHud({ netStatus: 'connected' })
   }
 
@@ -244,6 +240,20 @@ export class NetClient {
             : `ROOM ${code} CREATED — share the code`,
         'info',
       )
+      // v11: REAL squad — members auto-join with the code over the network
+      esNet.shareRoomCode(code, kind)
+      // v11: relay the match chat through the host
+      setRoomChatRelay(text => {
+        const clean = text.trim().slice(0, 90)
+        if (!clean) return true
+        const from = this.hostName
+        if (this.roomKind === '1v1') {
+          this.forwardToGuest({ e: 'chat', d: { from, text: clean } })
+        } else {
+          for (const g of this.duoSlots) this.sendToSlot(g, { e: 'chat', d: { from, text: clean } })
+        }
+        return true
+      })
     })
 
     // si el servidor de señalización se cae, reconectar para que la sala
@@ -280,6 +290,7 @@ export class NetClient {
           if (!this.guestJoined) {
             this.guestJoined = true
             const gname = String((msg.d as { name?: string })?.name ?? 'Rival').slice(0, 16) || 'Rival'
+            this.guestNameCache = gname
             this.sendToSim({ e: 'join', d: { id: GUEST_ID, name: gname, team: 'B', announce: true } })
             // el welcome para el invitado llega por la ruta del worker (to='p2')
             useGame.getState().setHud({ netStatus: 'connected' })
@@ -288,6 +299,13 @@ export class NetClient {
         }
         if (msg.e === 'ping') {
           this.sendToPeer(conn, { e: 'pong', d: msg.d })
+          return
+        }
+        // v11: chat de partida del invitado → push local (sin eco al autor)
+        if (msg.e === 'chat') {
+          const d = msg.d as { text?: string }
+          const gname = String((this.guestNameCache ?? '') || 'Rival').slice(0, 16)
+          if (d?.text) pushNetChatLine(gname, String(d.text))
           return
         }
         // entradas de juego del invitado → worker
@@ -397,6 +415,17 @@ export class NetClient {
       }
       if (msg.e === 'ping') {
         this.sendToPeer(conn, { e: 'pong', d: msg.d })
+        return
+      }
+      // v11: chat de partida del invitado → push local + relay al resto
+      if (msg.e === 'chat') {
+        const d = msg.d as { text?: string }
+        if (d?.text) {
+          pushNetChatLine(slot.name || 'Operator', String(d.text))
+          for (const g of this.duoSlots) {
+            if (g !== slot) this.sendToSlot(g, { e: 'chat', d: { from: slot.name || 'Operator', text: String(d.text) } })
+          }
+        }
         return
       }
       // entrada de juego → worker (solo si la partida ya empezó)
@@ -588,6 +617,13 @@ export class NetClient {
       conn.on('open', () => {
         if (this.disposed) return
         this.sendToPeer(conn, { e: 'join', d: { name } })
+        // v11: my chat lines travel to the host for relay
+        setRoomChatRelay(text => {
+          const clean = text.trim().slice(0, 90)
+          if (!clean) return true
+          this.sendToPeer(conn, { e: 'chat', d: { text: clean } })
+          return true
+        })
       })
 
       conn.on('data', (raw: unknown) => {
@@ -602,6 +638,12 @@ export class NetClient {
           this.startPing()
           return
         }
+        if (msg.e === 'chat') {
+          // v11: chat line from the host / another operator
+          const d = msg.d as { from?: string; text?: string }
+          if (d?.text) pushNetChatLine(String(d.from ?? 'Operator'), String(d.text))
+          return
+        }
         if (msg.e === 'lobbyAck' || msg.e === 'lobby') {
           // v6.2 → v9: sala con lobby — el anfitrión confirmó la entrada /
           // actualiza la lista. Cancela el tiempo de espera del enlace
@@ -610,6 +652,10 @@ export class NetClient {
           if (d.id) this.id = d.id
           useGame.getState().setHud({
             netStatus: 'waiting',
+            // v11.2 fix: the guest learns the room format from the HOST —
+            // before, a guest joining a 2v2/3v3 kept hud roomKind '1v1' and
+            // the lobby never rendered (endless "loading" screen)
+            roomKind: d.kind ?? useGame.getState().roomKind,
             lobby: { kind: d.kind ?? '2v2', players: d.players ?? [] },
           })
           return
@@ -796,6 +842,7 @@ export class NetClient {
 
   disconnect(): void {
     this.disposed = true
+    setRoomChatRelay(null)
     if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
     if (this.matchReturnTimer) { clearTimeout(this.matchReturnTimer); this.matchReturnTimer = null }
     this.stopStorySync()

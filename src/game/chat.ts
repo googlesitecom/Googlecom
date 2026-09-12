@@ -2,13 +2,16 @@
 // EMERGENCY STRIKE — Match chat (v10)
 // In-match text chat shared by EVERY mode (normal PvP, campaign
 // and Battle Royale): press [T] (or Enter) while playing, type,
-// Enter to send. Squadmates / other operators answer with canned
-// lines so the channel feels alive. Pure local state — nothing
-// here touches the render loop.
+// Enter to send. v11: REAL multiplayer — when the match runs on
+// the network (BR over MQTT or a P2P room), your line travels to
+// the other operators and theirs appear live. Offline/bot matches
+// keep the canned squad chatter so the channel still feels alive.
+// Pure local state — nothing here touches the render loop.
 // ============================================================
 import { create } from 'zustand'
 import { useAuth } from './auth'
 import { useGame } from './store'
+import { esNet } from './esnet'
 
 export interface ChatMsg {
   id: number
@@ -55,18 +58,34 @@ export function chatLocalName(): string {
     ?? 'Operator'
 }
 
-/** player sends a line; squadmates may answer a beat later */
+/** player sends a line; real operators receive it on the network */
 export function sendChatLine(text: string): void {
   const clean = text.trim().slice(0, 90)
   if (!clean) return
   const name = chatLocalName()
   useChat.getState().push(name, clean, 'me')
-  // a teammate/operator answers ~1-2.4 s later (not for every message)
+  // v11: BR match → the line goes to the REAL operators on the island
+  if (esNet.brChatSend(clean)) return
+  // v11: P2P room → the line goes through the host relay
+  if (roomRelay && roomRelay(clean)) return
+  // offline/bot match: a teammate/operator answers ~1-2.4 s later
   if (Math.random() < 0.72) {
     const reply = pick(REPLIES)
     const who = useChat.getState().mode === 'br' ? pick(BR_NAMES) : pick(SQUAD_NAMES)
     setTimeout(() => useChat.getState().push(who, reply, useChat.getState().mode === 'br' ? 'br' : 'team'), 900 + Math.random() * 1500)
   }
+}
+
+/** v11: a line arrived from a REAL operator (BR channel or P2P room) */
+export function pushNetChatLine(from: string, text: string, kind: 'br' | 'team' = 'br'): void {
+  useChat.getState().push(from.slice(0, 16), text.slice(0, 90), kind)
+}
+
+/** v11: chat relay hook — the engine's net client installs this while a
+ *  P2P room is connected, so lines travel host ↔ guests */
+let roomRelay: ((text: string) => boolean) | null = null
+export function setRoomChatRelay(fn: ((text: string) => boolean) | null): void {
+  roomRelay = fn
 }
 
 /** ambient chatter from squadmates / other operators */

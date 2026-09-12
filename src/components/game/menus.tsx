@@ -12,7 +12,8 @@ import { useGame } from '@/game/store'
 import { getGame } from '@/game/game-instance'
 import { getAudio } from '@/game/audio'
 import { ASSET_BASE, GAME } from '@/game/shared'
-import { useAuth, getProfile, fmtKD, addFriend, removeFriend, createGroup, deleteGroup, toggleGroupMember, useSquad, syncSquadFromProfile, type CareerProfile, type SquadGroup } from '@/game/auth'
+import { useAuth, getProfile, fmtKD, myOid, type CareerProfile } from '@/game/auth'
+import { esNet, useNet, useFriends, useParty, useNetToasts, type FriendEntryUI, type PartyMemberUI } from '@/game/esnet'
 import { useBr, BR_RARITIES } from '@/game/br-store'
 import { teamSlotsFor, roomCapacity, type RoomKind } from '@/game/net'
 import { Button } from '@/components/ui/button'
@@ -24,7 +25,7 @@ import {
   Heart, Plane,
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
-  User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X,
+  User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X, Wifi, WifiOff,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
@@ -469,8 +470,10 @@ function rankOf(p: CareerProfile): { label: string; color: string } {
 
 function UserWidget({ onOpen }: { onOpen: () => void }) {
   const user = useAuth(s => s.user)
-  const squadName = useSquad(s => s.name)
-  const squadMembers = useSquad(s => s.members)
+  const netStatus = useNet(s => s.status)
+  const partyName = useParty(s => s.name)
+  const partyActive = useParty(s => s.active)
+  const partyMembers = useParty(s => s.members)
   if (!user) return null
   const p = getProfile()
   const rank = rankOf(p)
@@ -479,7 +482,7 @@ function UserWidget({ onOpen }: { onOpen: () => void }) {
     <button
       onClick={onOpen}
       className="relative flex items-center gap-3 bg-[#0b0e11]/92 border border-stone-700/70 rounded-lg pl-2 pr-4 py-2 shadow-xl hover:border-amber-500/60 transition-colors tac-corner group"
-      title="Career profile · friends & groups"
+      title="Career profile · real friends & squad"
     >
       <span
         className="w-9 h-9 rounded-md flex items-center justify-center font-tac text-sm border shrink-0"
@@ -496,11 +499,14 @@ function UserWidget({ onOpen }: { onOpen: () => void }) {
         <span className="font-tac-md text-[9px] tracking-widest" style={{ color: rank.color }}>
           {rank.label} · K/D {fmtKD(p)}
         </span>
-        {squadMembers.length > 0 && (
-          <span className="font-tac-md text-[9px] text-amber-300/80 block truncate max-w-[130px]">
-            SQUAD: {squadName} ({squadMembers.length})
+        <span className="font-tac-md text-[9px] block truncate max-w-[130px]">
+          <span className={netStatus === 'online' ? 'text-emerald-400' : 'text-stone-600'}>
+            {netStatus === 'online' ? '●' : '○'} NET {netStatus === 'online' ? 'ON' : netStatus === 'connecting' ? '…' : 'OFF'}
           </span>
-        )}
+          {partyActive && partyMembers.length > 0 && (
+            <span className="text-amber-300/80"> · SQUAD {partyMembers.length}</span>
+          )}
+        </span>
       </span>
       <Trophy className="w-3.5 h-3.5 text-stone-600 group-hover:text-amber-300/80 transition-colors" />
     </button>
@@ -515,78 +521,207 @@ function StatCell({ icon, label, value }: { icon: React.ReactNode; label: string
     </div>
   )
 }
+// ============================================================
+// v11 — REAL SQUAD: friends with request/acceptance + parties
+// Real cross-account networking (esnet): you add an operator by
+// their 6-char OPERATOR ID (or exact name if online), they get a
+// request and ACCEPT or decline. Accepted friends show live
+// online status, you build a squad and deploy together — Battle
+// Royale is ALWAYS solos.
+// ============================================================
+function CopyBtn({ value, label }: { value: string; label?: string }) {
+  const [done, setDone] = useState(false)
+  return (
+    <button
+      onClick={() => {
+        try { navigator.clipboard?.writeText(value) } catch { /* older browsers */ }
+        setDone(true)
+        getAudio().uiClick()
+        setTimeout(() => setDone(false), 1600)
+      }}
+      className="font-tac-md text-[10px] tracking-widest rounded px-2.5 py-1.5 border border-stone-600 bg-stone-900 text-stone-300 hover:border-amber-500/60 hover:text-amber-200 transition-colors shrink-0 flex items-center gap-1.5"
+      title={`Copy ${label ?? 'code'}`}
+    >
+      {done ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+      {done ? 'COPIED' : label ?? 'COPY'}
+    </button>
+  )
+}
 
-// ============================================================
-// v10 — SQUAD manager (friends & groups) inside the profile
-// ============================================================
 function SquadSection(): React.ReactElement | null {
   const user = useAuth(s => s.user)
-  const squad = useSquad(s => s.groupId)
-  const squadSet = useSquad(s => s.set)
-  const squadClear = useSquad(s => s.clear)
-  const [friendName, setFriendName] = useState('')
-  const [groupName, setGroupName] = useState('')
-  const [picked, setPicked] = useState<string[]>([])
+  const netStatus = useNet(s => s.status)
+  const friends = useFriends(s => s.friends)
+  const incoming = useFriends(s => s.incoming)
+  const outgoing = useFriends(s => s.outgoing)
+  const partyActive = useParty(s => s.active)
+  const partyName = useParty(s => s.name)
+  const partyLeader = useParty(s => s.leaderOid)
+  const partyMembers = useParty(s => s.members)
+  const [input, setInput] = useState('')
   const [err, setErr] = useState('')
-  const [rev, setRev] = useState(0)
+  const [partyInput, setPartyInput] = useState('')
+  const [partyErr, setPartyErr] = useState('')
   if (!user) return null
-  const p = getProfile()
+  const oid = myOid()
+  const online = netStatus === 'online'
+  const isLeader = partyActive && partyLeader === oid
 
-  const refresh = (): void => { syncSquadFromProfile(); setRev(v => v + 1) }
-
-  const doAddFriend = (): void => {
-    const r = addFriend(friendName)
-    if (!r.ok) { setErr(r.error ?? ''); return }
-    setErr(''); setFriendName('')
-    getAudio().uiClick()
-    refresh()
+  const doAdd = (): void => {
+    const clean = input.trim()
+    if (!clean) return
+    esNet.requestFriend(clean).then(r => {
+      if (!r.ok) { setErr(r.error ?? ''); return }
+      setErr('')
+      setInput('')
+      getAudio().uiClick()
+    })
   }
-  const doCreateGroup = (): void => {
-    const r = createGroup(groupName, picked)
-    if (!r.ok) { setErr(r.error ?? ''); return }
-    setErr(''); setGroupName(''); setPicked([])
+
+  const doInvite = (f: FriendEntryUI): void => {
+    if (!partyActive) {
+      const r = esNet.createParty(partyInput.trim() || `${user}'s squad`)
+      if (!r.ok) { setPartyErr(r.error ?? ''); return }
+    }
+    esNet.inviteToParty(f.oid, partyName || `${user}'s squad`)
+    setPartyInput('')
+    setPartyErr('')
     getAudio().uiClick()
-    refresh()
+  }
+
+  const doCreateParty = (): void => {
+    const r = esNet.createParty(partyInput.trim() || `${user}'s squad`)
+    if (!r.ok) { setPartyErr(r.error ?? ''); return }
+    setPartyErr('')
+    setPartyInput('')
+    getAudio().uiClick()
   }
 
   return (
-    <div className="mt-5 border-t border-stone-800 pt-4 space-y-4" data-rev={rev}>
+    <div className="mt-5 border-t border-stone-800 pt-4 space-y-4">
       <div className="flex items-center justify-between">
-        <h4 className="font-tac-md text-amber-200/90 text-[11px] flex items-center gap-2">
-          <Users className="w-4 h-4" /> SQUAD · FRIENDS &amp; GROUPS
+        <h4 className="font-tac text-amber-200/90 text-[11px] flex items-center gap-2">
+          <Users className="w-4 h-4" /> SQUAD · REAL FRIENDS
         </h4>
-        <span className="font-tac-md text-[9px] text-stone-600">BR is always SOLOS</span>
+        <span className={`font-tac-md text-[9px] flex items-center gap-1.5 ${online ? 'text-emerald-400' : 'text-stone-600'}`}>
+          {online ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+          {online ? 'ONLINE' : netStatus === 'connecting' ? 'CONNECTING…' : 'OFFLINE'}
+        </span>
       </div>
 
-      {/* friends */}
+      {/* my operator code — this is what friends add */}
+      <div className="bg-stone-900/60 border border-stone-800 rounded-md p-3 flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-tac-md text-stone-500 text-[9px] tracking-widest mb-1">YOUR OPERATOR ID — SHARE IT</p>
+          <p className="font-tac text-xl text-amber-200 tracking-[0.32em] tabular-nums">{oid || '——————'}</p>
+        </div>
+        {oid && <CopyBtn value={oid} label="COPY ID" />}
+      </div>
+
+      {/* add friend */}
       <div>
         <div className="flex gap-2 mb-2">
           <Input
-            value={friendName}
-            onChange={e => { setFriendName(e.target.value); setErr('') }}
-            onKeyDown={e => { if (e.key === 'Enter') doAddFriend() }}
-            placeholder="Friend's operator name"
-            maxLength={16}
+            value={input}
+            onChange={e => { setInput(e.target.value); setErr('') }}
+            onKeyDown={e => { if (e.key === 'Enter') doAdd() }}
+            placeholder="Friend's Operator ID (e.g. K7X2M9) or name"
+            maxLength={24}
             className="bg-stone-950/80 border-stone-600 text-white h-9 text-sm"
           />
           <Button
-            onClick={doAddFriend}
-            className="h-9 px-4 bg-stone-100 text-stone-900 hover:bg-amber-200 font-bold text-xs shrink-0"
+            onClick={doAdd}
+            disabled={!online || !input.trim()}
+            className="h-9 px-4 bg-stone-100 text-stone-900 hover:bg-amber-200 font-bold text-xs shrink-0 disabled:opacity-30"
           >
             <UserPlus className="w-3.5 h-3.5 mr-1" /> ADD
           </Button>
         </div>
         {err && <p className="text-red-400 text-[11px] mb-1.5 font-bold">{err}</p>}
-        <div className="flex flex-wrap gap-1.5">
-          {p.friends.length === 0 && (
-            <p className="text-stone-600 text-[11px]">No friends yet — add operators by name to build your squad.</p>
-          )}
-          {p.friends.map(f => (
-            <div key={f} className="flex items-center gap-1.5 bg-stone-900/70 border border-stone-700 rounded pl-2.5 pr-1 py-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              <span className="font-tac-md text-[11px] text-stone-200">{f}</span>
+        {!online && (
+          <p className="text-stone-600 text-[10px] leading-relaxed">
+            The social service connects automatically while you are in the menu — it uses public
+            real-time brokers. If it says OFFLINE, just wait a couple of seconds.
+          </p>
+        )}
+      </div>
+
+      {/* incoming requests — THEY have to be accepted */}
+      {incoming.length > 0 && (
+        <div className="bg-amber-950/30 border border-amber-800/50 rounded-md p-3 space-y-2">
+          <p className="font-tac-md text-amber-200/90 text-[10px] uppercase tracking-widest">
+            Friend requests ({incoming.length}) — waiting for YOUR acceptance
+          </p>
+          {incoming.map(r => (
+            <div key={r.oid} className="flex items-center gap-2 bg-stone-950/70 border border-stone-700 rounded px-2.5 py-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              <span className="font-tac-md text-[11px] text-stone-200 flex-1 truncate">{r.name}</span>
+              <span className="font-tac-md text-[9px] text-stone-600">{r.oid}</span>
               <button
-                onClick={() => { removeFriend(f); refresh() }}
+                onClick={() => { esNet.acceptFriend(r.oid); getAudio().uiClick() }}
+                className="font-tac-md text-[10px] rounded px-2.5 py-1 border bg-emerald-500/80 border-emerald-400 text-stone-950 font-bold hover:bg-emerald-400"
+              >
+                ACCEPT
+              </button>
+              <button
+                onClick={() => { esNet.rejectFriend(r.oid); getAudio().uiClick() }}
+                className="font-tac-md text-[10px] rounded px-2.5 py-1 border border-stone-600 bg-stone-900 text-stone-300 hover:border-red-500/60 hover:text-red-300"
+              >
+                DECLINE
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* outgoing pending */}
+      {outgoing.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="font-tac-md text-stone-500 text-[9px] uppercase tracking-widest">Sent — pending their acceptance</p>
+          {outgoing.map(r => (
+            <div key={r.oid} className="flex items-center gap-2 bg-stone-900/70 border border-stone-800 rounded px-2.5 py-1.5">
+              <Loader2 className="w-3 h-3 text-stone-500 animate-spin" />
+              <span className="font-tac-md text-[11px] text-stone-300 flex-1 truncate">{r.name}</span>
+              <span className="font-tac-md text-[9px] text-stone-600">{r.oid}</span>
+              <button
+                onClick={() => { esNet.cancelRequest(r.oid); getAudio().uiClick() }}
+                className="text-stone-600 hover:text-red-300 transition-colors p-0.5"
+                title="Cancel request"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* friends — with LIVE presence */}
+      <div>
+        <p className="font-tac-md text-stone-500 text-[9px] uppercase tracking-widest mb-2">
+          Friends ({friends.length})
+        </p>
+        {friends.length === 0 && (
+          <p className="text-stone-600 text-[11px] leading-relaxed">
+            No friends yet. Share your Operator ID, or add theirs — the request arrives on
+            their screen and they must <b className="text-stone-400">accept</b> it.
+          </p>
+        )}
+        <div className="grid sm:grid-cols-2 gap-1.5">
+          {friends.map(f => (
+            <div key={f.oid} className="flex items-center gap-2 bg-stone-900/70 border border-stone-700 rounded pl-2.5 pr-1 py-1">
+              <span className={`w-1.5 h-1.5 rounded-full ${f.online ? 'bg-emerald-400 animate-pulse' : 'bg-stone-600'}`} />
+              <span className="font-tac-md text-[11px] text-stone-200 truncate flex-1">{f.name}</span>
+              {isLeader && f.online && (
+                <button
+                  onClick={() => doInvite(f)}
+                  className="font-tac-md text-[9px] rounded px-2 py-0.5 border border-amber-600/60 bg-amber-500/10 text-amber-200 hover:bg-amber-500/25"
+                  title="Invite to squad"
+                >
+                  INVITE
+                </button>
+              )}
+              <button
+                onClick={() => { esNet.removeFriend(f.oid); getAudio().uiClick() }}
                 className="text-stone-600 hover:text-red-300 transition-colors p-0.5"
                 title="Remove friend"
               >
@@ -597,116 +732,71 @@ function SquadSection(): React.ReactElement | null {
         </div>
       </div>
 
-      {/* create group */}
-      {p.friends.length > 0 && (
-        <div className="bg-stone-900/50 border border-stone-800 rounded-md p-3.5 space-y-2.5">
-          <p className="font-tac-md text-stone-400 text-[10px] uppercase tracking-widest">Create group</p>
-          <div className="flex gap-2">
-            <Input
-              value={groupName}
-              onChange={e => { setGroupName(e.target.value); setErr('') }}
-              placeholder="Group name (e.g. Night Owls)"
-              maxLength={22}
-              className="bg-stone-950/80 border-stone-600 text-white h-9 text-sm"
-            />
-            <Button
-              onClick={doCreateGroup}
-              disabled={picked.length === 0}
-              className="h-9 px-4 bg-emerald-500/90 text-stone-950 hover:bg-emerald-400 font-bold text-xs shrink-0 disabled:opacity-30"
-            >
-              CREATE
-            </Button>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {p.friends.map(f => {
-              const on = picked.includes(f)
-              return (
-                <button
-                  key={f}
-                  onClick={() => setPicked(on ? picked.filter(x => x !== f) : [...picked, f])}
-                  className={`font-tac-md text-[11px] rounded px-2.5 py-1 border transition-colors ${
-                    on ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-200' : 'bg-stone-950/60 border-stone-700 text-stone-400 hover:text-stone-200'
-                  }`}
-                >
-                  {f}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* groups */}
-      {p.groups.length > 0 && (
-        <div className="space-y-2">
-          {p.groups.map((g: SquadGroup) => {
-            const active = squad === g.id
-            return (
-              <div
-                key={g.id}
-                className={`rounded-md border p-3 ${active ? 'border-amber-500/60 bg-amber-500/[0.06]' : 'border-stone-800 bg-stone-950/60'}`}
+      {/* squad / party */}
+      <div className="bg-stone-900/50 border border-stone-800 rounded-md p-3.5 space-y-2.5">
+        {!partyActive ? (
+          <>
+            <p className="font-tac-md text-stone-400 text-[10px] uppercase tracking-widest">Create squad</p>
+            <div className="flex gap-2">
+              <Input
+                value={partyInput}
+                onChange={e => { setPartyInput(e.target.value); setPartyErr('') }}
+                placeholder="Squad name (e.g. Night Owls)"
+                maxLength={22}
+                onKeyDown={e => { if (e.key === 'Enter') doCreateParty() }}
+                className="bg-stone-950/80 border-stone-600 text-white h-9 text-sm"
+              />
+              <Button
+                onClick={doCreateParty}
+                disabled={!online}
+                className="h-9 px-4 bg-emerald-500/90 text-stone-950 hover:bg-emerald-400 font-bold text-xs shrink-0 disabled:opacity-30"
               >
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Users className={`w-4 h-4 shrink-0 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
-                    <span className="font-tac-md text-[12px] text-stone-100 truncate">{g.name}</span>
-                    <span className="font-tac-md text-[9px] text-stone-600 shrink-0">{g.members.length}/9</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      onClick={() => {
-                        if (active) squadClear()
-                        else squadSet({ groupId: g.id, name: g.name, members: [...g.members] })
-                        getAudio().uiClick()
-                      }}
-                      className={`font-tac-md text-[10px] tracking-widest rounded px-2.5 py-1 border transition-colors ${
-                        active
-                          ? 'bg-amber-500/20 border-amber-400/70 text-amber-200'
-                          : 'bg-stone-900 border-stone-700 text-stone-300 hover:border-amber-500/60 hover:text-amber-200'
-                      }`}
-                    >
-                      {active ? '★ ACTIVE' : 'DEPLOY WITH'}
-                    </button>
-                    <button
-                      onClick={() => { deleteGroup(g.id); refresh() }}
-                      className="text-stone-600 hover:text-red-300 transition-colors p-1"
-                      title="Delete group"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {g.members.map(m => (
-                    <button
-                      key={m}
-                      onClick={() => { toggleGroupMember(g.id, m); refresh() }}
-                      className={`font-tac-md text-[11px] rounded px-2 py-0.5 border transition-colors ${
-                        active ? 'bg-stone-950/70 border-stone-700 text-stone-300' : 'bg-stone-900/70 border-stone-700 text-stone-400'
-                      } hover:border-red-400/50 hover:text-red-200`}
-                      title="Toggle member"
-                    >
-                      {m} ×
-                    </button>
-                  ))}
-                  {g.members.length === 0 && (
-                    <span className="text-stone-600 text-[10px]">Empty group — pick members from your friends above.</span>
-                  )}
-                </div>
+                CREATE
+              </Button>
+            </div>
+            {partyErr && <p className="text-red-400 text-[11px] font-bold">{partyErr}</p>}
+            <p className="text-stone-600 text-[10px] leading-relaxed">
+              Invite online friends — they get a live invite and join. When you (leader) create an
+              online room, the whole squad auto-joins it.
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Users className="w-4 h-4 text-amber-300 shrink-0" />
+                <span className="font-tac-md text-[12px] text-stone-100 truncate">{partyName}</span>
+                <span className="font-tac-md text-[9px] text-stone-600 shrink-0">{partyMembers.length}/5</span>
               </div>
-            )
-          })}
-        </div>
-      )}
-
-      <p className="text-stone-600 text-[10px] leading-relaxed">
-        Set a group <b className="text-amber-200/80">ACTIVE</b> and it deploys with you in EVERY mode (team
-        deathmatch, FFA, capture the flag, domination and the campaign): your friends fight at your side as
-        named operators. <b className="text-stone-300">Battle Royale is always solos</b> — the squad waits at the menu.
-      </p>
+              <button
+                onClick={() => { esNet.leaveParty(); getAudio().uiClick() }}
+                className="font-tac-md text-[10px] rounded px-2.5 py-1 border border-stone-600 bg-stone-900 text-stone-300 hover:border-red-500/60 hover:text-red-200"
+              >
+                {isLeader ? 'DISBAND' : 'LEAVE'}
+              </button>
+            </div>
+            <div className="space-y-1">
+              {partyMembers.map((m: PartyMemberUI) => (
+                <div key={m.u} className="flex items-center gap-2 bg-stone-950/70 border border-stone-800 rounded px-2.5 py-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span className="font-tac-md text-[11px] text-stone-200 flex-1 truncate">{m.n}</span>
+                  {m.leader ? <Crown className="w-3 h-3 text-amber-300" /> : null}
+                  {m.u === oid && <span className="text-amber-300/70 text-[9px] font-tac-md">(YOU)</span>}
+                </div>
+              ))}
+            </div>
+            <p className="text-stone-600 text-[10px] leading-relaxed">
+              {isLeader
+                ? 'Create a room in the DEPLOY tab — your squad auto-joins with the code. Battle Royale is ALWAYS solos.'
+                : 'Waiting for the leader to deploy… Battle Royale is ALWAYS solos.'}
+            </p>
+          </>
+        )}
+      </div>
     </div>
   )
 }
+
 
 function ProfileModal({ onClose }: { onClose: () => void }) {
   const user = useAuth(s => s.user)
@@ -787,6 +877,78 @@ function ProfileModal({ onClose }: { onClose: () => void }) {
 }
 
 // ============================================================
+// v11 — NET TOASTS: friend requests + squad invites anywhere
+// ============================================================
+export function NetToasts() {
+  const toasts = useNetToasts(s => s.toasts)
+  const drop = useNetToasts(s => s.drop)
+  if (toasts.length === 0) return null
+  return (
+    <div className="fixed top-4 right-4 z-[90] space-y-2 w-[min(320px,90vw)] pointer-events-none">
+      {toasts.map(t => (
+        <div
+          key={t.id}
+          className={`pointer-events-auto rounded-lg border px-4 py-3 shadow-2xl backdrop-blur-md tac-corner ${
+            t.kind === 'freq'
+              ? 'bg-amber-950/90 border-amber-700/70'
+              : t.kind === 'pinvite'
+                ? 'bg-emerald-950/90 border-emerald-700/70'
+                : t.kind === 'error'
+                  ? 'bg-red-950/90 border-red-800/70'
+                  : 'bg-stone-950/90 border-stone-700/70'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-tac text-[12px] tracking-[0.18em] text-amber-200 uppercase">{t.title}</p>
+              {t.body && <p className="text-stone-300 text-[11px] mt-1 leading-snug">{t.body}</p>}
+            </div>
+            <button
+              onClick={() => drop(t.id)}
+              className="text-stone-500 hover:text-stone-200 transition-colors shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {t.kind === 'freq' && t.oid && (
+            <div className="flex gap-2 mt-2.5">
+              <button
+                onClick={() => { esNet.acceptFriend(t.oid!); drop(t.id); getAudio().uiClick() }}
+                className="font-tac-md text-[10px] rounded px-3 py-1.5 border bg-emerald-500/80 border-emerald-400 text-stone-950 font-bold hover:bg-emerald-400"
+              >
+                ACCEPT
+              </button>
+              <button
+                onClick={() => { esNet.rejectFriend(t.oid!); drop(t.id); getAudio().uiClick() }}
+                className="font-tac-md text-[10px] rounded px-3 py-1.5 border border-stone-600 bg-stone-900 text-stone-300 hover:border-red-500/60 hover:text-red-300"
+              >
+                DECLINE
+              </button>
+            </div>
+          )}
+          {t.kind === 'pinvite' && t.gid && (
+            <div className="flex gap-2 mt-2.5">
+              <button
+                onClick={() => { esNet.joinParty(t.gid!, t.from); drop(t.id); getAudio().uiClick() }}
+                className="font-tac-md text-[10px] rounded px-3 py-1.5 border bg-emerald-500/80 border-emerald-400 text-stone-950 font-bold hover:bg-emerald-400"
+              >
+                JOIN SQUAD
+              </button>
+              <button
+                onClick={() => drop(t.id)}
+                className="font-tac-md text-[10px] rounded px-3 py-1.5 border border-stone-600 bg-stone-900 text-stone-300 hover:border-red-500/60 hover:text-red-300"
+              >
+                NOT NOW
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ============================================================
 // Main menu — tactical tabs
 // ============================================================
 type MenuTab = 'deploy' | 'story' | 'br' | 'controls' | 'settings' | 'info'
@@ -798,8 +960,7 @@ export function MainMenu() {
   const setHud = useGame(s => s.setHud)
   const authUser = useAuth(s => s.user)
   const brSet = useBr(s => s.set)
-  const squadName = useSquad(s => s.name)
-  const squadMembers = useSquad(s => s.members)
+  const partyActive = useParty(s => s.active)
   const [profileOpen, setProfileOpen] = useState(false)
   const [tab, setTab] = useState<MenuTab>('deploy')
   const [name, setName] = useState('')
@@ -814,6 +975,32 @@ export function MainMenu() {
   const [fillEmpty, setFillEmpty] = useState(true)
   // co-op campaign (join code)
   const [coopCode, setCoopCode] = useState('')
+  // v11: the squad leader opened a room → auto-join with the shared code
+  const squadRoomCode = useParty(s => s.roomCode)
+  const squadRoomKind = useParty(s => s.roomKind)
+  useEffect(() => {
+    if (!squadRoomCode || phase !== 'menu') return
+    useParty.getState().clearRoom()
+    const n = (name.trim() || authUser || 'Operator').slice(0, 16)
+    setPlayerName(n)
+    setHud({
+      mode: 'guest',
+      roomCode: squadRoomCode,
+      botDifficulty: 'normal',
+      fillBots: 0,
+      gameMode: 'escaramuza',
+      roomKind: (squadRoomKind as RoomKind) || '2v2',
+      fillEmptyWithBots: true,
+      lobby: null,
+      netStatus: 'connecting',
+      netError: '',
+      story: {
+        active: false, chapter: 0, chapterTitle: '', objective: '', progress: '', hint: '',
+        timer: 0, dialogue: null, status: 'playing', stats: { time: 0, kills: 0 },
+      },
+    })
+    useGame.getState().setPhase('connecting')
+  }, [squadRoomCode, phase])
 
   if (phase !== 'menu') return null
 
@@ -1065,26 +1252,26 @@ export function MainMenu() {
                   </div>
                 )}
 
-                {/* v10: escuadra activa (grupo de amigos) */}
+                {/* v11: REAL squad — online friends auto-join your room */}
                 {mode !== 'guest' && (
                   <div className={`rounded-lg border p-3 flex items-center gap-3 tac-corner ${
-                    squadMembers.length > 0
+                    partyActive
                       ? 'border-amber-500/50 bg-amber-500/[0.05]'
                       : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
                   }`}>
                     <div className={`w-10 h-10 rounded-md border flex items-center justify-center shrink-0 ${
-                      squadMembers.length > 0 ? 'border-amber-700/50 bg-amber-950/40' : 'border-stone-700 bg-stone-900'
+                      partyActive ? 'border-amber-700/50 bg-amber-950/40' : 'border-stone-700 bg-stone-900'
                     }`}>
-                      <Users className={`w-5 h-5 ${squadMembers.length > 0 ? 'text-amber-300' : 'text-stone-500'}`} />
+                      <Users className={`w-5 h-5 ${partyActive ? 'text-amber-300' : 'text-stone-500'}`} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className={`font-tac-md text-[11px] ${squadMembers.length > 0 ? 'text-white' : 'text-stone-300'}`}>
-                        {squadMembers.length > 0 ? `SQUAD "${squadName}" — deploying with you` : 'NO ACTIVE SQUAD'}
+                      <div className={`font-tac-md text-[11px] ${partyActive ? 'text-white' : 'text-stone-300'}`}>
+                        {partyActive ? 'REAL SQUAD — they auto-join your room' : 'NO ACTIVE SQUAD'}
                       </div>
                       <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
-                        {squadMembers.length > 0
-                          ? `${squadMembers.join(' · ')} join your side in every mode — Battle Royale stays SOLOS`
-                          : 'Add friends and create groups in your profile (top right) to deploy together'}
+                        {partyActive
+                          ? 'Accepted friends join live through the network — Battle Royale stays SOLOS'
+                          : 'Add operators by their ID in your profile (top right); they accept and join your squad'}
                       </div>
                     </div>
                     <button
@@ -1305,8 +1492,8 @@ export function MainMenu() {
                     <b className="text-amber-200"> LAST OPERATOR STANDING</b>.
                   </p>
                   <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3 font-tac-md text-[10px] text-stone-500">
-                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 20 players (bots fill)</span>
-                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 60 s matchmaking</span>
+                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 20 operators (bots fill AFTER)</span>
+                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 60 s countdown at 4 REAL</span>
                     <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> 280×280 m island</span>
                     <span className="flex items-center gap-1.5"><Wind className="w-3.5 h-3.5 text-amber-300/70" /> Storm damage</span>
                   </div>
@@ -1317,7 +1504,7 @@ export function MainMenu() {
                     <Plane className="w-3.5 h-3.5" /> How a match flows
                   </h4>
                   <ol className="space-y-2 text-stone-400 text-xs leading-relaxed">
-                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">01</span> Matchmaking on the lobby island — the countdown starts once 4 players are connected.</li>
+                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">01</span> Matchmaking on the lobby island — <b className="text-stone-300">4 REAL operators</b> connected start the 60 s countdown. Bots never trigger it; they only fill to 20 after it.</li>
                     <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">02</span> Board the plane, pick your drop with <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">SPACE</kbd> and glide down.</li>
                     <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">03</span> Loot weapons, drive vehicles, fight inside the shrinking storm circle — press <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">T</kbd> to chat.</li>
                     <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">04</span> Survive everyone — the storm does not forgive. #1 or nothing.</li>
@@ -1361,6 +1548,7 @@ export function MainMenu() {
                     getAudio().uiClick()
                     brSet({
                       active: true,
+                      practice: false,
                       phase: 'queue',
                       queuePlayers: [],
                       countdown: 0,
@@ -1370,8 +1558,9 @@ export function MainMenu() {
                       placement: 0,
                       hp: 100,
                       qualityNote: '',
-                      loadingMap: true,
+                      loadingMap: false,
                       weaponRarity: -1,
+                      netStatus: 'connecting',
                     })
                   }}
                   className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
@@ -1381,6 +1570,37 @@ export function MainMenu() {
                   <Rocket className="w-5 h-5" />
                   Find match
                   <ChevronRight className="w-5 h-5 opacity-60 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+                <p className="font-tac-md text-[10px] text-stone-500 leading-relaxed text-center">
+                  REAL matchmaking — you will drop with actual operators (invite friends or share the page).
+                  {partyActive ? ' Battle Royale is ALWAYS solos — your squad waits at the menu.' : ''}
+                </p>
+                <button
+                  onClick={() => {
+                    getAudio().uiClick()
+                    brSet({
+                      active: true,
+                      practice: true,
+                      phase: 'queue',
+                      queuePlayers: [],
+                      countdown: 0,
+                      countdownActive: false,
+                      alive: 0,
+                      kills: 0,
+                      placement: 0,
+                      hp: 100,
+                      qualityNote: '',
+                      loadingMap: false,
+                      weaponRarity: -1,
+                      netStatus: 'offline',
+                    })
+                  }}
+                  className="group w-full h-11 rounded-md font-tac text-sm tracking-[0.24em] uppercase transition-all
+                    bg-stone-900 border border-stone-600 text-stone-300 hover:border-amber-500/50 hover:text-amber-200
+                    flex items-center justify-center gap-2.5"
+                >
+                  <Bot className="w-4 h-4" />
+                  Practice vs bots (offline)
                 </button>
               </div>
 
@@ -1551,20 +1771,23 @@ export function ConnectingScreen() {
   }
 
   // v9: lobby generalizado — 1v1..5v5 por equipos o CO-OP (5 en ÁMBAR)
-  const isCoop = roomKind === 'coop'
-  const inRoomLobby = roomKind !== '1v1' && netStatus === 'waiting' && lobby
+  // v11.2: the lobby's kind (sent by the host) wins over the local guess —
+  // guests joining a team room used to see a plain loading screen
+  const lobbyKind = lobby?.kind ?? roomKind
+  const isCoop = lobbyKind === 'coop'
+  const inRoomLobby = lobbyKind !== '1v1' && netStatus === 'waiting' && lobby
   const roomPlayers = lobby?.players ?? []
-  const capacity = roomCapacity(roomKind)
+  const capacity = roomCapacity(lobbyKind)
   const humans = roomPlayers.length
   // huecos a mostrar: en coop 5 (anfitrión + p2..p5, todos ÁMBAR);
   // en NvN, el anfitrión + huecos por equipo
   const slotIds = isCoop
     ? ['p1', 'p2', 'p3', 'p4', 'p5']
-    : ['p1', ...teamSlotsFor(roomKind).map(s => s.id)]
+    : ['p1', ...teamSlotsFor(lobbyKind).map(s => s.id)]
   const slotTeam = (id: string): 'A' | 'B' => {
     if (isCoop) return 'A'
     if (id === 'p1') return 'A'
-    return teamSlotsFor(roomKind).find(s => s.id === id)?.team ?? 'B'
+    return teamSlotsFor(lobbyKind).find(s => s.id === id)?.team ?? 'B'
   }
   const slotFor = (id: string) => {
     const p = roomPlayers.find(x => x.id === id)

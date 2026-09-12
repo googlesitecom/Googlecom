@@ -11,13 +11,16 @@ import { useBr, BR_RARITIES } from '@/game/br-store'
 import { getBrGame } from '@/game/br-instance'
 import { Button } from '@/components/ui/button'
 import { ChatBox } from './chat-box'
+import { KeybindsPanel, SettingsPanel, InfoPanel } from './menus'
+import { useAuth } from '@/game/auth'
 import {
-  Users, Skull, Wind, Rocket, Crosshair, Plane, Heart, LogOut, Crown,
-  Timer, Gauge, Loader2, Eye, Car,
+  Users, Skull, Wind, Rocket, Plane, Heart, LogOut, Crown,
+  Timer, Gauge, Loader2, Eye, Car, Keyboard, Settings, Info, Play,
 } from 'lucide-react'
 
 export function BrHud() {
   const phase = useBr(s => s.phase)
+  const paused = useBr(s => s.paused)
   const [locked, setLocked] = useState(false)
   const [hurt, setHurt] = useState(0)
 
@@ -50,10 +53,13 @@ export function BrHud() {
       {phase === 'dead' && <DeathScreen />}
       {phase === 'victory' && <VictoryScreen />}
 
+      {/* v11.2: ESC pause menu — the SAME menu as the normal modes */}
+      {paused && <BrPauseMenu />}
+
       {/* click to (re)take control while the match is interactive
        *  (v9.1: solo en aviso/partida — en cola la QueueOverlay ya cubre
        *  todo y el jugador aún no controla nada) */}
-      {!locked && (phase === 'plane' || phase === 'live') && (
+      {!locked && !paused && (phase === 'plane' || phase === 'live') && (
         <div
           className="absolute inset-0 z-40 flex items-center justify-center bg-black/55 cursor-pointer pointer-events-auto"
           onClick={() => getBrGame()?.requestLock()}
@@ -64,7 +70,7 @@ export function BrHud() {
             </p>
             <p className="text-stone-300 text-lg">Click to take control</p>
             <p className="text-stone-500 text-sm font-tac-md">
-              WASD move · SPACE jump / drop · E interact · R reload · ESC mouse
+              WASD move · SHIFT sprint · CTRL crouch · RMB aim · R reload · E interact · T chat · ESC menu
             </p>
             <Button
               onClick={e => { e.stopPropagation(); getBrGame()?.leave() }}
@@ -84,57 +90,107 @@ export function BrHud() {
 // MATCHMAKING (lobby island)
 // ------------------------------------------------------------
 function QueueOverlay({ locked }: { locked: boolean }) {
+  const user = useAuth(s => s.user)
   const players = useBr(s => s.queuePlayers)
   const countdownActive = useBr(s => s.countdownActive)
   const countdown = useBr(s => s.countdown)
   const loadingMap = useBr(s => s.loadingMap)
   const qualityNote = useBr(s => s.qualityNote)
+  // v11: REAL matchmaking state
+  const netStatus = useBr(s => s.netStatus)
+  const practice = useBr(s => s.practice)
+  const real = players.length
 
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 px-4"
       style={{ background: locked ? 'transparent' : 'rgba(3,5,7,0.25)' }}>
       <div className="text-center">
-        <p className="font-tac text-white text-2xl tracking-[0.3em] uppercase">Battle Royale · Matchmaking</p>
+        <p className="font-tac text-white text-2xl tracking-[0.3em] uppercase">
+          Battle Royale · {practice ? 'Practice' : 'Matchmaking'}
+        </p>
         <p className="font-tac-md text-stone-400 text-[11px] mt-1.5">
-          Waiting on the lobby island — the match starts once the countdown ends
+          {practice
+            ? 'Offline warmup — you vs 19 bots, no ranking'
+            : 'Waiting on the lobby island for REAL operators'}
         </p>
       </div>
 
-      {countdownActive ? (
+      {!practice && netStatus !== 'online' && !countdownActive ? (
+        <div className="bg-stone-950/85 border border-red-900/60 rounded-xl px-8 py-5 text-center shadow-2xl tac-corner space-y-3">
+          <p className="font-tac text-red-300 text-lg tracking-widest">
+            {netStatus === 'connecting' ? 'CONNECTING TO THE ONLINE SERVICE…' : 'ONLINE SERVICE UNAVAILABLE'}
+          </p>
+          <p className="font-tac-md text-stone-500 text-[10px] max-w-[380px] leading-relaxed">
+            Battle Royale matchmaking needs the live network (public real-time brokers). Bots never
+            count as connected operators — the countdown only starts with 4 REAL ones.
+          </p>
+          <div className="flex items-center justify-center gap-2.5">
+            <Button
+              onClick={() => getBrGame()?.retryNet()}
+              className="h-9 px-5 font-tac-md text-[11px] bg-amber-400 text-stone-950 hover:bg-amber-300 font-bold"
+            >
+              <Loader2 className="w-3.5 h-3.5 mr-1.5" /> RETRY
+            </Button>
+            <Button
+              onClick={() => getBrGame()?.beginPractice()}
+              variant="secondary"
+              className="h-9 px-5 font-tac-md text-[11px] bg-stone-900 border border-stone-600 text-stone-300 hover:bg-stone-800"
+            >
+              PRACTICE VS BOTS
+            </Button>
+          </div>
+        </div>
+      ) : countdownActive ? (
         <div className="bg-stone-950/85 border-2 border-amber-500/70 rounded-xl px-10 py-5 text-center shadow-2xl tac-corner">
           <p className="font-tac-md text-amber-200/80 text-[11px] tracking-[0.3em]">DEPLOYING IN</p>
           <p className="font-tac text-amber-200 text-6xl tabular-nums leading-none mt-1.5">{countdown}</p>
           <p className="font-tac-md text-stone-500 text-[10px] mt-2">
-            {players.length} OPERATORS ONLINE · room fills to 20 with bots
+            {real} OPERATORS LOCKED · room fills to 20 with bots
           </p>
         </div>
       ) : (
         <div className="bg-stone-950/85 border border-stone-700/70 rounded-xl px-8 py-4 flex items-center gap-4 shadow-xl">
-          <Loader2 className="w-6 h-6 text-amber-300 animate-spin" />
+          {netStatus === 'connecting' || netStatus === 'offline' ? (
+            <Loader2 className="w-6 h-6 text-amber-300 animate-spin" />
+          ) : (
+            <Users className="w-6 h-6 text-emerald-400" />
+          )}
           <div>
-            <p className="font-tac text-white text-lg tracking-widest">CONNECTING OPERATORS</p>
+            <p className="font-tac text-white text-lg tracking-widest">
+              {practice ? 'PRACTICE MATCH' : 'WAITING FOR REAL OPERATORS'}
+            </p>
             <p className="font-tac-md text-stone-400 text-[11px] mt-0.5">
-              {players.length}/4 OPERATORS ONLINE — the 60-second countdown starts at 4
+              {practice
+                ? 'Deploying in a moment — gliding into the island'
+                : `${real}/4 REAL OPERATORS — the 60-second countdown starts at 4 (bots never count)`}
             </p>
           </div>
         </div>
       )}
 
-      {/* connected operators */}
-      <div className="w-[min(430px,92vw)] bg-stone-950/70 border border-stone-800 rounded-lg p-3">
-        <p className="font-tac-md text-stone-500 text-[10px] mb-2 flex items-center gap-2">
-          <Users className="w-3.5 h-3.5" /> OPERATORS ONLINE — {players.length}
-        </p>
-        <div className="grid grid-cols-2 gap-1.5">
-          {players.map((p, i) => (
-            <div key={`${p.name}-${i}`} className="font-tac-md text-[11px] text-stone-300 bg-stone-900/70 rounded px-2.5 py-1 flex items-center gap-2">
-              <span className={`w-1.5 h-1.5 rounded-full ${p.real ? 'bg-emerald-400' : 'bg-stone-600'}`} />
-              {p.name}
-              {i === 0 && <span className="text-amber-300/70 text-[9px]">(YOU)</span>}
-            </div>
-          ))}
+      {/* connected REAL operators */}
+      {!practice && (
+        <div className="w-[min(430px,92vw)] bg-stone-950/70 border border-stone-800 rounded-lg p-3">
+          <p className="font-tac-md text-stone-500 text-[10px] mb-2 flex items-center gap-2">
+            <Users className="w-3.5 h-3.5" /> REAL OPERATORS CONNECTED — {real}
+          </p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {players.map((p, i) => (
+              <div key={`${p.name}-${i}`} className="font-tac-md text-[11px] text-stone-300 bg-stone-900/70 rounded px-2.5 py-1 flex items-center gap-2">
+                <span className={`w-1.5 h-1.5 rounded-full ${p.real ? 'bg-emerald-400' : 'bg-stone-600'}`} />
+                <span className="truncate">{p.name}</span>
+                {p.name === user && <span className="text-amber-300/70 text-[9px] shrink-0">(YOU)</span>}
+              </div>
+            ))}
+          </div>
+          {real < 4 && (
+            <p className="font-tac-md text-stone-600 text-[10px] mt-2.5 leading-relaxed">
+              Tip: invite friends from your profile (they must ACCEPT), or open the page in another
+              browser/device and log in with another operator — each one counts.
+            </p>
+          )}
         </div>
-      </div>
+      )}
 
       {loadingMap && (
         <p className="font-tac-md text-stone-500 text-[10px] flex items-center gap-2">
@@ -170,6 +226,9 @@ function PlaneHint({ locked }: { locked: boolean }) {
         <p className="font-tac-md text-stone-400 text-[11px] mt-1.5">
           {locked ? 'WASD steers the freefall · the glider opens near the ground' : 'Click to take control, then SPACE'}
         </p>
+        <p className="font-tac-md text-stone-600 text-[10px] mt-1">
+          SHIFT sprint · CTRL crouch · RMB aim · R reload · E interact · T chat · ESC menu
+        </p>
       </div>
     </div>
   )
@@ -196,6 +255,7 @@ function LiveHud() {
   const showCrosshair = phase === 'live' && !inVehicle
   // v10: rareza estilo Fortnite del arma equipada
   const rar = weaponRarity >= 0 && weaponRarity < BR_RARITIES.length ? BR_RARITIES[weaponRarity] : null
+  const scope = useBr(s => s.scope)
 
   return (
     <>
@@ -238,12 +298,12 @@ function LiveHud() {
         ))}
       </div>
 
-      {/* crosshair */}
-      {showCrosshair && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-          <Crosshair className="w-5 h-5 text-stone-100/90" strokeWidth={1.4} />
-        </div>
-      )}
+      {/* v11.2: sniper scope (ADS on the FR-338) */}
+      {scope && phase === 'live' && <SniperScope />}
+
+      {/* v11.2: dynamic crosshair — same spread language as the normal modes */}
+      {showCrosshair && !scope && <DynamicCrosshair />}
+      {showCrosshair && <HitMarker />}
 
       {/* interaction hint */}
       {hint && phase === 'live' && !inVehicle && (
@@ -307,6 +367,143 @@ function LiveHud() {
 }
 
 const clampBar = (v: number): number => Math.max(0, Math.min(100, v))
+
+// ------------------------------------------------------------
+// v11.2 — DYNAMIC CROSSHAIR (spread-driven, like the normal modes)
+// ------------------------------------------------------------
+function DynamicCrosshair() {
+  const spread = useBr(s => s.spread)
+  const gap = Math.round(4 + spread * 2.4)
+  const arm = 7
+  const color = 'rgba(245,245,240,0.92)'
+  return (
+    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+      <div className="relative" style={{ width: 2, height: 2 }}>
+        {/* dot */}
+        <span className="absolute rounded-full" style={{ width: 2, height: 2, background: color, left: 0, top: 0 }} />
+        {[0, 90, 180, 270].map(deg => (
+          <span
+            key={deg}
+            className="absolute"
+            style={{
+              width: deg % 180 === 0 ? 2 : arm,
+              height: deg % 180 === 0 ? arm : 2,
+              background: color,
+              left: deg % 180 === 0 ? 0 : deg === 90 ? gap + 1 : -(gap + arm + 1),
+              top: deg % 180 === 0 ? (deg === 180 ? gap + 1 : -(gap + arm + 1)) : 0,
+              transition: 'left 90ms linear, top 90ms linear',
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** v11.2: hitmarker — X flash on every confirmed hit (headshots in red).
+ *  Pure CSS replay keyed by the hit timestamp (no state churn). */
+function HitMarker() {
+  const hitAt = useBr(s => s.hitAt)
+  const hitHead = useBr(s => s.hitHead)
+  if (!hitAt) return null
+  const color = hitHead ? '#ff5555' : '#f5f5f0'
+  return (
+    <div
+      key={hitAt}
+      className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+      style={{ animation: 'brHit 220ms ease-out forwards' }}
+    >
+      {[45, 135, 225, 315].map(deg => (
+        <span
+          key={deg}
+          className="absolute"
+          style={{
+            width: 10, height: 2, background: color,
+            transform: `rotate(${deg}deg) translate(9px, 0)`,
+            transformOrigin: '0 0',
+          }}
+        />
+      ))}
+      <style>{`@keyframes brHit { from { opacity: 1 } to { opacity: 0 } }`}</style>
+    </div>
+  )
+}
+
+/** v11.2: sniper scope overlay while aiming the FR-338 */
+function SniperScope() {
+  return (
+    <div className="absolute inset-0 pointer-events-none">
+      <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 50%, transparent 26%, rgba(0,0,0,0.97) 33%)' }} />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" style={{ width: 2, height: '46vh', background: 'rgba(20,20,20,0.85)' }} />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" style={{ height: 2, width: '46vh', background: 'rgba(20,20,20,0.85)' }} />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ width: 6, height: 6, background: '#d64545' }} />
+    </div>
+  )
+}
+
+// ------------------------------------------------------------
+// v11.2 — BR PAUSE MENU (the same menu as the normal modes)
+// ------------------------------------------------------------
+type BrPauseTab = 'controls' | 'settings' | 'info'
+
+function BrPauseMenu() {
+  const [tab, setTab] = useState<BrPauseTab>('controls')
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto"
+      style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
+      <div className="w-[min(880px,94vw)] max-h-[92vh] overflow-y-auto bg-[#0b0e11]/97 border border-stone-800 shadow-2xl rounded-xl">
+        <div className="px-5 sm:px-7 pt-5 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-tac text-2xl tracking-[0.2em] text-white uppercase">
+            Game <span className="text-amber-300">paused</span>
+          </h2>
+          <Button
+            onClick={() => getBrGame()?.requestLock()}
+            className="h-11 px-6 bg-stone-100 text-stone-900 font-bold tracking-widest uppercase hover:bg-amber-200"
+          >
+            <Play className="w-4 h-4 mr-2" /> Resume
+          </Button>
+        </div>
+
+        <div className="px-5 sm:px-7 pt-4 flex gap-1 border-b border-stone-800">
+          <button
+            onClick={() => setTab('controls')}
+            className={`flex items-center gap-1.5 px-3 py-2 font-tac-md text-[11px] tracking-widest uppercase border-b-2 transition-colors ${tab === 'controls' ? 'border-amber-400 text-amber-200' : 'border-transparent text-stone-500 hover:text-stone-300'}`}
+          >
+            <Keyboard className="w-3.5 h-3.5" /> Controls
+          </button>
+          <button
+            onClick={() => setTab('settings')}
+            className={`flex items-center gap-1.5 px-3 py-2 font-tac-md text-[11px] tracking-widest uppercase border-b-2 transition-colors ${tab === 'settings' ? 'border-amber-400 text-amber-200' : 'border-transparent text-stone-500 hover:text-stone-300'}`}
+          >
+            <Settings className="w-3.5 h-3.5" /> Settings
+          </button>
+          <button
+            onClick={() => setTab('info')}
+            className={`flex items-center gap-1.5 px-3 py-2 font-tac-md text-[11px] tracking-widest uppercase border-b-2 transition-colors ${tab === 'info' ? 'border-amber-400 text-amber-200' : 'border-transparent text-stone-500 hover:text-stone-300'}`}
+          >
+            <Info className="w-3.5 h-3.5" /> Info
+          </button>
+        </div>
+
+        <div className="p-5 sm:p-7">
+          {tab === 'controls' && <KeybindsPanel />}
+          {tab === 'settings' && <SettingsPanel />}
+          {tab === 'info' && <InfoPanel />}
+        </div>
+
+        <div className="px-5 sm:px-7 pb-6 border-t border-stone-800 pt-4">
+          <Button
+            variant="destructive"
+            className="w-full h-11 font-bold tracking-widest uppercase"
+            onClick={() => getBrGame()?.leave()}
+          >
+            <LogOut className="w-4 h-4 mr-2" /> Leave match
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ------------------------------------------------------------
 // DEATH / VICTORY

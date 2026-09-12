@@ -40,8 +40,9 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { GAME, WEAPONS, ASSET_BASE, type WeaponId } from './shared'
 import { useBr, BR_RARITIES, rollBrRarity, type BrQueuePlayer } from './br-store'
 import { useGame } from './store'
-import { useAuth, recordBr, useSquad } from './auth'
-import { useChat, startAmbientChat } from './chat'
+import { useAuth, recordBr, myOid } from './auth'
+import { useChat, startAmbientChat, pushNetChatLine } from './chat'
+import { esNet, useBrNet, type BrQueueOp } from './esnet'
 import { getAudio } from './audio'
 import {
   getRepoTextures, getTreeTemplate, preloadAssets,
@@ -162,6 +163,31 @@ function disposeTree(root: THREE.Object3D): void {
 
 const clamp = (v: number, a: number, b: number): number => Math.max(a, Math.min(b, v))
 const rand = (a: number, b: number): number => a + Math.random() * (b - a)
+
+// ------------------------------------------------------------
+// v11 — SEEDED world RNG: every client generates the SAME island,
+// loot, vehicles, storm and bot roster from the shared match seed
+// (the lobby leader broadcasts it with the countdown). Bots use a
+// SEPARATE stream so world-build timing can never desync them.
+// ------------------------------------------------------------
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a |= 0
+    a = (a + 0x6D2B79F5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+let wrng: (() => number) | null = null      // world stream (build order matters)
+let brng: (() => number) | null = null      // bot roster stream (order-free)
+const wrnd = (): number => (wrng ? wrng() : Math.random())
+const wrand = (a: number, b: number): number => a + wrnd() * (b - a)
+const brnd = (): number => (brng ? brng() : Math.random())
+const brand = (a: number, b: number): number => a + brnd() * (b - a)
+const R1 = (v: number): number => Math.round(v * 10) / 10
+const R2 = (v: number): number => Math.round(v * 100) / 100
 const smooth = (t: number): number => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x) }
 
 // ------------------------------------------------------------
@@ -298,6 +324,30 @@ interface BrBot {
   dropAt: number     // becomes active when landed
   landed: boolean
   dropX: number; dropZ: number
+  /** v11 net puppet fields (followers interpolate toward these) */
+  tx: number; tz: number; tyaw: number
+  moving: boolean
+  snapped: boolean
+  /** v11: current REAL-operator target (leader simulation only) */
+  targetOp: string | null
+}
+
+/** v11 — a REAL remote operator, driven by network poses */
+interface RemoteOp {
+  u: string
+  n: string
+  rig: BodyRig | null
+  x: number; y: number; z: number
+  tx: number; ty: number; tz: number
+  yaw: number; tyaw: number
+  st: string          // 'plane' | 'freefall' | 'live' | 'dead'
+  alive: boolean
+  weapon: WeaponId | null
+  moving: boolean
+  legPhase: number
+  veh: number         // vehicle index while driving, else -1
+  lastPose: number
+  deadAt: number
 }
 
 /** v9.1 — cuerpo de operador: soldado1.glb con huesos o fallback low-poly */
@@ -363,6 +413,17 @@ export class BattleRoyaleGame {
   private vmKick = 0
   private hurtFlash = 0
 
+  // ------------------------------------------------------------
+  // v11.2 — SAME aiming/controls as the normal modes (ADS, spread,
+  // sprint FOV, spray, pause menu with settings)
+  // ------------------------------------------------------------
+  private ads = false
+  private adsAmt = 0
+  private sprintAmt = 0
+  private sprayIdx = 0
+  private lastShotTime = 0
+  private paused = false
+
   // plane / drop
   private planeT = 0
   private planeDur = 14
@@ -398,11 +459,29 @@ export class BattleRoyaleGame {
 
   // matchmaking
   private queue: BrQueuePlayer[] = []
-  private nextJoinAt = 0
   private countdown = 0
   private countdownRunning = false
   private matchStartAt = 0
-  private humansTarget = 8            // simulated real connections before bots
+
+  // ------------------------------------------------------------
+  // v11 — REAL networking (esnet: MQTT lobby + match channels)
+  // ------------------------------------------------------------
+  private practice = false                 // offline practice (bots only, no ranking)
+  private worldSeed: number | null = null  // match seed (null = still waiting)
+  private matchId = ''
+  private netCountT0 = 0                   // wall-clock countdown target
+  private netRoster: BrQueueOp[] = []      // REAL operators in the lobby
+  private remoteOps = new Map<string, RemoteOp>()
+  private botLeader = false                // this client simulates the bots
+  private botsBuilt = false
+  private lastBotsMsg = 0                  // bot-leader liveness (failover)
+  private poseAt = 0
+  private botsPubAt = 0
+  private netHkAt = 0
+  private mcountTimer: ReturnType<typeof setTimeout> | null = null
+  private lastDamager: { u: string; n: string } | null = null
+  private planeAngle = 0
+  private stormPlan: [number, number][] = []
 
   // map build queue (spread over frames during the countdown)
   private buildQueue: (() => void)[] = []
@@ -491,11 +570,23 @@ export class BattleRoyaleGame {
     // spawn on the island
     this.px = 0; this.pz = 0; this.py = EYE
 
-    // matchmaking: the local player is already "connected"
+    // v11 — REAL matchmaking: only actual operators appear in the queue.
+    // Bots NEVER join the lobby; they fill to 20 AFTER the countdown,
+    // which only starts when 4 REAL operators are connected.
     const me = useAuth.getState().user ?? useGame.getState().playerName ?? 'Operator'
     this.queue = [{ name: me, real: true }]
-    this.humansTarget = Math.floor(rand(6, 11))
-    this.nextJoinAt = performance.now() + rand(1500, 3000)
+    this.practice = useBr.getState().practice
+    if (this.practice) {
+      useBr.getState().set({ netStatus: 'offline' })
+      this.beginPractice()
+    } else {
+      esNet.brQueueEnter({
+        onRoster: ops => this.onNetRoster(ops),
+        onCountdown: c => this.onNetCountdown(c),
+        onOffline: () => { /* overlay shows the error + practice option */ },
+      })
+      useBr.getState().set({ netStatus: esNet.status === 'online' ? 'online' : esNet.status })
+    }
     brSet({
       active: true,
       phase: 'queue',
@@ -516,11 +607,6 @@ export class BattleRoyaleGame {
     useChat.getState().setMode('br')
     useChat.getState().reset()
     this.chatStop = startAmbientChat()
-    // el BR es SIEMPRE solos: si tienes grupo activo, se queda en el menú
-    const squad = useSquad.getState()
-    if (squad.members.length > 0) {
-      useBr.getState().addFeed('BATTLE ROYALE IS ALWAYS SOLOS — your squad stays at the menu', false)
-    }
 
     // ---- v9.1: the user's real assets (models + textures) in BR too ----
     // texturas Pared/Piso + plantilla de Arbol.glb (caché compartida; si ya
@@ -553,22 +639,48 @@ export class BattleRoyaleGame {
     }
     if (e.code === 'KeyR' && this.phase === 'live') this.startReload()
     if (e.code === 'KeyE') this.wantJump = true   // interaction flag
-    if (e.code === 'Escape' && document.pointerLockElement === this.canvas) document.exitPointerLock()
+    // v11.2: ESC opens the SAME pause menu as the normal modes
+    if (e.code === 'Escape') {
+      if (this.paused) {
+        this.setPaused(false)
+        this.requestLock()
+      } else if (this.phase !== 'queue') {
+        this.setPaused(true)
+      }
+    }
   }
   private onKeyUp = (e: KeyboardEvent): void => { this.keys.delete(e.code) }
   private onMouseMove = (e: MouseEvent): void => {
-    if (!this.locked) return
+    if (!this.locked || this.paused) return
     const s = useGame.getState().settings
-    const sens = s.sens * 0.0022
+    // v11.2: identical feel to the normal modes (ADS zoom scaling + sprint)
+    const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / 74) * (s.adsSens ?? 0.75) : 1
+    const sprinting = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && this.movingFast()
+    const sens = 0.0022 * s.sens * (this.ads ? zoomFactor : 1) * (sprinting ? 1.12 : 1)
     this.yaw -= e.movementX * sens
     this.pitch = clamp(this.pitch - e.movementY * sens, -1.35, 1.35)
   }
   private onMouseDown = (e: MouseEvent): void => {
     if (!this.locked) { this.requestLock(); return }
+    if (this.paused) return
     if (e.button === 0) this.tryShoot()
+    if (e.button === 2) this.ads = true      // v11.2: aim down sights
+  }
+  private onMouseUp = (e: MouseEvent): void => {
+    if (e.button === 2) this.ads = false
+  }
+  private onContextMenu = (e: Event): void => { e.preventDefault() }
+
+  /** v11.2: pause overlay (menu/controls/settings — like the normal modes) */
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) return
+    this.paused = paused
+    useBr.getState().set({ paused })
+    if (paused && document.pointerLockElement === this.canvas) document.exitPointerLock()
   }
   private onLockChange = (): void => {
     this.locked = document.pointerLockElement === this.canvas
+    if (this.locked && this.paused) this.setPaused(false)   // resume on re-lock
   }
   private onResize = (): void => {
     if (this.disposed) return
@@ -583,6 +695,8 @@ export class BattleRoyaleGame {
     window.addEventListener('resize', this.onResize)
     document.addEventListener('pointerlockchange', this.onLockChange)
     this.canvas.addEventListener('mousedown', this.onMouseDown)
+    this.canvas.addEventListener('mouseup', this.onMouseUp)
+    this.canvas.addEventListener('contextmenu', this.onContextMenu)
   }
   requestLock(): void {
     if (this.phase === 'dead' || this.phase === 'victory') return
@@ -800,8 +914,8 @@ export class BattleRoyaleGame {
       () => this.buildForests(eff),
       () => this.buildVehicles(),
       () => this.buildLoot(),
+      () => this.scatterProps(),
       () => this.buildStorm(),
-      () => this.buildBots(),
       () => this.finishMapBuild(),
     ]
   }
@@ -1036,20 +1150,21 @@ export class BattleRoyaleGame {
     }
 
     // ---- buildings: 11-13 per city, richly detailed ----
+    // v11.2: denser cities (18 per city) — the island read as "empty" before
     const placed: { x: number; z: number; w: number; d: number }[] = []
     let tries = 0
-    while (placed.length < 12 && tries < 260) {
+    while (placed.length < 18 && tries < 420) {
       tries++
-      const w = rand(7, 13), d = rand(7, 13)
-      const ang = rand(0, Math.PI * 2)
-      const rr = rand(6, city.r - 10)
+      const w = wrand(7, 13), d = wrand(7, 13)
+      const ang = wrand(0, Math.PI * 2)
+      const rr = wrand(6, city.r - 10)
       const x = city.x + Math.cos(ang) * rr
       const z = city.z + Math.sin(ang) * rr
       if (Math.hypot(x - city.x, z - city.z) < 11) continue    // keep the crossroads clear
       if (placed.some(p => Math.abs(p.x - x) < (p.w + w) / 2 + 4 && Math.abs(p.z - z) < (p.d + d) / 2 + 4)) continue
       placed.push({ x, z, w, d })
 
-      const h = rand(5, 17)
+      const h = wrand(5, 17)
       const gy = terrainH(x, z)
       this.buildDetailedBuilding(x, z, w, d, h, gy, placed.length, {
         winGlass, winFrame, concrete, roofPropMat, doorMat, awningMat,
@@ -1065,15 +1180,15 @@ export class BattleRoyaleGame {
 
     // sidewalk props: kiosks + containers (cover)
     const contMat = new THREE.MeshStandardMaterial({ color: 0x6a7076, roughness: 0.7, metalness: 0.3 })
-    for (let i = 0; i < 8; i++) {
-      const ang = rand(0, Math.PI * 2)
-      const rr = rand(10, city.r - 6)
+    for (let i = 0; i < 14; i++) {
+      const ang = wrand(0, Math.PI * 2)
+      const rr = wrand(10, city.r - 6)
       const x = city.x + Math.cos(ang) * rr
       const z = city.z + Math.sin(ang) * rr
       const gy = terrainH(x, z)
       const c = new THREE.Mesh(new THREE.BoxGeometry(2.6, 2.4, 6.2), contMat)
       c.position.set(x, gy + 1.2, z)
-      c.rotation.y = Math.random() < 0.5 ? 0 : Math.PI / 2
+      c.rotation.y = wrnd() < 0.5 ? 0 : Math.PI / 2
       c.castShadow = true
       this.mapScene.add(c)
       this.aabbs.push({
@@ -1097,7 +1212,7 @@ export class BattleRoyaleGame {
       awningMat: THREE.MeshStandardMaterial
     },
   ): void {
-    const shop = Math.random() < 0.34
+    const shop = wrnd() < 0.34
     const floors = Math.max(1, Math.floor(h / 4.2))
     const floorH = h / floors
 
@@ -1129,9 +1244,9 @@ export class BattleRoyaleGame {
       g.translate(x, gy + f * floorH - 0.12, z)
       slabGeos.push(g)
     }
-    const hasBalconies = h > 8.5 && Math.random() < 0.6
+    const hasBalconies = h > 8.5 && wrnd() < 0.6
     if (hasBalconies) {
-      const bFaces = Math.random() < 0.5 ? [-1, 1] : [1, -1]
+      const bFaces = wrnd() < 0.5 ? [-1, 1] : [1, -1]
       for (const s of bFaces) {
         for (let f = 1; f < floors; f++) {
           const bg = new THREE.BoxGeometry(w * 0.5, 0.16, 1.05)
@@ -1192,7 +1307,7 @@ export class BattleRoyaleGame {
     const ac = new THREE.BoxGeometry(1.15, 0.8, 0.95)
     ac.translate(x - w * 0.3, gy + h + 0.75, z - d * 0.22)
     propGeos.push(ac)
-    const mast = new THREE.CylinderGeometry(0.06, 0.09, 3.6 + Math.random() * 2.4, 6)
+    const mast = new THREE.CylinderGeometry(0.06, 0.09, 3.6 + wrnd() * 2.4, 6)
     mast.translate(x - w * 0.05, gy + h + 2.4, z + d * 0.05)
     propGeos.push(mast)
 
@@ -1224,15 +1339,15 @@ export class BattleRoyaleGame {
     const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.9 })
     const metalMat = new THREE.MeshStandardMaterial({ color: 0x707a82, roughness: 0.5, metalness: 0.6 })
     for (const poi of POIS) {
-      const count = poi.name === 'SERENE LAKE' ? 3 : 4
+      const count = poi.name === 'SERENE LAKE' ? 4 : 6
       for (let i = 0; i < count; i++) {
-        const ang = (i / count) * Math.PI * 2 + rand(-0.4, 0.4)
-        const rr = rand(6, poi.r - 4)
+        const ang = (i / count) * Math.PI * 2 + wrand(-0.4, 0.4)
+        const rr = wrand(6, poi.r - 4)
         const x = poi.x + Math.cos(ang) * rr
         const z = poi.z + Math.sin(ang) * rr
         const gy = terrainH(x, z)
         if (gy < -0.8) continue    // don't build in the water
-        const w = rand(5, 8), d = rand(5, 8), h = rand(3.2, 5.2)
+        const w = wrand(5, 8), d = wrand(5, 8), h = wrand(3.2, 5.2)
         // main box with the user's Pared texture
         const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats.wall)
         b.position.set(x, gy + h / 2, z)
@@ -1343,7 +1458,8 @@ export class BattleRoyaleGame {
    *  reemplazan en cuanto llega (onRepoAssetsReady → rebuildForests) */
   private buildForests(eff: string): void {
     // clustered woods read as forests from a distance + scattered singles
-    const count = eff === 'baja' ? 50 : eff === 'media' ? 84 : 116
+    // v11.2: fuller island (+40 % trees)
+    const count = eff === 'baja' ? 70 : eff === 'media' ? 120 : 160
     const spots = this.pickTreeSpots(count)
     this.trees = spots
     const tree = getTreeTemplate()
@@ -1365,9 +1481,9 @@ export class BattleRoyaleGame {
     const v = new THREE.Vector3()
     spots.forEach((t, i) => {
       const gy = terrainH(t.x, t.z)
-      const sc = rand(0.8, 1.35)
+      const sc = wrand(0.8, 1.35)
       v.set(t.x, gy + 1.7 * sc, t.z)
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rand(0, Math.PI * 2))
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), wrand(0, Math.PI * 2))
       s.set(sc, sc, sc)
       m.compose(v, q, s)
       trunks.setMatrixAt(i, m)
@@ -1390,13 +1506,13 @@ export class BattleRoyaleGame {
     while (spots.length < count && tries < count * 8) {
       tries++
       let x: number, z: number
-      if (Math.random() < 0.78) {
-        const c = clusters[Math.floor(rand(0, clusters.length))]
-        x = c[0] + rand(-16, 16)
-        z = c[1] + rand(-16, 16)
+      if (wrnd() < 0.78) {
+        const c = clusters[Math.floor(wrand(0, clusters.length))]
+        x = c[0] + wrand(-16, 16)
+        z = c[1] + wrand(-16, 16)
       } else {
-        x = rand(-MAP + 8, MAP - 8)
-        z = rand(-MAP + 8, MAP - 8)
+        x = wrand(-MAP + 8, MAP - 8)
+        z = wrand(-MAP + 8, MAP - 8)
       }
       const h = terrainH(x, z)
       if (h < -0.6 || h > 20) continue
@@ -1420,8 +1536,8 @@ export class BattleRoyaleGame {
       const geos: THREE.BufferGeometry[] = []
       for (const t of spots) {
         pos.set(t.x, terrainH(t.x, t.z) - 0.08, t.z)
-        q.setFromAxisAngle(UP_AXIS, rand(0, Math.PI * 2))
-        const v = rand(0.85, 1.3)
+        q.setFromAxisAngle(UP_AXIS, wrand(0, Math.PI * 2))
+        const v = wrand(0.85, 1.3)
         sc.set(s * v, s * v, s * v)
         m.compose(pos, q, sc)
         const g = part.geo.clone()
@@ -1452,21 +1568,112 @@ export class BattleRoyaleGame {
     this.bakeGlbForests(tree, this.trees)
   }
 
+  /** v11.2: the countryside gets rocks, crates and barrels — the island
+   *  read as empty outside the two cities. Deterministic (seeded). */
+  private scatterProps(): void {
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x7d776e, roughness: 0.95 })
+    const rockMat2 = new THREE.MeshStandardMaterial({ color: 0x6b675f, roughness: 0.98 })
+    const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6b42, roughness: 0.9 })
+    const barrelMat = new THREE.MeshStandardMaterial({ color: 0x3f5a3f, roughness: 0.7, metalness: 0.3 })
+    const barrelMat2 = new THREE.MeshStandardMaterial({ color: 0x7a3b2f, roughness: 0.7, metalness: 0.3 })
+    const inCity = (x: number, z: number): boolean =>
+      CITIES.some(c => Math.hypot(x - c.x, z - c.z) < c.r + 6)
+    // rocks — decorative boulders that fill the empty hills
+    for (let i = 0; i < 60; i++) {
+      const x = wrand(-MAP + 8, MAP - 8)
+      const z = wrand(-MAP + 8, MAP - 8)
+      if (inCity(x, z)) continue
+      const gy = terrainH(x, z)
+      if (gy < -0.4 || gy > 24) continue
+      const sc = wrand(0.7, 2.8)
+      const rock = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(sc, 0),
+        wrnd() < 0.5 ? rockMat : rockMat2,
+      )
+      rock.position.set(x, gy + sc * 0.32, z)
+      rock.rotation.set(wrand(0, 3), wrand(0, Math.PI * 2), wrand(0, 3))
+      rock.castShadow = true
+      rock.receiveShadow = true
+      this.mapScene.add(rock)
+    }
+    // supply crates — cover + combat spots (with collision)
+    for (let i = 0; i < 34; i++) {
+      const x = wrand(-MAP + 10, MAP - 10)
+      const z = wrand(-MAP + 10, MAP - 10)
+      const gy = terrainH(x, z)
+      if (gy < -0.3 || gy > 20) continue
+      const stack = wrnd() < 0.4 ? 2 : 1
+      for (let k = 0; k < stack; k++) {
+        const c = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.3, 1.3), crateMat)
+        c.position.set(x + wrand(-0.15, 0.15), gy + 0.65 + k * 1.3, z + wrand(-0.15, 0.15))
+        c.rotation.y = wrand(0, Math.PI)
+        c.castShadow = true
+        this.mapScene.add(c)
+      }
+      this.aabbs.push({ minX: x - 0.8, maxX: x + 0.8, minZ: z - 0.8, maxZ: z + 0.8, h: gy + 1.3 * stack })
+    }
+    // barrels — road checkpoints and fuel depots (with collision)
+    for (let i = 0; i < 24; i++) {
+      const x = wrand(-MAP + 10, MAP - 10)
+      const z = wrand(-MAP + 10, MAP - 10)
+      const gy = terrainH(x, z)
+      if (gy < -0.3 || gy > 20) continue
+      const b = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.42, 0.42, 1.1, 10),
+        wrnd() < 0.5 ? barrelMat : barrelMat2,
+      )
+      b.position.set(x, gy + 0.55, z)
+      b.castShadow = true
+      this.mapScene.add(b)
+      this.aabbs.push({ minX: x - 0.5, maxX: x + 0.5, minZ: z - 0.5, maxZ: z + 0.5, h: gy + 1.1 })
+    }
+    // fence posts along random field lines — reads as inhabited land
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x6b5a44, roughness: 0.95 })
+    for (let f = 0; f < 14; f++) {
+      const fx = wrand(-MAP + 16, MAP - 16)
+      const fz = wrand(-MAP + 16, MAP - 16)
+      if (terrainH(fx, fz) < -0.2 || inCity(fx, fz)) continue
+      const ang = wrand(0, Math.PI)
+      const len = wrand(14, 30)
+      for (let k = -len / 2; k <= len / 2; k += 2.4) {
+        const x = fx + Math.cos(ang) * k
+        const z = fz + Math.sin(ang) * k
+        const gy = terrainH(x, z)
+        if (gy < -0.2) continue
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.25, 0.16), postMat)
+        post.position.set(x, gy + 0.62, z)
+        post.castShadow = true
+        this.mapScene.add(post)
+      }
+    }
+  }
+
   private buildVehicles(): void {
     const bodyColors = [0x9a3b2f, 0x2f5a7a, 0x7a6a2f, 0x3f5a3f, 0x5a4a5f, 0x8f8f8f]
     const spots: [number, number][] = []
     for (const c of CITIES) {
-      spots.push([c.x + rand(-24, 24), c.z + rand(-24, 24)])
-      spots.push([c.x + rand(-24, 24), c.z + rand(-24, 24)])
+      spots.push([c.x + wrand(-24, 24), c.z + wrand(-24, 24)])
+      spots.push([c.x + wrand(-24, 24), c.z + wrand(-24, 24)])
+      spots.push([c.x + wrand(-26, 26), c.z + wrand(-26, 26)])   // v11.2: more cars
     }
-    spots.push([POIS[0].x + 10, POIS[0].z + 8])
-    spots.push([POIS[1].x - 8, POIS[1].z + 6])
+    for (const poi of POIS) spots.push([poi.x + wrand(-10, 10), poi.z + wrand(6, 12)])
+    spots.push([wrand(-70, 70), wrand(-70, 70)])
+    spots.push([wrand(-70, 70), wrand(-70, 70)])
+    spots.push([wrand(-100, 100), wrand(-100, 100)])
     const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.32, 12)
     const wheelMat = new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.9 })
     spots.forEach((s, i) => {
-      const [x, z] = s
+      // v11.2: never spawn a car wedged inside geometry — nudge until the
+      // spot is clear (this is why cars "didn't work": blocked spawns)
+      let [x, z] = s
+      if (terrainH(x, z) < -0.6) return
+      for (let k = 0; k < 12 && this.blocked(x, z, 2.2); k++) {
+        x = s[0] + wrand(-16, 16)
+        z = s[1] + wrand(-16, 16)
+        if (terrainH(x, z) < -0.6) { x = s[0]; z = s[1] }
+      }
+      if (this.blocked(x, z, 2.0)) return   // truly no room → skip this car
       const gy = terrainH(x, z)
-      if (gy < -0.6) return
       const group = new THREE.Group()
       const color = bodyColors[i % bodyColors.length]
       const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.35 })
@@ -1491,7 +1698,7 @@ export class BattleRoyaleGame {
         group.add(hl)
       }
       group.position.set(x, gy, z)
-      group.rotation.y = rand(0, Math.PI * 2)
+      group.rotation.y = wrand(0, Math.PI * 2)
       this.mapScene.add(group)
       this.vehicles.push({ x, z, yaw: group.rotation.y, speed: 0, group, occupied: false, wheelPhase: 0 })
     })
@@ -1509,17 +1716,17 @@ export class BattleRoyaleGame {
     // v10: las armas del BR son EXACTAMENTE las del modo normal (mismo
     // arsenal de shared.ts); cada una tira su rareza estilo Fortnite
     const rollWeapon = (minTier = 0): { wid: WeaponId; rar: number } => ({
-      wid: WEAPON_POOL[Math.floor(rand(0, WEAPON_POOL.length))],
-      rar: rollBrRarity(minTier),
+      wid: WEAPON_POOL[Math.floor(wrand(0, WEAPON_POOL.length))],
+      rar: rollBrRarity(minTier, wrnd),
     })
     // cities: dense floor loot
     for (const c of CITIES) {
-      for (let i = 0; i < 10; i++) {
-        const ang = rand(0, Math.PI * 2)
-        const rr = rand(5, c.r - 5)
+      for (let i = 0; i < 14; i++) {
+        const ang = wrand(0, Math.PI * 2)
+        const rr = wrand(5, c.r - 5)
         const x = c.x + Math.cos(ang) * rr
         const z = c.z + Math.sin(ang) * rr
-        const roll = Math.random()
+        const roll = wrnd()
         if (roll < 0.5) {
           const { wid, rar } = rollWeapon()
           addSpot(x, z, 'weapon', wid, rar)
@@ -1527,26 +1734,26 @@ export class BattleRoyaleGame {
         else addSpot(x, z, 'med', 'p9')
       }
       // 2 supply crates per city — weapon guaranteed RARE+ (Fortnite chest rule)
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < 3; i++) {
         const { wid, rar } = rollWeapon(2)
-        addSpot(c.x + rand(-20, 20), c.z + rand(-20, 20), 'crate', wid, rar)
+        addSpot(c.x + wrand(-20, 20), c.z + wrand(-20, 20), 'crate', wid, rar)
       }
     }
     // POIs
     for (const p of POIS) {
-      for (let i = 0; i < 3; i++) {
-        const roll = Math.random()
+      for (let i = 0; i < 4; i++) {
+        const roll = wrnd()
         if (roll < 0.45) {
           const { wid, rar } = rollWeapon()
-          addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r), 'weapon', wid, rar)
-        } else if (roll < 0.75) addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r), 'ammo', 'p9')
-        else addSpot(p.x + rand(-p.r, p.r), p.z + rand(-p.r, p.r), 'med', 'p9')
+          addSpot(p.x + wrand(-p.r, p.r), p.z + wrand(-p.r, p.r), 'weapon', wid, rar)
+        } else if (roll < 0.75) addSpot(p.x + wrand(-p.r, p.r), p.z + wrand(-p.r, p.r), 'ammo', 'p9')
+        else addSpot(p.x + wrand(-p.r, p.r), p.z + wrand(-p.r, p.r), 'med', 'p9')
       }
     }
     // scattered countryside loot
-    for (let i = 0; i < 12; i++) {
-      addSpot(rand(-MAP + 10, MAP - 10), rand(-MAP + 10, MAP - 10),
-        Math.random() < 0.5 ? 'ammo' : 'med', 'p9')
+    for (let i = 0; i < 22; i++) {
+      addSpot(wrand(-MAP + 10, MAP - 10), wrand(-MAP + 10, MAP - 10),
+        wrnd() < 0.5 ? 'ammo' : 'med', 'p9')
     }
     // meshes (lazy built once the map is active — they belong to mapScene)
     for (const s of this.loot) s.mesh = this.buildLootMesh(s)
@@ -1656,7 +1863,8 @@ export class BattleRoyaleGame {
     this.stormFromR = 230
     this.stormCX = 0
     this.stormCZ = 0
-    this.stormTargetC = [rand(-30, 30), rand(-30, 30)]
+    // v11: precomputed by the shared match seed (identical everywhere)
+    this.stormTargetC = this.stormPlan[0] ?? [0, 0]
     this.stormIdx = 0
     this.stormState = 'wait'
     this.stormTimer = STORM_PHASES[0].wait
@@ -1673,7 +1881,8 @@ export class BattleRoyaleGame {
         this.stormTimer = ph.shrink
         this.stormFromR = this.stormR
         this.stormTargetR = ph.r
-        this.stormTargetC = this.nextStormCenter(ph.r)
+        // v11: storm centers come from the seeded plan (same on every client)
+        this.stormTargetC = this.stormPlan[Math.min(this.stormIdx + 1, this.stormPlan.length - 1)] ?? this.stormTargetC
         useBr.getState().addFeed('THE STORM IS CLOSING IN', false)
         getAudio().announceDing()
       }
@@ -1709,87 +1918,84 @@ export class BattleRoyaleGame {
           getAudio().playerHurt()
         }
       }
-      // bots
-      for (const b of this.bots) {
-        if (!b.alive || !b.landed) continue
-        const d = Math.hypot(b.x - this.stormCX, b.z - this.stormCZ)
-        if (d > this.stormR) {
-          b.hp -= ph.dps * 3.2
-          if (b.hp <= 0) this.killBot(b, 'the storm', false)
+      // bots (v11: only the bot leader arbitrates bot deaths)
+      if (this.botLeader) {
+        for (const b of this.bots) {
+          if (!b.alive || !b.landed) continue
+          const d = Math.hypot(b.x - this.stormCX, b.z - this.stormCZ)
+          if (d > this.stormR) {
+            b.hp -= ph.dps * 3.2
+            if (b.hp <= 0) this.killBot(b, 'the storm')
+          }
         }
       }
     }
   }
 
-  /** next storm center kept inside the current circle */
-  private nextStormCenter(r: number): [number, number] {
-    const maxOff = Math.max(0, this.stormR - r - 4)
-    const ang = rand(0, Math.PI * 2)
-    const off = rand(0, maxOff)
-    return [
-      clamp(this.stormCX + Math.cos(ang) * off, -MAP + r, MAP - r),
-      clamp(this.stormCZ + Math.sin(ang) * off, -MAP + r, MAP - r),
-    ]
-  }
-
   // ----------------------------------------------------------
   // BOTS
   // ----------------------------------------------------------
-  private buildBots(): void {
-    const names = [...SIM_NAMES].sort(() => Math.random() - 0.5)
-    for (let i = 0; i < TOTAL - 1; i++) {
+  private buildBots(count: number): void {
+    // v11: deterministic roster — same seed ⇒ the same names, uniforms,
+    // weapons and drop spots on EVERY client (dedicated bot stream, so
+    // world-build timing can never desync the two)
+    const names = [...SIM_NAMES]
+    for (let i = names.length - 1; i > 0; i--) {
+      const j = Math.floor(brnd() * (i + 1))
+      ;[names[i], names[j]] = [names[j], names[i]]
+    }
+    for (let i = 0; i < count; i++) {
       // drop target: weighted to POIs/cities
-      // (v9.1 FIX: la versión anterior indexaba un array de UN elemento con
-      //  Math.floor(rand(0,2)) → undefined → excepción → la sala se quedaba
-      //  con ~4-6 operadores en vez de 20)
       let anchor: { x: number; z: number; r?: number }
-      if (Math.random() < 0.62) {
-        anchor = Math.random() < 0.5
-          ? CITIES[Math.floor(rand(0, CITIES.length))]
-          : { x: rand(-60, 60), z: rand(-60, 60), r: 10 }
+      if (brnd() < 0.62) {
+        anchor = brnd() < 0.5
+          ? CITIES[Math.floor(brand(0, CITIES.length))]
+          : { x: brand(-60, 60), z: brand(-60, 60), r: 10 }
       } else {
-        anchor = { x: rand(-MAP + 14, MAP - 14), z: rand(-MAP + 14, MAP - 14), r: 10 }
+        anchor = { x: brand(-MAP + 14, MAP - 14), z: brand(-MAP + 14, MAP - 14), r: 10 }
       }
+      const dropX = anchor.x + brand(-8, 8)
+      const dropZ = anchor.z + brand(-8, 8)
       const b: BrBot = {
         id: i + 1,
         name: names[i % names.length],
         alive: true,
-        x: anchor.x + rand(-8, 8),
+        x: dropX,
         y: 0,
-        z: anchor.z + rand(-8, 8),
-        yaw: rand(0, Math.PI * 2),
+        z: dropZ,
+        yaw: brand(0, Math.PI * 2),
         hp: 100,
-        weapon: WEAPON_POOL[Math.floor(rand(0, WEAPON_POOL.length))],
+        weapon: WEAPON_POOL[Math.floor(brand(0, WEAPON_POOL.length))],
         // v10: los operadores también portan armas con rareza (daño escalado)
-        rarity: rollBrRarity(0),
-        destX: anchor.x + rand(-8, 8),
-        destZ: anchor.z + rand(-8, 8),
+        rarity: rollBrRarity(0, brnd),
+        destX: anchor.x + brand(-8, 8),
+        destZ: anchor.z + brand(-8, 8),
         thinkAt: 0,
         nextShotAt: 0,
-        accuracy: rand(0.32, 0.6),
+        accuracy: brand(0.32, 0.6),
         targetBot: -1,
         targetPlayer: false,
         mesh: null,
         rig: null,
         tint: i,
-        legPhase: rand(0, 10),
+        legPhase: brand(0, 10),
         deadAt: 0,
-        dropAt: rand(1, 4),
+        dropAt: brand(1, 4),
         landed: false,
-        dropX: anchor.x + rand(-8, 8),
-        dropZ: anchor.z + rand(-8, 8),
+        dropX,
+        dropZ,
+        tx: dropX,
+        tz: dropZ,
+        tyaw: 0,
+        moving: false,
+        snapped: false,
+        targetOp: null,
       }
-      b.x = b.dropX
-      b.z = b.dropZ
       this.bots.push(b)
     }
   }
 
-  // ----------------------------------------------------------
-  // v9.1 — SOLDADO REAL (soldier1.glb del usuario, plantilla por instancia)
-  // ----------------------------------------------------------
-  /** carga y normaliza la plantilla (misma normalización que el juego
-   *  principal: escala a 1,84 m, Sketchfab BLEND→opaco, PBR moderado) */
+
   private loadSoldier(): void {
     if (this.soldierLoading || this.soldierTemplate) return
     this.soldierLoading = true
@@ -2106,6 +2312,11 @@ export class BattleRoyaleGame {
         }
         continue
       }
+      // v11: followers render network puppets — the leader owns the AI
+      if (!this.botLeader) {
+        this.followerBot(b, dt)
+        continue
+      }
       // landing delay after the player jumps
       if (!b.landed) {
         b.dropAt -= dt
@@ -2119,18 +2330,24 @@ export class BattleRoyaleGame {
       // --- think ---
       if (t > b.thinkAt) {
         b.thinkAt = t + rand(700, 1600)
-        // find target: player or nearest bot within 62 m
+        // find target: player, a REAL operator or the nearest bot within 62 m
         let best = -1
         let bestD = 62
         let targetPlayer = false
+        b.targetOp = null
         if (this.phase === 'live') {
           const d = Math.hypot(this.px - b.x, this.pz - b.z)
           if (d < bestD) { bestD = d; targetPlayer = true }
         }
+        for (const [u, op] of this.remoteOps) {
+          if (!op.alive || op.st !== 'live') continue
+          const d = Math.hypot(op.x - b.x, op.z - b.z)
+          if (d < bestD) { bestD = d; b.targetOp = u; targetPlayer = false; best = -1 }
+        }
         for (const o of this.bots) {
           if (o === b || !o.alive || !o.landed) continue
           const d = Math.hypot(o.x - b.x, o.z - b.z)
-          if (d < bestD) { bestD = d; best = o.id; targetPlayer = false }
+          if (d < bestD) { bestD = d; best = o.id; b.targetOp = null; targetPlayer = false }
         }
         b.targetBot = best
         b.targetPlayer = targetPlayer
@@ -2141,7 +2358,8 @@ export class BattleRoyaleGame {
           b.destZ = this.stormCZ + rand(-this.stormR * 0.3, this.stormR * 0.3)
           b.targetBot = -1
           b.targetPlayer = false
-        } else if (best < 0 && !targetPlayer) {
+          b.targetOp = null
+        } else if (best < 0 && !targetPlayer && !b.targetOp) {
           // roam: POI-biased wandering
           const ang = rand(0, Math.PI * 2)
           const rr = rand(10, 34)
@@ -2150,17 +2368,20 @@ export class BattleRoyaleGame {
         }
       }
       // --- shoot ---
-      if ((b.targetBot >= 0 || b.targetPlayer) && t > b.nextShotAt) {
+      if ((b.targetBot >= 0 || b.targetPlayer || b.targetOp) && t > b.nextShotAt) {
         b.nextShotAt = t + rand(260, 620)
-        const tx = b.targetPlayer ? this.px : this.bots.find(o => o.id === b.targetBot)?.x ?? b.x
-        const tz = b.targetPlayer ? this.pz : this.bots.find(o => o.id === b.targetBot)?.z ?? b.z
+        const target = b.targetPlayer ? { x: this.px, z: this.pz }
+          : b.targetOp ? this.remoteOps.get(b.targetOp)
+            : this.bots.find(o => o.id === b.targetBot)
+        const tx = target?.x ?? b.x
+        const tz = target?.z ?? b.z
         const d = Math.hypot(tx - b.x, tz - b.z)
-        if (d < 64) {
+        if (d < 64 && target) {
           // tracer toward the target + shot sound (distance-based)
           const from = new THREE.Vector3(b.x, b.y + 1.4, b.z)
           const to = new THREE.Vector3(tx, terrainH(tx, tz) + 1.2, tz)
           this.spawnTracer(from, to)
-          if (b.targetPlayer) {
+          if (b.targetPlayer || b.targetOp) {
             const distToPlayer = Math.hypot(this.px - b.x, this.pz - b.z)
             getAudio().gunshot(WEAPONS[b.weapon].sound, clamp(distToPlayer / 6, 0, 60))
             this.pings.push({ x: b.x, z: b.z, t: 2 })
@@ -2169,7 +2390,12 @@ export class BattleRoyaleGame {
               // v10: el daño del bot escala con la rareza de SU arma
               const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
               const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult
-              this.damagePlayer(dmg, b.name)
+              if (b.targetPlayer) {
+                this.damagePlayer(dmg, b.name)
+              } else if (b.targetOp) {
+                // v11: the damage lands on the REAL operator's client
+                esNet.brPublishEv({ ty: 'hit', o: myOid(), tgt: b.targetOp, by: '', byN: b.name, dmg: R1(dmg), w: b.weapon })
+              }
             }
           } else {
             // bot vs bot: probabilistic damage
@@ -2179,7 +2405,7 @@ export class BattleRoyaleGame {
               if (Math.random() < hitChance) {
                 const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
                 victim.hp -= rand(9, 16) * rarMult
-                if (victim.hp <= 0) this.killBot(victim, b.name, false)
+                if (victim.hp <= 0) this.killBot(victim, b.name)
               }
             }
           }
@@ -2188,10 +2414,13 @@ export class BattleRoyaleGame {
       // --- move ---
       let mx = b.destX
       let mz = b.destZ
-      if (b.targetBot >= 0 || b.targetPlayer) {
+      if (b.targetBot >= 0 || b.targetPlayer || b.targetOp) {
         // strafe combat: keep some distance
-        const tx = b.targetPlayer ? this.px : this.bots.find(o => o.id === b.targetBot)?.x ?? b.x
-        const tz = b.targetPlayer ? this.pz : this.bots.find(o => o.id === b.targetBot)?.z ?? b.z
+        const target = b.targetPlayer ? { x: this.px, z: this.pz }
+          : b.targetOp ? this.remoteOps.get(b.targetOp)
+            : this.bots.find(o => o.id === b.targetBot)
+        const tx = target?.x ?? b.x
+        const tz = target?.z ?? b.z
         const dx = tx - b.x, dz = tz - b.z
         const dd = Math.hypot(dx, dz) || 1
         if (dd > 30) { mx = tx; mz = tz }
@@ -2204,8 +2433,9 @@ export class BattleRoyaleGame {
       const dx = mx - b.x
       const dz = mz - b.z
       const dl = Math.hypot(dx, dz)
+      b.moving = dl > 1.2
       if (dl > 1.2) {
-        const speed = (b.targetBot >= 0 || b.targetPlayer) ? 3.6 : 4.4
+        const speed = (b.targetBot >= 0 || b.targetPlayer || b.targetOp) ? 3.6 : 4.4
         const nx = b.x + (dx / dl) * speed * dt
         const nz = b.z + (dz / dl) * speed * dt
         if (!this.blocked(nx, nz, 0.45)) {
@@ -2227,7 +2457,8 @@ export class BattleRoyaleGame {
       }
     }
     // bot-vs-bot background attrition so the match always advances
-    if (t - this.botThink > 15000) {
+    // (v11: only the bot leader arbitrates attrition)
+    if (this.botLeader && t - this.botThink > 15000) {
       this.botThink = t
       const alive = this.bots.filter(b => b.alive && b.landed)
       if (alive.length > 3 && this.aliveCount() < this.bots.filter(b => b.alive).length + 1 && Math.random() < 0.5) {
@@ -2236,28 +2467,57 @@ export class BattleRoyaleGame {
         const victims = alive.filter(v => v !== a && Math.hypot(v.x - a.x, v.z - a.z) > 80)
         if (victims.length) {
           const victim = victims[Math.floor(rand(0, victims.length))]
-          this.killBot(victim, a.name, false)
+          this.killBot(victim, a.name)
         }
       }
     }
+    // v11: the leader broadcasts the bot states (~7 Hz) so every client
+    // sees the same match
+    if (this.botLeader && this.matchId && !this.practice && t - this.botsPubAt > 140) {
+      this.botsPubAt = t
+      const bs: number[][] = []
+      for (const b of this.bots) {
+        bs.push([b.id, R1(b.x), R1(b.z), R2(b.yaw), (b.alive ? 1 : 0) | (b.landed ? 2 : 0) | (b.moving ? 4 : 0)])
+      }
+      esNet.brPublishBots(JSON.stringify({ bs }))
+    }
   }
+
+  /** v11: network puppet — the leader's snapshots drive this bot */
+  private followerBot(b: BrBot, dt: number): void {
+    if (!b.landed) return
+    const dx = b.tx - b.x
+    const dz = b.tz - b.z
+    const dl = Math.hypot(dx, dz)
+    if (dl > 0.05) {
+      const step = Math.min(dl, dt * 14)
+      b.x += (dx / dl) * step
+      b.z += (dz / dl) * step
+      b.legPhase += dt * 9
+    }
+    b.yaw += (b.tyaw - b.yaw) * Math.min(1, dt * 10)
+    b.y = terrainH(b.x, b.z)
+    this.ensureBotMesh(b)
+    if (b.mesh) {
+      b.mesh.position.set(b.x, b.y, b.z)
+      b.mesh.rotation.y = b.yaw
+      if (b.rig) this.animateRig(b.rig, b.legPhase, dl > 0.4)
+    }
+  }
+
 
   private aliveCount(): number {
-    return this.bots.filter(b => b.alive).length + (this.phase === 'live' ? 1 : 0)
+    let n = this.bots.filter(b => b.alive).length
+    if (this.phase === 'live') n += 1
+    for (const op of this.remoteOps.values()) {
+      if (op.alive) n += 1
+    }
+    return n
   }
 
-  private killBot(b: BrBot, killer: string, byPlayer: boolean): void {
+  private killBot(b: BrBot, killer: string, killerOid = '', byPlayer = false): void {
     if (!b.alive) return
-    b.alive = false
-    b.deadAt = this.clock
-    if (b.rig && b.rig.usingSoldier) {
-      // v9.1: la caída se anima en updateBots (easeOutCubic) — el arma
-      // acompaña al cuerpo porque cuelga del mismo bodyGroup
-    } else if (b.mesh) {
-      // fallback low-poly: fall over + stay as a body for a while
-      b.mesh.rotation.x = Math.PI / 2 * 0.92
-      b.mesh.position.y = b.y + 0.25
-    }
+    this.killBotVisual(b)
     const feed = useBr.getState()
     feed.addFeed(`${killer.toUpperCase()} eliminated ${b.name.toUpperCase()}`, byPlayer)
     if (byPlayer) {
@@ -2265,9 +2525,12 @@ export class BattleRoyaleGame {
       getAudio().killConfirm()
     }
     // drop ammo where they fell
-    this.loot.push({ x: b.x, z: b.z, kind: 'ammo', weapon: b.weapon, rarity: 0, taken: false, mesh: null, item: null })
-    const spot = this.loot[this.loot.length - 1]
-    spot.mesh = this.buildLootMesh(spot)
+    this.spawnLootDrop(b.x, b.z, b.weapon)
+    if (!this.practice && this.matchId) {
+      // v11: every operator sees the elimination and the ammo drop
+      esNet.brPublishEv({ ty: 'lootdrop', o: myOid(), x: R1(b.x), z: R1(b.z), w: b.weapon })
+      esNet.brPublishEv({ ty: 'kill', o: myOid(), tgt: `b${b.id}`, tgtN: b.name, by: killerOid, byN: killer })
+    }
     // v10: reacción en el chat de partida (los rivales tienen personalidad)
     if (byPlayer && Math.random() < 0.34 && this.phase === 'live') {
       const taunts = [
@@ -2285,53 +2548,72 @@ export class BattleRoyaleGame {
     }
   }
 
+  /** visual death only (network followers use this) */
+  private killBotVisual(b: BrBot): void {
+    if (!b.alive) return
+    b.alive = false
+    b.deadAt = this.clock
+    if (b.rig && b.rig.usingSoldier) {
+      // v9.1: la caída se anima en updateBots (easeOutCubic) — el arma
+      // acompaña al cuerpo porque cuelga del mismo bodyGroup
+    } else if (b.mesh) {
+      // fallback low-poly: fall over + stay as a body for a while
+      b.mesh.rotation.x = Math.PI / 2 * 0.92
+      b.mesh.position.y = b.y + 0.25
+    }
+  }
+
+  private spawnLootDrop(x: number, z: number, weapon: WeaponId): void {
+    this.loot.push({ x, z, kind: 'ammo', weapon, rarity: 0, taken: false, mesh: null, item: null })
+    const spot = this.loot[this.loot.length - 1]
+    spot.mesh = this.buildLootMesh(spot)
+  }
+
   // ----------------------------------------------------------
   // MATCHMAKING (lobby island) — countdown at 4 connected
+  // ----------------------------------------------------------
+  // ----------------------------------------------------------
+  // MATCHMAKING (lobby island) — v11 REAL
+  // Only actual operators appear (esnet roster); bots NEVER join
+  // the queue. The 60 s countdown starts when 4 REAL operators
+  // are connected and bots fill to 20 only AFTER it.
   // ----------------------------------------------------------
   private updateQueue(t: number, dt: number): void {
     const brSet = useBr.getState().set
     if (!this.countdownRunning) {
-      // players "connect" one by one
-      if (t > this.nextJoinAt && this.queue.length < this.humansTarget) {
-        this.nextJoinAt = t + rand(2200, 5200)
-        const name = SIM_NAMES[(this.queue.length * 3 + 1) % SIM_NAMES.length] + (Math.random() < 0.4 ? String(Math.floor(rand(10, 99))) : '')
-        this.queue.push({ name, real: true })
-        brSet({ queuePlayers: [...this.queue] })
-        // a walker appears on the island
-        if (this.lobbyWalkers.length < this.queue.length + 1) {
-          const rig = this.buildBotBody(this.lobbyWalkers.length, WEAPON_POOL[this.lobbyWalkers.length % WEAPON_POOL.length])
-          rig.root.position.set(rand(-16, 16), 0, rand(-14, 14))
-          this.lobbyScene.add(rig.root)
-          this.lobbyWalkers.push({ rig, phase: rand(0, 10), dest: [rand(-16, 16), rand(-16, 16)] })
-        }
-        getAudio().uiClick()
-      }
-      // v9: countdown of one minute starts as soon as 4 players are connected
-      if (this.queue.length >= REAL_TARGET && this.mapReady) {
+      // online: waiting for REAL operators (nothing to simulate — the
+      // roster arrives over the network). practice: short local warmup.
+      if (this.practice && this.worldSeed !== null) {
         this.countdownRunning = true
-        this.countdown = COUNTDOWN_S
-        brSet({ countdownActive: true, countdown: COUNTDOWN_S })
-        getAudio().announceDing()
+        this.countdown = 6
+        brSet({ countdownActive: true, countdown: 6 })
       }
     } else {
-      this.countdown -= dt
-      brSet({ countdown: Math.max(0, Math.ceil(this.countdown)) })
-      if (this.countdown <= 0) {
-        // fill the room to 20 with bots → board the plane
-        const botsNeeded = TOTAL - this.queue.length
-        brSet({
-          countdownActive: false,
-          countdown: 0,
-          alive: TOTAL,
-          kills: 0,
-          phase: 'plane',
-          loadingMap: false,
-        })
-        useBr.getState().addFeed(`MATCH START — ${this.queue.length} operators + ${Math.max(0, botsNeeded)} bots`, false)
-        this.startPlane()
+      // online: the countdown follows the leader's wall-clock t0
+      if (!this.practice && this.netCountT0) {
+        if (useBrNet.getState().countInfo === null) {
+          // lobby cancelled → back to waiting
+          this.countdownRunning = false
+          this.netCountT0 = 0
+          brSet({ countdownActive: false, countdown: 0 })
+        } else {
+          this.countdown = Math.max(0, (this.netCountT0 - Date.now()) / 1000)
+          brSet({ countdown: Math.ceil(this.countdown) })
+          if (this.countdown <= 0) {
+            brSet({ countdownActive: false, countdown: 0, alive: TOTAL, kills: 0, phase: 'plane', loadingMap: false })
+            this.brStartMatch()
+          }
+        }
+      } else {
+        this.countdown -= dt
+        brSet({ countdown: Math.max(0, Math.ceil(this.countdown)) })
+        if (this.countdown <= 0) {
+          brSet({ countdownActive: false, countdown: 0, alive: TOTAL, kills: 0, phase: 'plane', loadingMap: false })
+          this.brStartMatch()
+        }
       }
     }
-    // lobby walkers wander (soldiers with their weapons on the island)
+    // lobby walkers wander (the REAL operators on the island)
     for (const w of this.lobbyWalkers) {
       const dx = w.dest[0] - w.rig.root.position.x
       const dz = w.dest[1] - w.rig.root.position.z
@@ -2350,6 +2632,130 @@ export class BattleRoyaleGame {
   }
 
   // ----------------------------------------------------------
+  // v11 — NET: roster / countdown / practice / match start
+  // ----------------------------------------------------------
+  /** the REAL lobby roster (each entry is a live operator) */
+  private onNetRoster(ops: BrQueueOp[]): void {
+    if (this.disposed || this.practice) return
+    this.netRoster = ops
+    this.queue = ops.map(o => ({ name: o.n, real: true }))
+    useBr.getState().set({ queuePlayers: [...this.queue] })
+    // walkers = the real operators on the island (me included)
+    const want = ops.length
+    while (this.lobbyWalkers.length > want) {
+      const w = this.lobbyWalkers.pop()!
+      this.lobbyScene.remove(w.rig.root)
+      disposeTree(w.rig.root)
+    }
+    while (this.lobbyWalkers.length < want) {
+      const i = this.lobbyWalkers.length
+      const op = ops[i]
+      const rig = this.buildBotBody(i, WEAPON_POOL[i % WEAPON_POOL.length])
+      rig.root.position.set(rand(-16, 16), 0, rand(-14, 14))
+      this.lobbyScene.add(rig.root)
+      this.lobbyWalkers.push({ rig, phase: rand(0, 10), dest: [rand(-16, 16), rand(-14, 14)] })
+      if (op && op.u !== myOid()) getAudio().uiClick()
+    }
+  }
+
+  /** leader started the 60 s countdown (seed + match id shared) */
+  private onNetCountdown(c: { t0: number; seed: number; mid: string }): void {
+    if (this.disposed || this.practice || this.worldSeed !== null) return
+    this.netCountT0 = c.t0
+    this.applyMatchSeed(c.seed, c.mid)
+    // subscribe the match channels BEFORE t0 so nothing gets lost
+    esNet.brMatchEnter(c.mid, {
+      pose: (u, p) => this.onNetPose(u, p),
+      ev: p => this.onNetEv(p),
+      chat: p => this.onNetChat(p),
+      bots: p => this.onNetBots(p),
+    })
+    this.countdownRunning = true
+    this.countdown = Math.max(1, (c.t0 - Date.now()) / 1000)
+    useBr.getState().set({ countdownActive: true, countdown: Math.ceil(this.countdown) })
+    getAudio().announceDing()
+  }
+
+  /** offline practice: same island pipeline, 19 bots, no ranking */
+  beginPractice(): void {
+    if (this.worldSeed !== null) return
+    this.practice = true
+    this.botLeader = true
+    this.applyMatchSeed((Math.random() * 0x7fffffff) | 0, 'practice')
+    useBr.getState().addFeed('PRACTICE MATCH — 19 bots · online queue needs 4 real operators', false)
+  }
+
+  /** re-try the online service (queue overlay button) */
+  retryNet(): void {
+    if (this.practice || this.worldSeed !== null) return
+    esNet.connect()
+    useBr.getState().set({ netStatus: 'connecting' })
+  }
+
+  /** seed everything deterministic (storm plan, plane line, world rng) */
+  private applyMatchSeed(seed: number, mid: string): void {
+    this.worldSeed = seed
+    this.matchId = mid
+    wrng = mulberry32(seed)
+    brng = mulberry32(seed ^ 0xB075C0DE)
+    // deterministic storm plan (same sequence on every client)
+    this.stormPlan = []
+    let cx = 0, cz = 0, r = 230
+    this.stormPlan.push([wrand(-30, 30), wrand(-30, 30)])
+    for (let i = 0; i < STORM_PHASES.length; i++) {
+      const target = STORM_PHASES[i].r
+      const maxOff = Math.max(0, r - target - 4)
+      const ang = wrand(0, Math.PI * 2)
+      const off = wrand(0, maxOff)
+      cx = clamp(cx + Math.cos(ang) * off, -MAP + target, MAP - target)
+      cz = clamp(cz + Math.sin(ang) * off, -MAP + target, MAP - target)
+      r = target
+      this.stormPlan.push([cx, cz])
+    }
+    this.planeAngle = wrand(0, Math.PI * 2)
+    useBr.getState().set({ loadingMap: true })
+  }
+
+  /** countdown ended → room of 20 boards the plane */
+  private brStartMatch(): void {
+    if (this.practice) {
+      this.buildBots(TOTAL - 1)
+      this.botsBuilt = true
+      useBr.getState().addFeed(`PRACTICE — you vs ${TOTAL - 1} bots`, false)
+    } else {
+      // REAL match — bots are simulated by ONE client (bot leader =
+      // lowest Operator ID) and broadcast; every client generates the
+      // SAME deterministic bots from the seed + the leader's count.
+      esNet.brMatchGo()
+      const me = myOid()
+      const ops = this.netRoster.filter(o => o.u !== me)
+      const real = ops.length + 1
+      const botsNeeded = Math.max(0, TOTAL - real)
+      this.botLeader = !!me && (ops.length === 0 || ops[0].u > me)
+      if (real > 1) {
+        useBr.getState().addFeed(`MATCH START — ${real} operators + ${botsNeeded} bots`, false)
+      } else {
+        useBr.getState().addFeed('MATCH START — room filled with bots', false)
+      }
+      if (this.botLeader) {
+        this.buildBots(botsNeeded)
+        this.botsBuilt = true
+        esNet.brPublishEv({ ty: 'mcount', o: me, n: botsNeeded })
+      } else {
+        // wait briefly for the leader's bot count; local fallback if lost
+        if (this.mcountTimer) clearTimeout(this.mcountTimer)
+        this.mcountTimer = setTimeout(() => {
+          if (!this.botsBuilt && !this.disposed) {
+            this.buildBots(botsNeeded)
+            this.botsBuilt = true
+          }
+        }, 5000)
+      }
+    }
+    this.startPlane()
+  }
+
+  // ----------------------------------------------------------
   // PLANE + DROP
   // ----------------------------------------------------------
   private startPlane(): void {
@@ -2357,8 +2763,8 @@ export class BattleRoyaleGame {
     this.planeT = 0
     this.planeDur = 15
     this.matchStartAt = performance.now()
-    // random line across the island through its center
-    const ang = rand(0, Math.PI * 2)
+    // v11: the drop line is part of the seeded plan (same for everyone)
+    const ang = this.planeAngle || rand(0, Math.PI * 2)
     const R = MAP * 1.35
     this.planeA.set(Math.cos(ang) * R, 150, Math.sin(ang) * R)
     this.planeB.set(-Math.cos(ang) * R, 150, -Math.sin(ang) * R)
@@ -2473,6 +2879,7 @@ export class BattleRoyaleGame {
     let speed = sprint ? 7.4 : 5.0
     if (crouch) speed = 2.4
     if (this.weapon && WEAPONS[this.weapon]) speed *= WEAPONS[this.weapon].moveMult
+    if (this.adsAmt > 0.3) speed *= 0.65   // v11.2: aiming slows you (normal-mode rule)
     const fwd = (this.keys.has('KeyW') ? 1 : 0) - (this.keys.has('KeyS') ? 1 : 0)
     const strafe = (this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('KeyA') ? 1 : 0)
     if (fwd || strafe) {
@@ -2606,6 +3013,10 @@ export class BattleRoyaleGame {
       s.mesh = null
       s.item = null
     }
+    if (!this.practice && this.matchId) {
+      // v11: the loot disappears for everyone
+      esNet.brPublishEv({ ty: 'loot', o: myOid(), i: this.loot.indexOf(s) })
+    }
   }
 
   // ----------------------------------------------------------
@@ -2616,6 +3027,9 @@ export class BattleRoyaleGame {
     this.inVehicle = v
     getAudio().uiClick()
     useBr.getState().set({ inVehicle: true })
+    if (!this.practice && this.matchId) {
+      esNet.brPublishEv({ ty: 'veh', o: myOid(), i: this.vehicles.indexOf(v), st: 'take' })
+    }
   }
 
   private exitVehicle(): void {
@@ -2630,6 +3044,9 @@ export class BattleRoyaleGame {
     this.py = terrainH(this.px, this.pz) + EYE
     this.inVehicle = null
     useBr.getState().set({ inVehicle: false })
+    if (!this.practice && this.matchId) {
+      esNet.brPublishEv({ ty: 'veh', o: myOid(), i: this.vehicles.indexOf(v), st: 'free', x: R1(v.x), z: R1(v.z), yaw: R2(v.yaw) })
+    }
   }
 
   private updateDriving(dt: number): void {
@@ -2737,6 +3154,10 @@ export class BattleRoyaleGame {
     getAudio().gunshot(w.sound, 0)
     this.vmKick = 1
     this.pitch = clamp(this.pitch + w.recoilV * 0.011, -1.35, 1.35)
+    this.yaw += (Math.random() - 0.5) * w.recoilH * 0.006   // v11.2: horizontal recoil
+    // v11.2: sustained fire blooms the spread (normal-mode spray model)
+    this.sprayIdx = Math.min(14, this.sprayIdx + 1)
+    this.lastShotTime = now
 
     // muzzle light
     if (this.muzzle) {
@@ -2748,20 +3169,53 @@ export class BattleRoyaleGame {
     // raycast: bots (head/body spheres) + buildings + terrain
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
     const origin = this.camera.position.clone()
+    // v11.2: the SAME spread model as the normal modes — base + movement +
+    // air + crouch + ADS + spray bloom (cone via right/up camera basis)
+    {
+      const sprintKey = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
+      const crouchKey = this.keys.has('ControlLeft')
+      const hSpeed = this.movingFast() ? (sprintKey ? 7.4 : crouchKey ? 2.4 : 5.0) : 0
+      let spread = w.spreadBase
+      spread += w.spreadMove * Math.min(1, hSpeed / 6)
+      if (!this.onGround) spread += w.spreadAir
+      if (crouchKey) spread *= 0.72
+      if (this.adsAmt > 0.6) spread *= 0.45
+      spread += this.sprayIdx * w.sprayInacc
+      if (spread > 0.02) {
+        const r = (spread * Math.PI / 180) * Math.sqrt(Math.random())
+        const ang = Math.random() * Math.PI * 2
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion)
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion)
+        dir.addScaledVector(right, Math.cos(ang) * r)
+          .addScaledVector(up, Math.sin(ang) * r)
+          .normalize()
+      }
+    }
     let hitPoint = origin.clone().addScaledVector(dir, 220)
     let hitBot: BrBot | null = null
     let headshot = false
 
     // bots first (spheres)
     let bestT = 220
+    let hitOp: RemoteOp | null = null
     for (const b of this.bots) {
       if (!b.alive || !b.landed) continue
       const center = new THREE.Vector3(b.x, b.y + 1.05, b.z)
       const headC = new THREE.Vector3(b.x, b.y + 1.68, b.z)
       const tB = this.raySphere(origin, dir, center, 0.62)
       const tH = this.raySphere(origin, dir, headC, 0.3)
-      if (tH >= 0 && tH < bestT) { bestT = tH; hitBot = b; headshot = true }
-      if (tB >= 0 && tB < bestT) { bestT = tB; hitBot = b; headshot = false }
+      if (tH >= 0 && tH < bestT) { bestT = tH; hitBot = b; headshot = true; hitOp = null }
+      if (tB >= 0 && tB < bestT) { bestT = tB; hitBot = b; headshot = false; hitOp = null }
+    }
+    // v11: REAL operators are targets too (spheres at their poses)
+    for (const op of this.remoteOps.values()) {
+      if (!op.alive || op.st !== 'live') continue
+      const center = new THREE.Vector3(op.x, op.y + 1.05, op.z)
+      const headC = new THREE.Vector3(op.x, op.y + 1.68, op.z)
+      const tB = this.raySphere(origin, dir, center, 0.62)
+      const tH = this.raySphere(origin, dir, headC, 0.3)
+      if (tH >= 0 && tH < bestT) { bestT = tH; hitOp = op; hitBot = null; headshot = true }
+      if (tB >= 0 && tB < bestT) { bestT = tB; hitOp = op; hitBot = null; headshot = false }
     }
     // buildings (ray vs AABB, slab method)
     let buildingT = 220
@@ -2769,7 +3223,7 @@ export class BattleRoyaleGame {
       const t = this.rayAABB(origin, dir, a)
       if (t >= 0 && t < buildingT) buildingT = t
     }
-    if (buildingT < bestT) { bestT = buildingT; hitBot = null }
+    if (buildingT < bestT) { bestT = buildingT; hitBot = null; hitOp = null }
 
     // terrain (coarse march)
     let terrainT = 220
@@ -2777,24 +3231,42 @@ export class BattleRoyaleGame {
       const p = origin.clone().addScaledVector(dir, d)
       if (p.y <= terrainH(p.x, p.z)) { terrainT = d; break }
     }
-    if (terrainT < bestT) { bestT = terrainT; hitBot = null }
+    if (terrainT < bestT) { bestT = terrainT; hitBot = null; hitOp = null }
 
     hitPoint = origin.clone().addScaledVector(dir, Math.min(bestT, 220))
     this.spawnTracer(origin.clone().addScaledVector(dir, 1.2), hitPoint)
 
-    if (hitBot) {
-      // damage with weapon stats + falloff (+ v10 rarity multiplier)
-      const w2 = WEAPONS[this.weapon]
-      let dmg = w2.damage * (headshot ? w2.headMult : 1)
-      dmg *= BR_RARITIES[this.weaponRarity]?.dmgMult ?? 1
-      if (bestT > w2.falloffStart) {
-        const f = clamp((bestT - w2.falloffStart) / Math.max(1, w2.falloffEnd - w2.falloffStart), 0, 1)
-        dmg *= 1 - f * (1 - w2.falloffMin)
-      }
-      hitBot.hp -= dmg
+    // shared damage math (weapon stats + falloff + rarity multiplier)
+    const w2 = WEAPONS[this.weapon]
+    let dmg = w2.damage * (headshot ? w2.headMult : 1)
+    dmg *= BR_RARITIES[this.weaponRarity]?.dmgMult ?? 1
+    if (bestT > w2.falloffStart) {
+      const f = clamp((bestT - w2.falloffStart) / Math.max(1, w2.falloffEnd - w2.falloffStart), 0, 1)
+      dmg *= 1 - f * (1 - w2.falloffMin)
+    }
+
+    if (hitOp) {
+      // v11: REAL operator hit — THEIR client applies the damage
       getAudio().fleshHit(Math.min(20, bestT))
-      if (hitBot.hp <= 0) this.killBot(hitBot, useAuth.getState().user ?? 'Operator', true)
-      else if (!hitBot.landed) { /* can't hit un-landed bots anyway */ }
+      useBr.getState().set({ hitAt: performance.now(), hitHead: headshot })
+      if (!this.practice && this.matchId) {
+        esNet.brPublishEv({ ty: 'hit', o: myOid(), tgt: hitOp.u, by: myOid(), byN: useAuth.getState().user ?? 'Operator', dmg: Math.round(dmg), hs: headshot ? 1 : 0, w: this.weapon })
+      }
+    } else if (hitBot) {
+      if (this.botLeader || this.practice) {
+        hitBot.hp -= dmg
+        getAudio().fleshHit(Math.min(20, bestT))
+        useBr.getState().set({ hitAt: performance.now(), hitHead: headshot })
+        if (hitBot.hp <= 0) this.killBot(hitBot, useAuth.getState().user ?? 'Operator', myOid(), true)
+        else if (!hitBot.landed) { /* can't hit un-landed bots anyway */ }
+      } else {
+        // v11: the leader applies the damage to its authoritative bots
+        getAudio().fleshHit(Math.min(20, bestT))
+        useBr.getState().set({ hitAt: performance.now(), hitHead: headshot })
+        if (!this.practice && this.matchId) {
+          esNet.brPublishEv({ ty: 'bothit', o: myOid(), bid: hitBot.id, by: myOid(), byN: useAuth.getState().user ?? 'Operator', dmg: Math.round(dmg), hs: headshot ? 1 : 0 })
+        }
+      }
     } else {
       getAudio().impact(clamp(bestT / 8, 0, 30))
     }
@@ -2856,6 +3328,328 @@ export class BattleRoyaleGame {
   }
 
   // ----------------------------------------------------------
+  // v11 — REAL remote operators: poses, events, chat, bots
+  // ----------------------------------------------------------
+  /** renders + interpolates the real operators on the island */
+  private updateRemoteOps(dt: number): void {
+    if (this.practice || this.remoteOps.size === 0) return
+    const wall = Date.now()
+    for (const op of this.remoteOps.values()) {
+      // disconnect detection: no poses for 8 s during the live match
+      if (op.alive && this.phase === 'live' && op.st !== 'plane' && wall - op.lastPose > 8000) {
+        op.alive = false
+        op.deadAt = this.clock
+        op.veh = -1
+        useBr.getState().addFeed(`${op.n.toUpperCase()} DISCONNECTED`, false)
+        continue
+      }
+      if (!op.alive) {
+        // fall animation (same easing as the bots)
+        if (op.rig && op.rig.usingSoldier && this.clock - op.deadAt < 0.7) {
+          const dt2 = this.clock - op.deadAt
+          const ease = 1 - Math.pow(1 - Math.min(1, dt2 / 0.6), 3)
+          op.rig.body.rotation.x = (Math.PI / 2) * ease
+          op.rig.body.rotation.z = 0.14 * ease
+          op.rig.body.position.y = -0.64 * ease
+        }
+        continue
+      }
+      if (op.st === 'plane') {
+        if (op.rig) op.rig.root.visible = false
+        continue
+      }
+      if (!op.rig) {
+        const tintIdx = [...op.u].reduce((a, c) => a + c.charCodeAt(0), 0) % BR_TINTS.length
+        op.rig = this.buildBotBody(tintIdx, op.weapon ?? 'p9')
+        op.rig.root.visible = true
+        this.mapScene.add(op.rig.root)
+        op.x = op.tx
+        op.z = op.tz
+        op.yaw = op.tyaw
+      } else if (!op.rig.root.visible) {
+        op.rig.root.visible = true
+      }
+      // interpolate toward the last pose
+      const dx = op.tx - op.x
+      const dz = op.tz - op.z
+      const dl = Math.hypot(dx, dz)
+      if (dl > 0.02) {
+        const step = Math.min(dl, dt * 12)
+        op.x += (dx / dl) * step
+        op.z += (dz / dl) * step
+      }
+      op.yaw += (op.tyaw - op.yaw) * Math.min(1, dt * 10)
+      if (op.moving) op.legPhase += dt * 9
+      op.y = op.st === 'freefall' ? op.ty : terrainH(op.x, op.z)
+      op.rig.root.position.set(op.x, op.y, op.z)
+      op.rig.root.rotation.y = op.yaw
+      this.animateRig(op.rig, op.legPhase, op.moving && dl > 0.2)
+      // driving? the vehicle follows the driver on every client
+      if (op.veh >= 0 && op.veh < this.vehicles.length) {
+        const v = this.vehicles[op.veh]
+        v.occupied = true
+        v.x = op.x
+        v.z = op.z
+        v.yaw = op.yaw
+        v.group.position.set(v.x, terrainH(v.x, v.z), v.z)
+        v.group.rotation.y = v.yaw
+      }
+    }
+  }
+
+  /** a pose arrived from a REAL operator */
+  private onNetPose(u: string, p: Record<string, unknown>): void {
+    if (this.disposed || this.practice || u === myOid()) return
+    const arr = Array.isArray(p.p) ? (p.p as unknown[]) : []
+    const x = typeof arr[0] === 'number' ? arr[0] : 0
+    const y = typeof arr[1] === 'number' ? arr[1] : 0
+    const z = typeof arr[2] === 'number' ? arr[2] : 0
+    let op = this.remoteOps.get(u)
+    if (!op) {
+      const w = String(p.w ?? '') as WeaponId | ''
+      op = {
+        u,
+        n: String(p.n ?? 'Operator').slice(0, 16),
+        rig: null,
+        x, y, z, tx: x, ty: y, tz: z, yaw: 0, tyaw: 0,
+        st: String(p.st ?? 'live'),
+        alive: true,
+        weapon: w || null,
+        moving: false,
+        legPhase: 0,
+        veh: -1,
+        lastPose: Date.now(),
+        deadAt: 0,
+      }
+      this.remoteOps.set(u, op)
+    }
+    op.tx = x
+    op.ty = y
+    op.tz = z
+    op.tyaw = typeof p.y === 'number' ? p.y : 0
+    op.st = String(p.st ?? 'live')
+    op.moving = p.m === 1
+    op.veh = typeof p.veh === 'number' ? p.veh : -1
+    op.lastPose = Date.now()
+    const w = String(p.w ?? '')
+    if (w && w !== op.weapon) {
+      op.weapon = w as WeaponId
+      if (op.rig) this.rebuildRigWeapon(op.rig)
+    }
+    if (op.veh < 0 && op.rig && op.st !== 'plane') op.rig.root.visible = true
+  }
+
+  /** the local player's pose, throttled (10 Hz moving / 2.5 Hz idle) */
+  private publishPose(t: number): void {
+    if (this.practice || !this.matchId) return
+    if (this.phase === 'queue' || this.phase === 'dead' || this.phase === 'victory') return
+    const moving = (this.movingFast() || this.phase === 'freefall' || this.inVehicle !== null) ? 1 : 0
+    const iv = moving || this.phase !== 'live' ? 100 : 400
+    if (t - this.poseAt < iv) return
+    this.poseAt = t
+    const veh = this.inVehicle ? this.vehicles.indexOf(this.inVehicle) : -1
+    esNet.brPublishPose([this.px, this.py, this.pz], this.yaw, moving, this.weapon ?? '', this.phase, veh)
+  }
+
+  /** periodic net duties: HUD status + bot-leader failover */
+  private netHousekeeping(t: number): void {
+    if (this.practice) return
+    if (t - this.netHkAt < 500) return
+    this.netHkAt = t
+    const st = esNet.status === 'online' ? 'online' : esNet.status
+    if (useBr.getState().netStatus !== st) useBr.getState().set({ netStatus: st })
+    if (this.phase === 'live' && !this.botLeader && this.matchId) {
+      // no bot snapshots for a while → the lowest-ID operator alive
+      // takes over the simulation so the match keeps flowing
+      const staleFor = this.lastBotsMsg === 0 ? 30000 : 6000
+      if (Date.now() - this.lastBotsMsg > staleFor) this.takeOverBots()
+    }
+  }
+
+  private takeOverBots(): void {
+    const me = myOid()
+    if (!me) return
+    let min = me
+    for (const [u, op] of this.remoteOps) {
+      if (op.alive && u < min) min = u
+    }
+    if (min !== me) return
+    if (!this.botsBuilt) {
+      this.buildBots(Math.max(0, TOTAL - 1 - this.remoteOps.size))
+      this.botsBuilt = true
+    }
+    this.botLeader = true
+    useBr.getState().addFeed('YOU TOOK OVER THE SIMULATION', false)
+  }
+
+  /** a REAL operator's chat line */
+  private onNetChat(p: Record<string, unknown>): void {
+    if (String(p.u) === myOid()) return
+    pushNetChatLine(String(p.n ?? 'Operator'), String(p.text ?? ''))
+  }
+
+  /** bot snapshots from the leader */
+  private onNetBots(p: Record<string, unknown>): void {
+    if (this.practice || this.disposed) return
+    this.lastBotsMsg = Date.now()
+    const bs = p.bs
+    if (!Array.isArray(bs)) return
+    for (const raw of bs) {
+      if (!Array.isArray(raw) || raw.length < 5) continue
+      const b = this.bots.find(x => x.id === raw[0])
+      if (!b) continue
+      const flags = raw[4]
+      if (!b.snapped) {
+        b.x = raw[1]
+        b.z = raw[2]
+        b.snapped = true
+      }
+      b.tx = raw[1]
+      b.tz = raw[2]
+      b.tyaw = raw[3]
+      b.moving = (flags & 4) !== 0
+      if ((flags & 2) !== 0 && !b.landed) {
+        b.landed = true
+        b.y = terrainH(b.x, b.z)
+        this.ensureBotMesh(b)
+      }
+      if ((flags & 1) === 0 && b.alive) this.killBotVisual(b)
+    }
+  }
+
+  /** match events: hits, kills, loot, vehicles, win, leaves… */
+  private onNetEv(p: Record<string, unknown>): void {
+    if (this.disposed || this.practice) return
+    const o = String(p.o ?? '')           // origin — skip my own echoes
+    if (o === myOid()) return
+    const me = myOid()
+    const ty = String(p.ty ?? '')
+    if (ty === 'mcount') {
+      const n = Math.max(0, Math.min(TOTAL - 1, Number(p.n) || 0))
+      if (!this.botsBuilt) {
+        this.buildBots(n)
+        this.botsBuilt = true
+      } else if (this.bots.length !== n) {
+        // roster skew correction — rebuild with the leader's count
+        for (const b of this.bots) {
+          if (b.rig) {
+            this.mapScene.remove(b.rig.root)
+            disposeTree(b.rig.root)
+          }
+        }
+        this.bots = []
+        this.buildBots(n)
+      }
+      return
+    }
+    if (ty === 'hit') {
+      if (String(p.tgt) === me && this.phase === 'live') {
+        this.lastDamager = { u: String(p.by ?? ''), n: String(p.byN ?? 'Operator') }
+        this.damagePlayer(Number(p.dmg) || 9, String(p.byN ?? 'an operator'))
+      }
+      return
+    }
+    if (ty === 'bothit') {
+      if (this.botLeader) {
+        const b = this.bots.find(x => x.id === Number(p.bid))
+        if (b && b.alive) {
+          b.hp -= Number(p.dmg) || 10
+          if (b.hp <= 0) this.killBot(b, String(p.byN ?? 'Operator'), String(p.by ?? ''), false)
+        }
+      }
+      return
+    }
+    if (ty === 'kill') {
+      const tgt = String(p.tgt ?? '')
+      const tgtN = String(p.tgtN ?? 'Operator')
+      const by = String(p.by ?? '')
+      const byN = String(p.byN ?? 'Operator')
+      if (by === me) {
+        this.kills++
+        getAudio().killConfirm()
+      }
+      useBr.getState().addFeed(`${byN.toUpperCase()} eliminated ${tgtN.toUpperCase()}`, by === me)
+      if (tgt.startsWith('b')) {
+        const b = this.bots.find(x => x.id === Number(tgt.slice(1)))
+        if (b && b.alive) this.killBotVisual(b)
+      } else if (tgt !== me) {
+        const op = this.remoteOps.get(tgt)
+        if (op && op.alive) this.killOpVisual(op)
+      }
+      return
+    }
+    if (ty === 'loot') {
+      const i = Number(p.i)
+      if (Number.isInteger(i) && i >= 0 && i < this.loot.length) {
+        const spot = this.loot[i]
+        if (!spot.taken) {
+          spot.taken = true
+          if (spot.mesh) {
+            this.mapScene.remove(spot.mesh)
+            disposeTree(spot.mesh)
+            spot.mesh = null
+            spot.item = null
+          }
+        }
+      }
+      return
+    }
+    if (ty === 'lootdrop') {
+      const x = Number(p.x)
+      const z = Number(p.z)
+      const w = String(p.w ?? 'p9') as WeaponId
+      if (Number.isFinite(x) && Number.isFinite(z)) this.spawnLootDrop(x, z, w)
+      return
+    }
+    if (ty === 'veh') {
+      const i = Number(p.i)
+      if (!Number.isInteger(i) || i < 0 || i >= this.vehicles.length) return
+      const v = this.vehicles[i]
+      if (String(p.st) === 'take') {
+        v.occupied = true
+      } else {
+        v.occupied = false
+        v.speed = 0
+        const x = Number(p.x)
+        const z = Number(p.z)
+        const yaw = Number(p.y)
+        if (Number.isFinite(x) && Number.isFinite(z)) {
+          v.x = x
+          v.z = z
+          if (Number.isFinite(yaw)) v.yaw = yaw
+          v.group.position.set(v.x, terrainH(v.x, v.z), v.z)
+          v.group.rotation.y = v.yaw
+        }
+      }
+      return
+    }
+    if (ty === 'win') {
+      const u = String(p.u ?? '')
+      if (u && u !== me && this.phase === 'live') {
+        this.playerDeath(String(p.n ?? 'the champion'))
+      }
+      return
+    }
+    if (ty === 'leave') {
+      const op = this.remoteOps.get(String(p.u ?? ''))
+      if (op && op.alive) {
+        this.killOpVisual(op)
+        useBr.getState().addFeed(`${op.n.toUpperCase()} LEFT THE MATCH`, false)
+      }
+      return
+    }
+  }
+
+  /** visual death of a REAL remote operator */
+  private killOpVisual(op: RemoteOp): void {
+    if (!op.alive) return
+    op.alive = false
+    op.deadAt = this.clock
+    op.veh = -1
+    if (op.rig) op.rig.root.visible = true
+  }
+
+  // ----------------------------------------------------------
   // PLAYER DAMAGE / DEATH / VICTORY
   // ----------------------------------------------------------
   private damagePlayer(dmg: number, source: string): void {
@@ -2881,12 +3675,19 @@ export class BattleRoyaleGame {
       kills: this.kills,
       duration: Math.max(0, (this.endTime - this.matchStartAt) / 1000),
     })
+    if (!this.practice && this.matchId) {
+      // v11: the whole island hears about it (credit to the last damager)
+      esNet.brPublishEv({
+        ty: 'kill', o: myOid(), tgt: myOid(), tgtN: useAuth.getState().user ?? 'Operator',
+        by: this.lastDamager?.u ?? '', byN: source,
+      })
+    }
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
   }
 
   private checkVictory(): void {
     if (this.phase !== 'live') return
-    if (this.bots.every(b => !b.alive)) {
+    if (this.aliveCount() <= 1) {
       this.phase = 'victory'
       this.endTime = performance.now()
       getAudio().roundEnd()
@@ -2896,6 +3697,10 @@ export class BattleRoyaleGame {
         kills: this.kills,
         duration: Math.max(0, (this.endTime - this.matchStartAt) / 1000),
       })
+      if (!this.practice && this.matchId) {
+        // v11: crown broadcast — everyone sees the champion
+        esNet.brPublishEv({ ty: 'win', o: myOid(), u: myOid(), n: useAuth.getState().user ?? 'Operator' })
+      }
       if (document.pointerLockElement === this.canvas) document.exitPointerLock()
     }
   }
@@ -3010,6 +3815,22 @@ export class BattleRoyaleGame {
   // ----------------------------------------------------------
   // HUD SYNC
   // ----------------------------------------------------------
+  /** v11.2: current spread in degrees — feeds the dynamic crosshair */
+  private crosshairSpread(): number {
+    if (!this.weapon) return 1.2
+    const w = WEAPONS[this.weapon]
+    const sprintKey = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
+    const crouchKey = this.keys.has('ControlLeft')
+    const hSpeed = this.movingFast() ? (sprintKey ? 7.4 : crouchKey ? 2.4 : 5.0) : 0
+    let spread = w.spreadBase
+    spread += w.spreadMove * Math.min(1, hSpeed / 6)
+    if (!this.onGround) spread += w.spreadAir
+    if (crouchKey) spread *= 0.72
+    if (this.adsAmt > 0.6) spread *= 0.45
+    spread += this.sprayIdx * w.sprayInacc
+    return spread
+  }
+
   private syncHud(): void {
     const t = performance.now()
     if (t - this.hudAt < 120) return
@@ -3029,6 +3850,9 @@ export class BattleRoyaleGame {
       stormPhase: this.stormIdx + 1,
       stormLabel: this.stormState === 'wait' ? `STORM MOVES IN ${Math.ceil(this.stormTimer)}s` : 'STORM SHRINKING',
       stormTimer: Math.ceil(Math.max(0, this.stormTimer)),
+      // v11.2: dynamic crosshair (same spread inputs) + sniper scope
+      spread: this.crosshairSpread(),
+      scope: !!this.weapon && !!WEAPONS[this.weapon].sniper && this.adsAmt > 0.7,
     })
   }
 
@@ -3044,20 +3868,40 @@ export class BattleRoyaleGame {
     dt = Math.min(dt, 0.1)
     this.clock += dt
 
-    // progressive map build (one chunk per frame during matchmaking)
-    if (this.buildQueue.length) {
+    // progressive map build (one chunk per frame) — v11: HELD until the
+    // match seed is known, so every client builds the SAME world
+    if (this.buildQueue.length && this.worldSeed !== null) {
       const chunk = this.buildQueue.shift()!
       chunk()
     }
 
-    if (this.phase === 'queue') this.updateQueue(now, dt)
-    this.updatePlane(dt)
-    this.updateFreefall(dt)
-    this.updatePlayer(dt)
-    this.updateBots(dt, now)
-    this.updateStorm(dt)
-    this.updateTracers()
-    this.checkVictory()
+    // v11.2: everything freezes behind the pause menu (render keeps running)
+    if (!this.paused) {
+      if (this.phase === 'queue') this.updateQueue(now, dt)
+      this.updatePlane(dt)
+      this.updateFreefall(dt)
+      this.updatePlayer(dt)
+      this.updateBots(dt, now)
+      this.updateRemoteOps(dt)
+      this.updateStorm(dt)
+      this.updateTracers()
+      this.publishPose(now)
+      this.netHousekeeping(now)
+      this.checkVictory()
+
+      // ---- v11.2: FOV + ADS + sprint + spray (same model as the normal modes) ----
+      const wNow = this.weapon ? WEAPONS[this.weapon] : null
+      const targetFov = this.ads && this.phase === 'live' && !this.reloading && wNow
+        ? (wNow.zoomFov || 62)
+        : this.sprintAmt > 0.3 ? 74 + 7 * this.sprintAmt : 74
+      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 10)
+      this.camera.updateProjectionMatrix()
+      this.adsAmt += ((this.ads && this.phase === 'live' && !this.reloading ? 1 : 0) - this.adsAmt) * Math.min(1, dt * 9)
+      this.sprintAmt += (((this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && this.movingFast() && !this.ads ? 1 : 0) - this.sprintAmt) * Math.min(1, dt * 8)
+      if (now - this.lastShotTime > 380) this.sprayIdx = Math.max(0, this.sprayIdx - dt * 18)
+      // sniper ADS: hide the viewmodel (scope takes over, like the normal modes)
+      if (this.vmGroup) this.vmGroup.visible = !(wNow?.sniper && this.adsAmt > 0.7)
+    }
 
     // dead: slow orbit spectate over the drop area
     if (this.phase === 'dead' || this.phase === 'victory') {
@@ -3077,19 +3921,25 @@ export class BattleRoyaleGame {
     // viewmodel kick recovery + reload finish
     if (this.vmGroup) {
       this.vmKick *= Math.max(0, 1 - dt * 9)
+      // v11.2: hip → ADS pose (the SAME weaponPose data as the normal modes)
+      const a = this.adsAmt
+      const pose = this.weapon ? weaponPose(this.weapon) : null
+      const bx = pose ? pose.hip.x + (pose.ads.x - pose.hip.x) * a : this.vmBase.x
+      const by = pose ? pose.hip.y + (pose.ads.y - pose.hip.y) * a : this.vmBase.y
+      const bz = pose ? pose.hip.z + (pose.ads.z - pose.hip.z) * a : this.vmBase.z
       const bob = this.movingFast() && this.phase === 'live' && !this.inVehicle
-        ? Math.sin(this.clock * 9.5) * 0.008
+        ? Math.sin(this.clock * 9.5) * 0.008 * (1 - a * 0.7)
         : 0
       // v9.1: pose base del arma real (weaponPose) + patada y balanceo encima
       this.vmGroup.position.set(
-        this.vmBase.x,
-        this.vmBase.y + bob,
-        this.vmBase.z + this.vmKick * 0.09,
+        bx,
+        by + bob,
+        bz + this.vmKick * 0.09 * (1 - a * 0.6),
       )
       this.vmGroup.rotation.set(
-        this.vmBaseRot.x + this.vmKick * 0.16,
-        this.vmBaseRot.y,
-        this.vmBaseRot.z,
+        (this.vmBaseRot.x + this.vmKick * 0.16) * (1 - a),
+        this.vmBaseRot.y * (1 - a),
+        this.vmBaseRot.z * (1 - a * 0.8),
       )
     }
     // v9.1: el loot flota y gira — se lee como recogible
@@ -3147,6 +3997,10 @@ export class BattleRoyaleGame {
         duration: Math.max(0, (performance.now() - this.matchStartAt) / 1000),
       })
     }
+    if (!this.practice && this.matchId) {
+      // v11: the other operators keep fighting — count me out
+      esNet.brPublishEv({ ty: 'leave', o: myOid(), u: myOid(), n: useAuth.getState().user ?? 'Operator' })
+    }
     this.dispose()
   }
 
@@ -3155,6 +4009,11 @@ export class BattleRoyaleGame {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    // v11: leave the lobby + match channels cleanly
+    if (this.mcountTimer) { clearTimeout(this.mcountTimer); this.mcountTimer = null }
+    esNet.brLeaveQueue()
+    esNet.brMatchLeave()
+    this.remoteOps.clear()
     cancelAnimationFrame(this.raf)
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
@@ -3162,6 +4021,8 @@ export class BattleRoyaleGame {
     window.removeEventListener('resize', this.onResize)
     document.removeEventListener('pointerlockchange', this.onLockChange)
     this.canvas.removeEventListener('mousedown', this.onMouseDown)
+    this.canvas.removeEventListener('mouseup', this.onMouseUp)
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu)
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
 
     getAudio().setDuck(false)

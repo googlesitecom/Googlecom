@@ -12,7 +12,6 @@ export interface BrQueuePlayer {
   name: string
   real: boolean      // human connection (vs bot filler)
 }
-
 export interface BrFeedEntry {
   id: number
   text: string
@@ -43,12 +42,15 @@ export const BR_RARITIES: BrRarity[] = [
   { id: 'legendary', label: 'LEGENDARY', color: 0xffb347, css: '#ffb347', dmgMult: 1.55, weight: 0.05 },
 ]
 
-/** weighted rarity roll; minTier crates supply drops floor */
-export function rollBrRarity(minTier = 0): number {
+/** weighted rarity roll; minTier crates supply drops floor
+ *  v11: optional rng — the BR world generator passes the SEEDED rng so
+ *  every client rolls the same loot from the match seed */
+export function rollBrRarity(minTier = 0, rng?: () => number): number {
+  const rnd = rng ?? Math.random
   const pool = BR_RARITIES.slice(Math.max(0, Math.min(BR_RARITIES.length - 1, minTier)))
   let total = 0
   for (const r of pool) total += r.weight
-  let roll = Math.random() * total
+  let roll = rnd() * total
   for (let i = 0; i < pool.length; i++) {
     roll -= pool[i].weight
     if (roll <= 0) return BR_RARITIES.length - pool.length + i
@@ -59,6 +61,18 @@ export function rollBrRarity(minTier = 0): number {
 interface BrState {
   active: boolean
   phase: BrPhase
+  /** v11: offline practice (all bots, no countdown, no ranking) */
+  practice: boolean
+  /** v11: online service state for the queue overlay */
+  netStatus: 'offline' | 'connecting' | 'online'
+  /** v11.2: pause menu (ESC) — same as the normal modes */
+  paused: boolean
+  /** v11.2: dynamic crosshair spread (degrees) + sniper scope */
+  spread: number
+  scope: boolean
+  /** v11.2: hitmarker flash */
+  hitAt: number
+  hitHead: boolean
   /** matchmaking: connected operators (queue/lobby island) */
   queuePlayers: BrQueuePlayer[]
   countdown: number          // s remaining (matchmaking / plane hint)
@@ -100,6 +114,13 @@ let feedId = 0
 const initial = {
   active: false,
   phase: 'queue' as BrPhase,
+  practice: false,
+  netStatus: 'offline' as BrState['netStatus'],
+  paused: false,
+  spread: 1.2,
+  scope: false,
+  hitAt: 0,
+  hitHead: false,
   queuePlayers: [],
   countdown: 0,
   countdownActive: false,
