@@ -5,6 +5,7 @@
 // ============================================================
 import {
   GAME, WEAPONS, BUY_ITEMS, PICKUP_INFO, EQUIPMENT, computeDamage, segmentBlocked,
+  CRATE_ZONES, type NetCrate,
   WAYPOINTS, BOT_NAMES, BOT_SKILL,
   MODES, FLAG_A, FLAG_B, DOM_ZONES, getMapData,
   type MapId, type MapData,
@@ -120,6 +121,16 @@ interface SimPickup {
   respawnAt: number
 }
 
+/** v14: entrega aérea programada (supply drop) */
+interface SimCrate {
+  id: number
+  x: number; z: number
+  label: string
+  dropAt: number       // ms (reloj de partida) — el avión suelta la caja
+  landAt: number       // ms — la caja toca el suelo
+  opened: boolean
+}
+
 /** estado de una bandera de CTF */
 interface SimFlag {
   team: Team                    // equipo DUEÑO de la bandera
@@ -176,6 +187,13 @@ export class GameSim {
   private grenades = new Map<string, SimGrenade>()
   private smokes: SimSmoke[] = []
   private pickups: SimPickup[] = []
+  // v14: entregas aéreas
+  private crates: SimCrate[] = []
+  private crateSeq = 0
+  private nextCrateAt = 0
+  private lastCrateZone = -1
+  private crateIntervalMs = GAME.CRATE_INTERVAL * 1000
+  private crateFallMs = GAME.CRATE_FALL_TIME * 1000
   private grenadeSeq = 0
   private botSeq = 0
   private timer: ReturnType<typeof setInterval> | null = null
@@ -936,6 +954,9 @@ export class GameSim {
       p.multi = 0
       p.flag = null
     }
+    // v14: cada ronda reprograma la primera entrega aérea
+    this.crates = this.crates.filter(c => !c.opened)
+    this.nextCrateAt = now() + GAME.CRATE_FIRST_AT * 1000
     this.emit('roundStart', { roundNumber: this.round.roundNumber })
   }
 
@@ -1167,6 +1188,13 @@ export class GameSim {
 
   /** objetivo táctico del bot según el modo (null = patrulla clásica) */
   private botObjective(p: SimPlayer): [number, number] | null {
+    // v14: caja de suministro aterrizada cerca → los bots van a por ella
+    const t = now()
+    for (const c of this.crates) {
+      if (c.opened || t < c.landAt) continue
+      const d = Math.hypot(p.x - c.x, p.z - c.z)
+      if (d < 34) return [c.x, c.z]
+    }
     if (this.mode === 'bandera') {
       if (p.flag) {
         // lleva la bandera: correr a su base
@@ -1753,6 +1781,7 @@ export class GameSim {
       team: p.team,
       players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
       round: this.netRound(),
+      crates: this.crates.filter(c => !c.opened).map(x => this.netCrate(x)),
       econ: this.econData(p),
     }
   }
@@ -1782,6 +1811,8 @@ export class GameSim {
 
     // pociones: reaparición y recogida por proximidad
     this.updatePickups(t)
+    // v14: entregas aéreas (programación, aterrizaje y saqueo de bots)
+    this.updateCrates(t)
 
     for (const p of this.players.values()) {
       if (p.bot) this.botUpdate(p, dt, t)
@@ -1886,6 +1917,7 @@ export class GameSim {
       players: Array.from(this.players.values()).map(x => this.netPlayer(x)),
       grenades: Array.from(this.grenades.values()).map(x => this.netGrenade(x)),
       pickups: this.pickups.map(x => this.netPickup(x)),
+      crates: this.crates.filter(c => !c.opened).map(x => this.netCrate(x)),
       round: this.netRound(),
     }
     this.emit('snapshot', snap)
@@ -1894,6 +1926,119 @@ export class GameSim {
   getPlayer(id: string): SimPlayer | undefined { return this.players.get(id) }
 
   emitSnapshotOnce(): void { this.broadcastSnapshot() }
+
+  // ------------------------------------------------------------
+  // v14 — ENTREGAS AÉREAS: un avión cruza el mapa cada ~45 s y
+  // suelta una caja con paracaídas sobre una zona abierta. La
+  // caja se abre con [E] (los bots la saquean al pasar) y suelta
+  // arma + escudo + equipo táctico.
+  // ------------------------------------------------------------
+  private cratesEnabled(): boolean {
+    // la campaña tiene su propio director y economía de misión
+    return this.mode !== 'historia'
+  }
+
+  private netCrate(c: SimCrate): NetCrate {
+    return { id: c.id, x: round2(c.x), z: round2(c.z), dropAt: c.dropAt, landAt: c.landAt, opened: c.opened }
+  }
+
+  /** ?cratetest=1 — entregas rápidas para verificar la mecánica */
+  debugFastCrates(): void {
+    this.crateIntervalMs = 12000
+    this.crateFallMs = 4500
+    this.nextCrateAt = now() + 1500
+  }
+
+  private updateCrates(t: number): void {
+    if (!this.cratesEnabled() || this.round.phase !== 'live') return
+
+    // --- programar la siguiente entrega ---
+    if (this.nextCrateAt === 0) this.nextCrateAt = t + GAME.CRATE_FIRST_AT * 1000
+    if (t >= this.nextCrateAt) {
+      this.nextCrateAt = t + this.crateIntervalMs
+      // zona aleatoria distinta de la última
+      let zi = Math.floor(Math.random() * CRATE_ZONES.length)
+      if (zi === this.lastCrateZone && CRATE_ZONES.length > 1) zi = (zi + 1) % CRATE_ZONES.length
+      this.lastCrateZone = zi
+      const zone = CRATE_ZONES[zi]
+      const crate: SimCrate = {
+        id: ++this.crateSeq,
+        x: zone.x + rand(-2.5, 2.5),
+        z: zone.z + rand(-2.5, 2.5),
+        label: zone.label,
+        dropAt: t,
+        landAt: t + this.crateFallMs,
+        opened: false,
+      }
+      this.crates.push(crate)
+      // aviso a todos: el motor pinta el avión y la caída
+      this.emit('crateIncoming', { id: crate.id, x: crate.x, z: crate.z, label: crate.label, landAt: crate.landAt })
+      this.announce(`SUPPLY DROP INBOUND — ${crate.label}`, 'round')
+    }
+
+    // --- bots: saquear cajas aterrizadas que tengan a mano ---
+    for (const c of this.crates) {
+      if (c.opened || t < c.landAt) continue
+      for (const p of this.players.values()) {
+        if (p.bot && !p.dead && Math.hypot(p.x - c.x, p.z - c.z) < 2.6) {
+          this.openCrate(p, c)
+          break
+        }
+      }
+    }
+    // las abiertas se retiran del array (el snapshot ya no las lista)
+    this.crates = this.crates.filter(c => !(c.opened && t > c.landAt + 1500))
+  }
+
+  /** petición del cliente ([E] junto a la caja) */
+  handleCrateOpen(pid: string, crateId: number): void {
+    const p = this.players.get(pid)
+    if (!p || p.dead) return
+    const c = this.crates.find(k => k.id === crateId && !k.opened)
+    if (!c) return
+    if (now() < c.landAt) return                      // aún cayendo
+    if (Math.hypot(p.x - c.x, p.z - c.z) > GAME.CRATE_OPEN_RADIUS + 1.5) return
+    this.openCrate(p, c)
+  }
+
+  private openCrate(p: SimPlayer, c: SimCrate): void {
+    c.opened = true
+    // ---- arma (de las largas: la caja siempre trae algo bueno) ----
+    const pool: WeaponId[] = ['mp9', 'ar47', 'cr4', 'aguila', 'awp338', 'breacher']
+    const wid = pool[Math.floor(Math.random() * pool.length)]
+    let weaponLabel = WEAPONS[wid].name
+    if (!p.armory.includes(wid)) {
+      p.armory.push(wid)
+      this.autoEquip(p, wid)
+      this.syncLoadout(p, wid)
+      this.emit('refillAmmo', { weapon: wid }, p.id)
+      weaponLabel += ' — NEW'
+    } else {
+      this.emit('refillAmmo', { weapon: wid }, p.id)
+      weaponLabel += ' — AMMO REFILLED'
+    }
+    // ---- equipo táctico ----
+    const shieldGain = Math.min(50, 100 - p.shield)
+    p.shield = Math.min(100, p.shield + 50)
+    const hpGain = Math.min(25, 100 - p.hp)
+    p.hp = Math.min(100, p.hp + 25)
+    p.money += 800
+    p.frags = Math.min(3, p.frags + 1)
+    p.stims = Math.min(3, p.stims + 1)
+    this.emit('econ', this.econData(p), p.id)
+    this.emit('spawnEvent', {
+      pos: [p.x, p.y, p.z], yaw: p.yaw, hp: p.hp, armor: p.shield,
+      weapons: p.owned, weapon: p.weapon, frags: p.frags, money: p.money, protect: 0,
+      flares: p.flares, stims: p.stims, vest: p.vest ? 1 : 0, helmet: p.helmet ? 1 : 0,
+    }, p.id)
+    // resumen para quien abre + aviso para todos
+    this.emit('crateEvent', {
+      weapon: wid, weaponLabel, shieldGain: Math.round(shieldGain), hpGain: Math.round(hpGain),
+      money: 800, frags: 1, stims: 1, label: c.label,
+    }, p.id)
+    this.announce(`${p.name.toUpperCase()} SECURED THE SUPPLY DROP (${c.label})`, 'info')
+    this.emit('crateOpened', { id: c.id, by: p.id, byName: p.name, label: c.label })
+  }
 
   // ------------------------------------------------------------
   // Pociones (estilo Fortnite): recogen los jugadores humanos

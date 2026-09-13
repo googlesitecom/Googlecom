@@ -6,11 +6,10 @@ import {
 
 let errors = 0
 
-// 1) cajas dentro de límites (v6.3: la SIERRA perimetral de roca puede
-//    sobresalir hasta ±100 — es el límite natural del mapa, como el
-//    anillo montañoso del modo historia)
+// 1) cajas dentro de límites (v14: mapa 200×200 — la SIERRA perimetral
+//    de roca vive a partir de ±106 y puede sobresalir hasta ±146)
 for (const b of MAP_BOXES) {
-  const limit = b.mat === 'rock' ? 100 : 72
+  const limit = b.mat === 'rock' ? 146 : 102
   if (Math.abs(b.x) > limit || Math.abs(b.z) > limit) { console.error(`FUERA DE LÍMITES: box(${b.x},${b.z}) mat=${b.mat}`); errors++ }
   if (b.h <= 0 || b.w <= 0 || b.d <= 0) { console.error(`DIMENSIÓN INVÁLIDA: box(${b.x},${b.y},${b.z})`); errors++ }
 }
@@ -78,5 +77,5 @@ for (const p of PICKUP_SPOTS) {
 }
 console.log(`Pociones: ${PICKUP_SPOTS.length}`)
 
-console.log(GAME.MAP_HALF === 70 ? 'MAP_HALF = 70 ✓' : 'MAP_HALF INCORRECTO')
+console.log(GAME.MAP_HALF === 100 ? 'MAP_HALF = 100 ✓' : 'MAP_HALF INCORRECTO')
 console.log(errors === 0 ? 'SIN ERRORES' : `ERRORES: ${errors}`)

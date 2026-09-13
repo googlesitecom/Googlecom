@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useGame } from '@/game/store'
 import { useAuth, restoreSession } from '@/game/auth'
-import { useBr } from '@/game/br-store'
 import { MainMenu, ConnectingScreen, PauseMenu, NetToasts } from '@/components/game/menus'
 import { esNet } from '@/game/esnet'
 import { Hud, DeathOverlay, StoryVictory } from '@/components/game/hud'
@@ -19,23 +18,12 @@ const GameMount = dynamic(
   { ssr: false },
 )
 
-// v9: Battle Royale lives in its own lazily-fetched chunk (modular
-// architecture) — the module code is only downloaded and evaluated
-// when the player actually enters BR, and it is fully disposed on exit.
-const BrMount = dynamic(
-  () => import('@/components/game/br-mount').then(m => m.BrMount),
-  { ssr: false },
-)
-
 export default function Home() {
   const phase = useGame(s => s.phase)
   const [booted, setBooted] = useState(false)
   const authReady = useAuth(s => s.ready)
   const authUser = useAuth(s => s.user)
-  const brActive = useBr(s => s.active)
   const inGame = phase !== 'menu'
-  // Battle Royale takes over the whole screen while active
-  const brScreen = brActive
 
   // la música arranca con el primer gesto (política de autoplay) y ya no se
   // detiene: el motor la atenúa durante la partida y la restaura en el menú
@@ -78,9 +66,8 @@ export default function Home() {
       {!booted && <BootScreen onDone={onBootDone} />}
       {booted && (
         <>
-          {brScreen && <BrMount />}
-          {!brScreen && authReady && !authUser && <AuthScreen />}
-          {!brScreen && authUser && (
+          {authReady && !authUser && <AuthScreen />}
+          {authUser && (
             <>
               {inGame && <GameMount />}
               {inGame && <Hud />}

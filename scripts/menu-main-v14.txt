@@ -1,0 +1,773 @@
+type MenuOverlay = 'controls' | 'settings' | 'info'
+type PlaySource = 'bots' | 'room' | 'join' | 'quick'
+
+// ============================================================
+// v14 — FORTNITE-STYLE LOBBY
+// Your operator in 3D with the username above, the squad standing
+// beside you, a mode picker that drops UP from the bottom bar with
+// every mode in the game, and one big PLAY / READY button that
+// adapts to the squad (leader launches, members ready up).
+// ============================================================
+export function MainMenu() {
+  const phase = useGame(s => s.phase)
+  const setPlayerName = useGame(s => s.setPlayerName)
+  const setHud = useGame(s => s.setHud)
+  const authUser = useAuth(s => s.user)
+  // ---- squad / network ----
+  const partyActive = useParty(s => s.active)
+  const partyName = useParty(s => s.name)
+  const partyMembers = useParty(s => s.members)
+  const partyLeaderOid = useParty(s => s.leaderOid)
+  const partyReady = useParty(s => s.ready)
+  const squadRoomCode = useParty(s => s.roomCode)
+  const squadRoomKind = useParty(s => s.roomKind)
+  const netStatus = useNet(s => s.status)
+  const rooms = useRooms(s => s.rooms)
+
+  // ---- menu state ----
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [overlay, setOverlay] = useState<MenuOverlay | null>(null)
+  const [modeOpen, setModeOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
+  const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
+  const [difficulty, setDifficulty] = useState<BotDifficulty>('normal')
+  const [fillBots, setFillBots] = useState(0)
+  const [roomKind, setRoomKind] = useState<RoomKind>('2v2')
+  const [fillEmpty, setFillEmpty] = useState(true)
+  const [code, setCode] = useState('')
+  const [coop, setCoop] = useState(false)
+  const [source, setSource] = useState<PlaySource>('bots')
+  const [previewWeapon, setPreviewWeapon] = useState<WeaponId>('ar47')
+  const [quickState, setQuickState] = useState<'' | 'scanning' | 'joining'>('')
+  const quickIv = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // v11: the squad leader opened a room → auto-join with the shared code
+  useEffect(() => {
+    if (!squadRoomCode || phase !== 'menu') return
+    useParty.getState().clearRoom()
+    const n = (name.trim() || authUser || 'Operator').slice(0, 16)
+    setPlayerName(n)
+    setHud({
+      mode: 'guest',
+      roomCode: squadRoomCode,
+      botDifficulty: 'normal',
+      fillBots: 0,
+      gameMode: 'escaramuza',
+      roomKind: (squadRoomKind as RoomKind) || '2v2',
+      fillEmptyWithBots: true,
+      lobby: null,
+      netStatus: 'connecting',
+      netError: '',
+      story: {
+        active: false, chapter: 0, chapterTitle: '', objective: '', progress: '', hint: '',
+        timer: 0, dialogue: null, status: 'playing', stats: { time: 0, kills: 0 },
+      },
+    })
+    useGame.getState().setPhase('connecting')
+  }, [squadRoomCode, phase])
+
+  // v14: live room browser while the mode picker is open
+  useEffect(() => {
+    if (modeOpen && esNet.status === 'online') esNet.roomsBrowse()
+    return () => { esNet.roomsStopBrowse() }
+  }, [modeOpen, netStatus])
+
+  // v14: never leave a quick-match scan running
+  useEffect(() => () => { if (quickIv.current) clearInterval(quickIv.current) }, [])
+
+  if (phase !== 'menu') return null
+
+  const oid = myOid()
+  const effectiveName = name.trim() || authUser || ''
+  const amLeader = !partyActive || (partyActive && partyLeaderOid === oid)
+  const readyCount = partyMembers.filter(m => partyReady[m.u]).length
+  const iAmReady = !!partyReady[oid]
+
+  const launch = (m: 'solo' | 'host' | 'guest', roomCode = '', forceMode?: GameMode, forceKind?: RoomKind) => {
+    const n = effectiveName.trim() || 'Operator'
+    if (n.length < 2) { setError('Name must be at least 2 characters'); setModeOpen(true); return }
+    setPlayerName(n)
+    setError('')
+    const kind = forceKind ?? (m === 'host' ? roomKind : '1v1')
+    setHud({
+      mode: m,
+      roomCode,
+      botDifficulty: difficulty,
+      fillBots,
+      gameMode: forceMode ?? gameMode,
+      roomKind: kind,
+      fillEmptyWithBots: kind === 'coop' ? false : fillEmpty,
+      lobby: null,
+      netStatus: 'connecting',
+      netError: '',
+      story: {
+        active: (forceMode ?? gameMode) === 'historia',
+        chapter: 0,
+        chapterTitle: '',
+        objective: '',
+        progress: '',
+        hint: '',
+        timer: 0,
+        dialogue: null,
+        status: 'playing',
+        stats: { time: 0, kills: 0 },
+      },
+    })
+    useGame.getState().setPhase('connecting')
+  }
+
+  // v14: QUICK PLAY — scan the public rooms for a few seconds; join the
+  // first one playing your selected mode, otherwise host a fresh room.
+  const quickPlay = (): void => {
+    if (esNet.status !== 'online') { launch('host'); return }
+    setQuickState('scanning')
+    esNet.roomsBrowse()
+    const t0 = Date.now()
+    if (quickIv.current) clearInterval(quickIv.current)
+    quickIv.current = setInterval(() => {
+      if (useGame.getState().phase !== 'menu') { clearInterval(quickIv.current!); quickIv.current = null; return }
+      const live = useRooms.getState().rooms.filter(r => r.players < r.cap && r.mode === gameMode)
+      if (live.length) {
+        clearInterval(quickIv.current!); quickIv.current = null
+        setQuickState('joining')
+        launch('guest', live[0].code)
+      } else if (Date.now() - t0 > 6000) {
+        clearInterval(quickIv.current!); quickIv.current = null
+        setQuickState('')
+        launch('host')
+      }
+    }, 600)
+  }
+
+  const onPlay = (): void => {
+    getAudio().uiClick()
+    // squad member → READY toggle (the leader launches for everyone)
+    if (partyActive && !amLeader) { esNet.setPartyReady(!iAmReady); return }
+    if (gameMode === 'historia') {
+      if (coop) launch('host', '', 'historia', 'coop')
+      else launch('solo', '', 'historia')
+      return
+    }
+    if (source === 'quick') { quickPlay(); return }
+    launch(source === 'bots' ? 'solo' : source === 'room' ? 'host' : 'guest', source === 'join' ? code : '')
+  }
+
+  // ---- labels for the mode card / play button ----
+  const modeInfo = MODES[gameMode]
+  const sourceLabel = gameMode === 'historia'
+    ? (coop ? 'CO-OP · ONLINE' : 'SOLO MISSION')
+    : source === 'bots' ? 'OFFLINE · VS BOTS'
+      : source === 'room' ? `ONLINE · ${roomKind.toUpperCase()}`
+        : source === 'join' ? 'JOIN BY CODE'
+          : 'QUICK MATCH · ONLINE'
+  const playLabel = partyActive && !amLeader
+    ? (iAmReady ? 'READY ✓' : 'READY')
+    : quickState === 'scanning'
+      ? 'SEARCHING…'
+      : quickState === 'joining'
+        ? 'JOINING…'
+        : gameMode === 'historia'
+          ? (coop ? 'CREATE CO-OP' : 'BEGIN OPERATION')
+          : source === 'bots'
+            ? 'PLAY'
+            : source === 'room'
+              ? 'CREATE ROOM'
+              : source === 'join'
+                ? 'JOIN ROOM'
+                : 'QUICK PLAY'
+
+  const lobbyChars: LobbyChar[] = [
+    { id: 'me', name: effectiveName || 'Operator', leader: amLeader, you: true, weapon: previewWeapon },
+    ...partyMembers
+      .filter(m => m.u !== oid)
+      .map(m => ({ id: m.u, name: m.n, leader: m.leader, you: false, weapon: 'cr4' as WeaponId })),
+  ]
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-hidden" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
+      <MenuBackdrop />
+
+      {/* ============ TOP BAR: title (left) · tools + user (right) ============ */}
+      <div className="absolute top-0 left-0 right-0 z-20 px-4 sm:px-6 py-4 flex items-start justify-between gap-3 pointer-events-none">
+        <div className="select-none pointer-events-auto">
+          <h1 className="font-tac text-3xl sm:text-[44px] tracking-[0.22em] text-stone-100 leading-none uppercase"
+            style={{ textShadow: '0 2px 28px rgba(0,0,0,0.8), 0 0 60px rgba(217,160,91,0.18)' }}>
+            Emergency<span className="text-amber-400 ml-3">Strike</span>
+          </h1>
+          <div className="flex items-center gap-3 mt-2">
+            <span className="h-px w-14 bg-amber-500/50" />
+            <p className="font-tac-md text-stone-400 text-[10px]">
+              Tactical multiplayer FPS · Operation Ashfall
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0 pointer-events-auto">
+          {([
+            { id: 'controls' as const, icon: Keyboard, label: 'CONTROLS' },
+            { id: 'settings' as const, icon: Settings, label: 'SETTINGS' },
+            { id: 'info' as const, icon: Info, label: 'INFO' },
+          ]).map(t => (
+            <button
+              key={t.id}
+              onClick={() => { getAudio().uiClick(); setOverlay(t.id) }}
+              className="w-10 h-10 rounded-md border border-stone-700/70 bg-[#0b0e11]/85 flex items-center justify-center text-stone-400 hover:text-amber-200 hover:border-amber-500/60 transition-colors shadow-xl"
+              title={t.label}
+            >
+              <t.icon className="w-4.5 h-4.5" />
+            </button>
+          ))}
+          <UserWidget onOpen={() => setProfileOpen(true)} />
+        </div>
+      </div>
+
+      {/* ============ CENTER: the 3D lobby stage ============ */}
+      <div className="absolute inset-0 z-10">
+        <LobbyStage chars={lobbyChars} />
+      </div>
+
+      {/* ============ LEFT: squad panel (adapts to the people) ============ */}
+      <div className="absolute left-4 sm:left-6 top-1/2 -translate-y-1/2 z-20 w-[228px] hidden md:block">
+        {partyActive ? (
+          <div className="rounded-lg border border-amber-700/40 bg-[#0b0e11]/88 backdrop-blur-md shadow-2xl overflow-hidden tac-corner">
+            <div className="px-3.5 py-2.5 border-b border-stone-800/80 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-tac-md text-[10px] text-amber-300/90 tracking-[0.18em] truncate">SQUAD · {readyCount}/{partyMembers.length} READY</div>
+                <div className="font-tac-md text-[9px] text-stone-600 truncate">{partyName || 'SQUAD'}</div>
+              </div>
+              <Users className="w-4 h-4 text-amber-400/70 shrink-0" />
+            </div>
+            <div className="p-2 space-y-1.5 max-h-[38vh] overflow-y-auto">
+              {partyMembers.map(m => (
+                <div key={m.u}
+                  className={`flex items-center gap-2.5 rounded-md border px-2.5 py-2 ${
+                    m.u === oid
+                      ? 'border-amber-500/50 bg-amber-500/[0.07]'
+                      : 'border-stone-800 bg-stone-950/60'
+                  }`}>
+                  <span className={`w-7 h-7 rounded border flex items-center justify-center font-tac text-[10px] shrink-0 ${
+                    m.u === oid ? 'border-amber-600/50 bg-amber-950/40 text-amber-300' : 'border-stone-700 bg-stone-900 text-stone-400'
+                  }`}>
+                    {m.n.slice(0, 2).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-tac-md text-[11px] text-stone-200 truncate">
+                      {m.n}
+                      {m.u === oid && <span className="text-amber-300/80 text-[8px] ml-1">(YOU)</span>}
+                    </div>
+                    <div className="font-tac-md text-[8px] text-stone-600 tracking-widest">
+                      {m.leader ? 'LEADER' : 'OPERATOR'} · {MODES[gameMode].short}
+                    </div>
+                  </div>
+                  {partyReady[m.u] && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                </div>
+              ))}
+              {partyMembers.length < 5 && (
+                <button
+                  onClick={() => { getAudio().uiClick(); setProfileOpen(true) }}
+                  className="w-full flex items-center gap-2 rounded-md border border-dashed border-stone-700/80 bg-stone-950/40 px-2.5 py-2 text-stone-500 hover:text-amber-200 hover:border-amber-500/50 transition-colors"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span className="font-tac-md text-[10px] tracking-widest">INVITE OPERATOR</span>
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => { getAudio().uiClick(); esNet.leaveParty() }}
+              className="w-full font-tac-md text-[10px] tracking-widest px-3 py-2.5 text-stone-500 hover:text-red-300 border-t border-stone-800/80 transition-colors"
+            >
+              LEAVE SQUAD
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => { getAudio().uiClick(); setProfileOpen(true) }}
+            className="w-full rounded-lg border border-stone-700/70 bg-[#0b0e11]/88 backdrop-blur-md shadow-2xl p-4 text-left hover:border-amber-500/60 transition-colors tac-corner"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-md border border-stone-700 bg-stone-900 flex items-center justify-center shrink-0">
+                <Users className="w-5 h-5 text-stone-500" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-tac-md text-[11px] text-stone-200">PLAY WITH FRIENDS</div>
+                <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                  Build a squad — they stand here and deploy with you
+                </div>
+              </div>
+            </div>
+          </button>
+        )}
+      </div>
+
+      {/* ============ RIGHT: online status (quick glance) ============ */}
+      <div className="absolute right-4 sm:right-6 top-24 z-20 hidden lg:flex flex-col items-end gap-1.5 pointer-events-none">
+        <div className="font-tac-md text-[9px] tracking-widest px-2.5 py-1.5 rounded border bg-[#0b0e11]/80 flex items-center gap-2"
+          style={{ borderColor: netStatus === 'online' ? 'rgba(52,211,153,0.4)' : 'rgba(120,113,108,0.4)' }}>
+          {netStatus === 'online' ? <Wifi className="w-3 h-3 text-emerald-400" /> : <WifiOff className="w-3 h-3 text-stone-500" />}
+          <span className={netStatus === 'online' ? 'text-emerald-300' : 'text-stone-500'}>
+            {netStatus === 'online' ? `NETWORK · ${rooms.length} OPEN ROOM${rooms.length === 1 ? '' : 'S'}` : 'NETWORK OFFLINE'}
+          </span>
+        </div>
+        {modeOpen && netStatus === 'online' && rooms.length > 0 && (
+          <div className="font-tac-md text-[9px] text-stone-500 tracking-widest">
+            LIVE ROOMS ON THE MODE PANEL ↓
+          </div>
+        )}
+      </div>
+
+      {/* ============ BOTTOM BAR: mode card + PLAY ============ */}
+      <div className="absolute bottom-0 left-0 right-0 z-20 px-4 sm:px-6 pb-5 pt-16 bg-gradient-to-t from-[#050709]/95 via-[#050709]/55 to-transparent">
+        <div className="max-w-6xl mx-auto flex items-end justify-between gap-3">
+          {/* left: live strip (compact) */}
+          <div className="hidden sm:flex items-center gap-2 select-none pb-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-60" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+            </span>
+            <span className="font-tac-md text-[10px] text-stone-500">LIVE · WEBGL COMBAT SIMULATION</span>
+          </div>
+          <div className="flex-1" />
+
+          {/* mode selector card — click to open the full picker (drops UP) */}
+          <button
+            onClick={() => { getAudio().uiClick(); setModeOpen(true) }}
+            className="group w-[min(280px,44vw)] rounded-lg border border-stone-700/70 bg-[#0b0e11]/92 backdrop-blur-md shadow-2xl p-3.5 text-left hover:border-amber-500/70 transition-colors tac-corner"
+          >
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="font-tac-md text-[9px] tracking-[0.22em] text-stone-500">SELECTED MODE</span>
+              <ChevronUp className="w-4 h-4 text-amber-400/80 group-hover:text-amber-300 transition-colors" />
+            </div>
+            <div className="font-tac text-[15px] tracking-[0.12em] text-stone-100 uppercase truncate">
+              {modeInfo.name}
+            </div>
+            <div className="font-tac-md text-[9px] text-amber-300/70 tracking-widest mt-0.5 truncate">
+              {sourceLabel} · {lobbyWeaponLabel(previewWeapon)}
+            </div>
+          </button>
+
+          {/* the big play / ready button */}
+          <button
+            onClick={onPlay}
+            disabled={(source === 'join' && code.length < 4) || quickState !== ''}
+            className={`group h-[64px] w-[min(220px,38vw)] rounded-lg font-tac text-[17px] tracking-[0.24em] uppercase transition-all active:scale-[0.99]
+              flex items-center justify-center gap-3 shadow-2xl border-b-4
+              ${partyActive && !amLeader
+                ? iAmReady
+                  ? 'bg-emerald-400 text-stone-950 border-emerald-600 hover:bg-emerald-300'
+                  : 'bg-stone-200 text-stone-900 border-stone-400 hover:bg-white'
+                : 'bg-amber-400 text-stone-950 border-amber-600 hover:bg-amber-300'}
+              disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            {quickState === 'scanning' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+            {playLabel}
+          </button>
+        </div>
+
+        {/* sub-line under the play bar */}
+        <div className="max-w-6xl mx-auto mt-2 flex items-center justify-between gap-3">
+          <p className="font-tac-md text-[9px] text-stone-600 tracking-[0.2em] hidden sm:block">
+            EMERGENCY STRIKE v14 · THREE.JS · WEBRTC P2P · MQTT PRESENCE
+          </p>
+          <p className="font-tac-md text-[9px] text-stone-500 tracking-widest truncate">
+            {partyActive && !amLeader
+              ? 'THE LEADER LAUNCHES THE MATCH FOR THE WHOLE SQUAD'
+              : partyActive && amLeader && partyMembers.length > 1
+                ? `${readyCount}/${partyMembers.length - 1} SQUADMATES READY — LAUNCH WHEN YOU WANT`
+                : 'PICK A MODE ↑ · CHANGE LOADOUT PREVIEW IN THE PANEL'}
+          </p>
+        </div>
+      </div>
+
+      {/* ============ MODE SELECT PANEL (drops up, Fortnite-style) ============ */}
+      {modeOpen && (
+        <ModeSelectPanel
+          onClose={() => { getAudio().uiClick(); setModeOpen(false) }}
+          gameMode={gameMode}
+          setGameMode={setGameMode}
+          source={source}
+          setSource={setSource}
+          difficulty={difficulty}
+          setDifficulty={setDifficulty}
+          roomKind={roomKind}
+          setRoomKind={setRoomKind}
+          fillEmpty={fillEmpty}
+          setFillEmpty={setFillEmpty}
+          fillBots={fillBots}
+          setFillBots={setFillBots}
+          code={code}
+          setCode={setCode}
+          coop={coop}
+          setCoop={setCoop}
+          coopCode={code}
+          name={name}
+          setName={setName}
+          error={error}
+          previewWeapon={previewWeapon}
+          setPreviewWeapon={setPreviewWeapon}
+          rooms={rooms}
+          netStatus={netStatus}
+          onJoinRoom={(c) => launch('guest', c)}
+          onQuickPlay={quickPlay}
+          onLaunchCoopJoin={() => launch('guest', code, 'historia', 'coop')}
+          partyActive={partyActive}
+          amLeader={amLeader}
+        />
+      )}
+
+      {/* ============ modals ============ */}
+      {profileOpen && <ProfileModal onClose={() => setProfileOpen(false)} />}
+      {overlay && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setOverlay(null)}>
+          <div className="w-[min(880px,94vw)] max-h-[90vh] overflow-y-auto bg-[#0b0e11]/97 border border-stone-800 shadow-2xl rounded-xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="px-5 sm:px-7 pt-5 flex items-center justify-between gap-3 sticky top-0 bg-[#0b0e11]/97 z-10 pb-3">
+              <h2 className="font-tac text-xl tracking-[0.2em] text-white uppercase">
+                {overlay === 'controls' ? 'Controls' : overlay === 'settings' ? 'Settings' : 'About the game'}
+              </h2>
+              <button onClick={() => setOverlay(null)}
+                className="w-9 h-9 rounded-md border border-stone-700 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-500/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 sm:px-7 pb-6">
+              {overlay === 'controls' && <KeybindsPanel />}
+              {overlay === 'settings' && <SettingsPanel />}
+              {overlay === 'info' && <InfoPanel />}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================
+// v14 — MODE SELECT PANEL: drops up over the lobby with EVERY
+// mode in the game, the deploy config, the live room browser
+// and the loadout preview for your lobby character.
+// ============================================================
+function ModeSelectPanel(p: {
+  onClose: () => void
+  gameMode: GameMode
+  setGameMode: (m: GameMode) => void
+  source: PlaySource
+  setSource: (s: PlaySource) => void
+  difficulty: BotDifficulty
+  setDifficulty: (d: BotDifficulty) => void
+  roomKind: RoomKind
+  setRoomKind: (k: RoomKind) => void
+  fillEmpty: boolean
+  setFillEmpty: (v: boolean) => void
+  fillBots: number
+  setFillBots: (n: number) => void
+  code: string
+  setCode: (c: string) => void
+  coop: boolean
+  setCoop: (v: boolean) => void
+  coopCode: string
+  name: string
+  setName: (n: string) => void
+  error: string
+  previewWeapon: WeaponId
+  setPreviewWeapon: (w: WeaponId) => void
+  rooms: { code: string; host: string; kind: string; mode: string; players: number; cap: number; t: number }[]
+  netStatus: string
+  onJoinRoom: (code: string) => void
+  onQuickPlay: () => void
+  onLaunchCoopJoin: () => void
+  partyActive: boolean
+  amLeader: boolean
+}): JSX.Element {
+  const modeIds: GameMode[] = ['escaramuza', 'ffa', 'bandera', 'dominacion', 'historia']
+  const modeIcon = (id: GameMode): typeof Play => (
+    id === 'bandera' ? Flag : id === 'dominacion' ? Target : id === 'ffa' ? Zap : id === 'historia' ? Radio : Swords
+  )
+  const previewWeapons: WeaponId[] = ['mp9', 'ar47', 'cr4', 'aguila', 'awp338']
+  const isCampaign = p.gameMode === 'historia'
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-[3px]"
+      onClick={p.onClose}>
+      <div className="w-[min(1060px,96vw)] max-h-[92vh] overflow-y-auto bg-[#0b0e11]/97 border-x border-t border-stone-800 shadow-2xl rounded-t-2xl animate-[slideUp_0.18s_ease-out]"
+        onClick={e => e.stopPropagation()}
+        style={{ animation: 'slideUp .18s ease-out' }}>
+        <div className="px-5 sm:px-7 pt-5 flex items-center justify-between gap-3 sticky top-0 bg-[#0b0e11]/97 z-10 pb-3 border-b border-stone-800/80">
+          <div className="flex items-center gap-3">
+            <Swords className="w-5 h-5 text-amber-300/90" />
+            <h2 className="font-tac text-xl tracking-[0.2em] text-white uppercase">Select <span className="text-amber-300">mode</span></h2>
+          </div>
+          <button onClick={p.onClose}
+            className="w-9 h-9 rounded-md border border-stone-700 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-500/60 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* ---- the modes ---- */}
+        <div className="p-5 sm:p-7 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+          {modeIds.map(id => {
+            const m = MODES[id]
+            const Icon = modeIcon(id)
+            const active = p.gameMode === id
+            return (
+              <button key={id}
+                onClick={() => { getAudio().uiClick(); p.setGameMode(id) }}
+                className={`rounded-lg border p-3 text-left transition-colors tac-corner ${
+                  active ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                }`}>
+                <Icon className={`w-5 h-5 mb-1.5 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
+                <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>{m.name}</div>
+                <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                  {id === 'historia' ? '6 chapters · solo or co-op' : m.teams ? 'team vs team' : 'everyone vs everyone'}
+                </div>
+                {active && <span className="absolute" />}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* ---- campaign detail ---- */}
+        {isCampaign && (
+          <div className="px-5 sm:px-7 pb-5 grid lg:grid-cols-[1.05fr_0.95fr] gap-5">
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 space-y-3 tac-corner">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-md border border-amber-700/50 bg-amber-950/40 flex items-center justify-center shrink-0">
+                  <Radio className="w-5 h-5 text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="font-tac text-white text-base tracking-[0.16em] uppercase">Operation Ashfall</h3>
+                  <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">Single-player campaign · Serene Valley</p>
+                </div>
+              </div>
+              <p className="text-stone-400 text-xs leading-relaxed">
+                Six chapters with cinematic flyovers, radio dialogue, live battle fronts, a rescue,
+                a boss duel and a timed helicopter extraction. Falling restarts the chapter with your inventory.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <Chip active={!p.coop} onClick={() => p.setCoop(false)}>SOLO MISSION</Chip>
+                <Chip active={p.coop} onClick={() => p.setCoop(true)}>CO-OP · ONLINE</Chip>
+              </div>
+              {p.coop && (
+                <div className="flex gap-2 pt-1">
+                  <Input
+                    value={p.code}
+                    onChange={e => p.setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                    onKeyDown={e => { if (e.key === 'Enter' && p.code.length >= 4) p.onLaunchCoopJoin() }}
+                    placeholder="SQUAD CODE"
+                    className="bg-stone-950/80 border-stone-600 text-white text-lg h-11 font-bold tracking-[0.25em] text-center"
+                  />
+                  <button
+                    onClick={p.onLaunchCoopJoin}
+                    disabled={p.code.length < 4}
+                    className="px-5 rounded-md font-tac text-xs tracking-[0.2em] uppercase bg-stone-100 text-stone-900 hover:bg-emerald-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    Join
+                  </button>
+                </div>
+              )}
+              <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="MISSION DIFFICULTY" />
+            </div>
+            <div className="space-y-2.5">
+              <h3 className="font-tac-md text-stone-200 text-[11px] mb-1">Mission structure</h3>
+              {[
+                { n: '01', title: 'First Light', desc: 'Recover 3 intel caches: the mill, the chapel, the watchtower.' },
+                { n: '02', title: 'Hold the Line', desc: 'Defend the village uplink for 4 minutes.' },
+                { n: '03', title: 'Cut the Tower', desc: 'Plant charges on the 3 antennas and get clear.' },
+                { n: '04', title: 'The Prisoner', desc: 'Open Sergeant Rivera\u2019s cell and survive the alarm.' },
+                { n: '05', title: 'The Commander', desc: 'Eliminate Col. Vega — armored, in the heart of the complex.' },
+                { n: '06', title: 'Exfil', desc: 'Sprint to the north helipad before the helicopter leaves.' },
+              ].map(c => (
+                <div key={c.n} className="flex gap-3.5 bg-stone-950/60 border border-stone-800 rounded-md p-3 tac-corner">
+                  <span className="font-tac-md text-[10px] text-stone-600 pt-0.5">{c.n}</span>
+                  <div>
+                    <span className="font-tac-md text-stone-200 text-[12px] uppercase">{c.title}</span>
+                    <p className="text-stone-500 text-[11px] leading-snug mt-0.5">{c.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ---- PvP deploy config ---- */}
+        {!isCampaign && (
+          <div className="px-5 sm:px-7 pb-5 space-y-5">
+            <div>
+              <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                <Gauge className="w-3.5 h-3.5" /> How do you want to play
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  { id: 'bots' as const, icon: Bot, title: 'VS BOTS', desc: 'offline · instant' },
+                  { id: 'room' as const, icon: Users, title: 'CREATE ROOM', desc: 'P2P code · 1v1-5v5' },
+                  { id: 'join' as const, icon: Link2, title: 'JOIN', desc: 'enter a code' },
+                  { id: 'quick' as const, icon: Zap, title: 'QUICK MATCH', desc: 'auto-find or host' },
+                ]).map(s => {
+                  const active = p.source === s.id
+                  return (
+                    <button key={s.id}
+                      onClick={() => { getAudio().uiClick(); p.setSource(s.id) }}
+                      className={`rounded-lg border p-3 text-left transition-colors tac-corner ${
+                        active ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                      }`}>
+                      <s.icon className={`w-5 h-5 mb-1.5 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
+                      <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>{s.title}</div>
+                      <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{s.desc}</div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {p.source === 'bots' && (
+              <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="AI DIFFICULTY" />
+            )}
+
+            {p.source === 'room' && (
+              <div className="space-y-4">
+                <div>
+                  <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                    <Users className="w-3.5 h-3.5" /> Room format
+                  </p>
+                  <div className="grid grid-cols-5 gap-2">
+                    {(['1v1', '2v2', '3v3', '4v4', '5v5'] as const).map(k => (
+                      <Chip key={k} active={p.roomKind === k} onClick={() => p.setRoomKind(k)}>
+                        {k.toUpperCase()}
+                      </Chip>
+                    ))}
+                  </div>
+                </div>
+                {p.roomKind === '1v1' ? (
+                  <div>
+                    <p className="font-tac-md text-stone-400 text-[11px] mb-2">FILLER BOTS (PER TEAM)</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[0, 1, 2, 3].map(n => (
+                        <Chip key={n} active={p.fillBots === n} onClick={() => p.setFillBots(n)}>
+                          {n === 0 ? 'PURE 1v1' : `${n} vs ${n}`}
+                        </Chip>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => p.setFillEmpty(!p.fillEmpty)}
+                    className={`w-full flex items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      p.fillEmpty ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                    }`}>
+                    <div>
+                      <div className={`font-tac-md text-[11px] ${p.fillEmpty ? 'text-white' : 'text-stone-300'}`}>
+                        FILL EMPTY SLOTS WITH BOTS
+                      </div>
+                      <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                        Missing operators at start are covered by AI — the match never plays unbalanced
+                      </div>
+                    </div>
+                    <span className={`w-10 h-6 rounded-full border flex items-center px-0.5 transition-colors shrink-0 ${
+                      p.fillEmpty ? 'bg-amber-500/80 border-amber-400' : 'bg-stone-800 border-stone-600'
+                    }`}>
+                      <span className={`w-[18px] h-[18px] rounded-full bg-stone-100 transition-transform ${p.fillEmpty ? 'translate-x-[16px]' : ''}`} />
+                    </span>
+                  </button>
+                )}
+                <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="BOT DIFFICULTY" />
+              </div>
+            )}
+
+            {p.source === 'join' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Room code</label>
+                  <Input
+                    value={p.code}
+                    onChange={e => p.setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                    onKeyDown={e => { if (e.key === 'Enter' && p.code.length >= 4) p.onJoinRoom(p.code) }}
+                    placeholder="E.G. K7M2P"
+                    className="bg-stone-950/80 border-stone-600 text-white text-2xl h-14 font-bold tracking-[0.3em] text-center"
+                  />
+                  <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
+                    P2P (WebRTC) connection through the public PeerJS signaling server, with up to 3 automatic retries.
+                  </p>
+                </div>
+                {p.error && <p className="text-red-400 text-xs font-bold">{p.error}</p>}
+              </div>
+            )}
+
+            {p.source === 'quick' && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 flex items-center gap-3.5 tac-corner">
+                <Zap className="w-5 h-5 text-amber-300 shrink-0" />
+                <p className="text-stone-400 text-xs leading-relaxed">
+                  <b className="text-stone-200">Quick match:</b> the game scans the public rooms on the network for
+                  ~6 seconds looking for someone playing <b className="text-amber-200">{MODES[p.gameMode].name}</b>.
+                  Found → you join them instantly. Not found → you become the host and your room appears
+                  in everyone else&apos;s browser.
+                </p>
+              </div>
+            )}
+
+            {/* ---- live room browser (dynamic online) ---- */}
+            {p.netStatus === 'online' && (
+              <div>
+                <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                  <Activity className="w-3.5 h-3.5" /> Public rooms right now
+                  <span className="text-stone-600">· live on the network</span>
+                </p>
+                {p.rooms.length === 0 ? (
+                  <div className="rounded-md border border-stone-800 bg-stone-950/60 px-4 py-3 text-stone-500 text-[11px]">
+                    No public rooms open — create one (or quick match) and it appears here for everyone.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {p.rooms.slice(0, 6).map(r => (
+                      <div key={r.code} className="rounded-md border border-stone-800 bg-stone-950/60 px-3.5 py-2.5 flex items-center gap-3 tac-corner">
+                        <span className="font-tac-md text-[10px] text-amber-300/80 tracking-[0.18em] w-16 shrink-0">{r.code}</span>
+                        <span className="font-tac-md text-[11px] text-stone-300 truncate flex-1">
+                          {r.host}&apos;s {MODES[r.mode as GameMode]?.name ?? r.mode}
+                        </span>
+                        <span className="font-tac-md text-[9px] text-stone-500 shrink-0">{r.kind.toUpperCase()} · {r.players}/{r.cap}</span>
+                        <button
+                          onClick={() => { getAudio().uiClick(); p.onJoinRoom(r.code) }}
+                          disabled={r.players >= r.cap}
+                          className="font-tac text-[10px] tracking-[0.18em] uppercase rounded px-3.5 py-1.5 bg-stone-100 text-stone-900 hover:bg-amber-200 disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                        >
+                          Join
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ---- loadout preview ---- */}
+            <div>
+              <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                <Crosshair className="w-3.5 h-3.5" /> Lobby loadout preview
+                <span className="text-stone-600">· what your operator holds</span>
+              </p>
+              <div className="grid grid-cols-5 gap-2">
+                {(['mp9', 'ar47', 'cr4', 'aguila', 'awp338'] as WeaponId[]).map(w => (
+                  <Chip key={w} active={p.previewWeapon === w} onClick={() => { getAudio().uiClick(); p.setPreviewWeapon(w) }}>
+                    {lobbyWeaponLabel(w).split(' ')[0]}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+
+            {/* ---- operator name ---- */}
+            <div>
+              <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Operator name</label>
+              <Input
+                value={p.name}
+                onChange={e => { p.setName(e.target.value); }}
+                placeholder="Enter your callsign"
+                maxLength={16}
+                className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
+              />
+              {p.error && <p className="text-red-400 text-xs mt-2 font-bold">{p.error}</p>}
+            </div>
+          </div>
+        )}
+      </div>
+      <style>{`@keyframes slideUp { from { transform: translateY(28px); opacity: 0.4 } to { transform: translateY(0); opacity: 1 } }`}</style>
+    </div>
+  )
+}

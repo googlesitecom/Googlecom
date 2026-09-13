@@ -227,7 +227,6 @@ function buildHumanoid(team: Team): {
 // ----------------------------------------------------------
 interface SoldierAssets {
   template: THREE.Group
-  tintCache: Record<Team, Map<THREE.Material, THREE.Material>>
 }
 
 let soldierAssets: SoldierAssets | null = null
@@ -242,10 +241,44 @@ export function onSoldierReady(cb: () => void): void {
   if (soldierAssets) { cb(); return }
   soldierReadyCbs.push(cb)
 }
+
+/** v14: carga única del soldado para el LOBBY (fuera del motor) —
+ *  el menú principal la usa para mostrar tu personaje en 3D; en
+ *  cuanto el GLB está listo el resto del juego reutiliza la plantilla. */
+let soldierLoadPromise: Promise<void> | null = null
+export function ensureSoldierLoaded(): Promise<void> {
+  if (soldierAssets) return Promise.resolve()
+  if (!soldierLoadPromise) {
+    soldierLoadPromise = new Promise<void>(resolve => {
+      const done = (): void => resolve()
+      onSoldierReady(done)
+      const loader = new GLTFLoader()
+      loader.load(
+        `${ASSET_BASE}/models/soldier1.glb`,
+        gltf => {
+          try {
+            if (!soldierAssets) {
+              soldierAssets = prepareSoldier(gltf.scene)
+              flushSoldierReady()
+            }
+          } catch (e) {
+            console.error('EMERGENCY STRIKE: error preparando soldier1.glb (lobby)', e)
+            flushSoldierReady()
+          }
+          done()
+        },
+        undefined,
+        () => { flushSoldierReady(); done() },   // sin GLB → fallback humanoide
+      )
+    })
+  }
+  return soldierLoadPromise
+}
 function flushSoldierReady(): void {
   const cbs = soldierReadyCbs.splice(0)
   for (const cb of cbs) { try { cb() } catch { /* consumidor propio */ } }
 }
+
 
 /** Busca un hueso por nombre dentro del rig (prefijo mixamorig…) */
 function findBone(root: THREE.Object3D, pattern: RegExp): THREE.Object3D | null {
@@ -291,25 +324,27 @@ function prepareSoldier(scene: THREE.Group): SoldierAssets {
       }
     }
   })
-  return { template, tintCache: { A: new Map(), B: new Map() } }
+  return { template }
 }
 
 /** Clona el soldado con el uniforme tintado del equipo */
 function buildSoldier(team: Team): THREE.Object3D | null {
   if (!soldierAssets) return null
   const rig = skeletonClone(soldierAssets.template)
-  const tintCache = soldierAssets.tintCache[team]
+  tintRig(rig, SOLDIER_TINT[team])
+  return rig
+}
+
+/** v14: tiñe los materiales del uniforme (dorado del LOBBY incluido) */
+export function tintRig(rig: THREE.Object3D, color: number): void {
   rig.traverse(o => {
     if (o instanceof THREE.Mesh) {
       const mats = Array.isArray(o.material) ? o.material : [o.material]
       const out = mats.map(orig => {
         if (!TINTABLE_MATS.has(orig.name)) return orig
-        const cached: THREE.Material | undefined = tintCache.get(orig)
-        if (cached) return cached
         const v: THREE.Material = orig.clone()
         const std = v as THREE.MeshStandardMaterial
-        if (std.color) std.color = new THREE.Color(SOLDIER_TINT[team])
-        tintCache.set(orig, v)
+        if (std.color) std.color = new THREE.Color(color)
         return v
       })
       o.material = Array.isArray(o.material) ? out : out[0]
@@ -326,7 +361,6 @@ function buildSoldier(team: Team): THREE.Object3D | null {
   const foreR = findBone(rig, /^mixamorigRightForeArm_/)
   if (foreL) foreL.rotation.set(FORE_BEND_X, 0, 0)
   if (foreR) foreR.rotation.set(FORE_BEND_X, 0, 0)
-  return rig
 }
 
 // ----------------------------------------------------------

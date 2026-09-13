@@ -7,16 +7,16 @@
 // detailed deploy/story panels. All copy in English.
 // ============================================================
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useGame } from '@/game/store'
 import { getGame } from '@/game/game-instance'
 import { getAudio } from '@/game/audio'
 import { ASSET_BASE, GAME } from '@/game/shared'
 import { useAuth, getProfile, fmtKD, myOid, MODE_STAT_KEYS, MODE_STAT_LABELS, getModeStats, type CareerProfile } from '@/game/auth'
-import { esNet, useNet, useFriends, useParty, useNetToasts, type FriendEntryUI, type PartyMemberUI } from '@/game/esnet'
+import { esNet, useNet, useFriends, useParty, useNetToasts, useRooms, type FriendEntryUI, type PartyMemberUI } from '@/game/esnet'
 import { useVoice, voiceChat } from '@/game/voice'
-import { useBr, BR_RARITIES } from '@/game/br-store'
 import { teamSlotsFor, roomCapacity, type RoomKind } from '@/game/net'
+import { LobbyStage, lobbyWeaponLabel, type LobbyChar } from '@/components/game/lobby-stage'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -27,10 +27,11 @@ import {
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
   User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X, Wifi, WifiOff, Mic,
+  ChevronUp,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
-  type BotDifficulty, type ActionId, type GameMode, type PadAction,
+  type BotDifficulty, type ActionId, type GameMode, type PadAction, type WeaponId,
 } from '@/game/shared'
 
 // ============================================================
@@ -513,8 +514,8 @@ export function InfoPanel() {
 // v9 — USER WIDGET (top-right) + career profile modal
 // ============================================================
 function rankOf(p: CareerProfile): { label: string; color: string } {
-  if (p.brWins >= 5 || p.wins >= 30) return { label: 'LEGEND', color: '#fbbf24' }
-  if (p.brWins >= 2 || p.wins >= 15) return { label: 'VETERAN', color: '#f59e0b' }
+  if (p.wins >= 30 || p.storyWins >= 3) return { label: 'LEGEND', color: '#fbbf24' }
+  if (p.wins >= 15 || p.storyWins >= 1) return { label: 'VETERAN', color: '#f59e0b' }
   if (p.wins >= 5) return { label: 'OPERATOR', color: '#d99a2b' }
   if (p.matches >= 3) return { label: 'SOLDIER', color: '#a8a29e' }
   return { label: 'RECRUIT', color: '#78716c' }
@@ -925,12 +926,10 @@ export function ProfileContent({ user, showLogout, onLogout }: {
         <StatCell icon={<Package className="w-3.5 h-3.5" />} label="MATCHES" value={String(p.matches)} />
         <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="CURRENT STREAK" value={String(p.winStreak)} />
         <StatCell icon={<Clock className="w-3.5 h-3.5" />} label="TIME PLAYED" value={hours > 0 ? `${hours}h ${mins}m` : `${mins}m`} />
-        <StatCell icon={<Rocket className="w-3.5 h-3.5" />} label="BR MATCHES" value={String(p.brPlays)} />
-        <StatCell icon={<Medal className="w-3.5 h-3.5" />} label="BR VICTORIES" value={String(p.brWins)} />
-        <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST BR PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
+        <StatCell icon={<Medal className="w-3.5 h-3.5" />} label="CAMPAIGN WINS" value={String(p.storyWins)} />
       </div>
 
-      {/* v12: per-mode stats — team combat, FFA, CTF, domination, campaign, BR */}
+      {/* v12: per-mode stats — team combat, FFA, CTF, domination, campaign */}
       <div className="mt-5">
         <h4 className="font-tac-md text-amber-200/90 text-[11px] tracking-[0.22em] uppercase mb-2.5 flex items-center gap-2">
           <Swords className="w-4 h-4" /> Stats by game mode
@@ -1073,33 +1072,51 @@ export function NetToasts() {
 // ============================================================
 // Main menu — tactical tabs
 // ============================================================
-type MenuTab = 'deploy' | 'story' | 'br' | 'controls' | 'settings' | 'info'
-type PlayMode = 'solo' | 'host' | 'guest'
+type MenuOverlay = 'controls' | 'settings' | 'info'
+type PlaySource = 'bots' | 'room' | 'join' | 'quick'
 
+// ============================================================
+// v14 — FORTNITE-STYLE LOBBY
+// Your operator in 3D with the username above, the squad standing
+// beside you, a mode picker that drops UP from the bottom bar with
+// every mode in the game, and one big PLAY / READY button that
+// adapts to the squad (leader launches, members ready up).
+// ============================================================
 export function MainMenu() {
   const phase = useGame(s => s.phase)
   const setPlayerName = useGame(s => s.setPlayerName)
   const setHud = useGame(s => s.setHud)
   const authUser = useAuth(s => s.user)
-  const brSet = useBr(s => s.set)
+  // ---- squad / network ----
   const partyActive = useParty(s => s.active)
-  const [profileOpen, setProfileOpen] = useState(false)
-  const [tab, setTab] = useState<MenuTab>('deploy')
-  const [name, setName] = useState('')
-  const [mode, setMode] = useState<PlayMode>('solo')
-  const [code, setCode] = useState('')
-  const [difficulty, setDifficulty] = useState<BotDifficulty>('normal')
-  const [fillBots, setFillBots] = useState(0)
-  const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
-  const [error, setError] = useState('')
-  // online room format + slot filling
-  const [roomKind, setRoomKind] = useState<RoomKind>('1v1')
-  const [fillEmpty, setFillEmpty] = useState(true)
-  // co-op campaign (join code)
-  const [coopCode, setCoopCode] = useState('')
-  // v11: the squad leader opened a room → auto-join with the shared code
+  const partyName = useParty(s => s.name)
+  const partyMembers = useParty(s => s.members)
+  const partyLeaderOid = useParty(s => s.leaderOid)
+  const partyReady = useParty(s => s.ready)
   const squadRoomCode = useParty(s => s.roomCode)
   const squadRoomKind = useParty(s => s.roomKind)
+  const netStatus = useNet(s => s.status)
+  const rooms = useRooms(s => s.rooms)
+
+  // ---- menu state ----
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [overlay, setOverlay] = useState<MenuOverlay | null>(null)
+  const [modeOpen, setModeOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
+  const [gameMode, setGameMode] = useState<GameMode>('escaramuza')
+  const [difficulty, setDifficulty] = useState<BotDifficulty>('normal')
+  const [fillBots, setFillBots] = useState(0)
+  const [roomKind, setRoomKind] = useState<RoomKind>('2v2')
+  const [fillEmpty, setFillEmpty] = useState(true)
+  const [code, setCode] = useState('')
+  const [coop, setCoop] = useState(false)
+  const [source, setSource] = useState<PlaySource>('bots')
+  const [previewWeapon, setPreviewWeapon] = useState<WeaponId>('ar47')
+  const [quickState, setQuickState] = useState<'' | 'scanning' | 'joining'>('')
+  const quickIv = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // v11: the squad leader opened a room → auto-join with the shared code
   useEffect(() => {
     if (!squadRoomCode || phase !== 'menu') return
     useParty.getState().clearRoom()
@@ -1124,17 +1141,41 @@ export function MainMenu() {
     useGame.getState().setPhase('connecting')
   }, [squadRoomCode, phase])
 
+  // v14: live room browser while the mode picker is open
+  useEffect(() => {
+    if (modeOpen && esNet.status === 'online') esNet.roomsBrowse()
+    return () => { esNet.roomsStopBrowse() }
+  }, [modeOpen, netStatus])
+
+  // v14: never leave a quick-match scan running
+  useEffect(() => () => { if (quickIv.current) clearInterval(quickIv.current) }, [])
+
+  // v14: ESC cierra el panel de modos / los overlays del lobby
+  useEffect(() => {
+    if (phase !== 'menu') return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.code !== 'Escape') return
+      if (modeOpen) { setModeOpen(false); getAudio().uiClick() }
+      else if (overlay) setOverlay(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [phase, modeOpen, overlay])
+
   if (phase !== 'menu') return null
 
-  // v9: el nombre del operador por defecto es el de la cuenta
+  const oid = myOid()
   const effectiveName = name.trim() || authUser || ''
+  const amLeader = !partyActive || (partyActive && partyLeaderOid === oid)
+  const readyCount = partyMembers.filter(m => partyReady[m.u]).length
+  const iAmReady = !!partyReady[oid]
 
-  const launch = (m: PlayMode, roomCode = '', forceMode?: GameMode, forceKind?: RoomKind) => {
+  const launch = (m: 'solo' | 'host' | 'guest', roomCode = '', forceMode?: GameMode, forceKind?: RoomKind) => {
     const n = effectiveName.trim() || 'Operator'
-    if (n.length < 2) { setError('Name must be at least 2 characters'); return }
+    if (n.length < 2) { setError('Name must be at least 2 characters'); setModeOpen(true); return }
     setPlayerName(n)
     setError('')
-    const kind = forceKind ?? roomKind
+    const kind = forceKind ?? (m === 'host' ? roomKind : '1v1')
     setHud({
       mode: m,
       roomCode,
@@ -1162,628 +1203,656 @@ export function MainMenu() {
     useGame.getState().setPhase('connecting')
   }
 
+  // v14: QUICK PLAY — scan the public rooms for a few seconds; join the
+  // first one playing your selected mode, otherwise host a fresh room.
+  const quickPlay = (): void => {
+    if (esNet.status !== 'online') { launch('host'); return }
+    setQuickState('scanning')
+    esNet.roomsBrowse()
+    const t0 = Date.now()
+    if (quickIv.current) clearInterval(quickIv.current)
+    quickIv.current = setInterval(() => {
+      if (useGame.getState().phase !== 'menu') { clearInterval(quickIv.current!); quickIv.current = null; return }
+      const live = useRooms.getState().rooms.filter(r => r.players < r.cap && r.mode === gameMode)
+      if (live.length) {
+        clearInterval(quickIv.current!); quickIv.current = null
+        setQuickState('joining')
+        launch('guest', live[0].code)
+      } else if (Date.now() - t0 > 6000) {
+        clearInterval(quickIv.current!); quickIv.current = null
+        setQuickState('')
+        launch('host')
+      }
+    }, 600)
+  }
+
+  const onPlay = (): void => {
+    getAudio().uiClick()
+    // squad member → READY toggle (the leader launches for everyone)
+    if (partyActive && !amLeader) { esNet.setPartyReady(!iAmReady); return }
+    if (gameMode === 'historia') {
+      if (coop) launch('host', '', 'historia', 'coop')
+      else launch('solo', '', 'historia')
+      return
+    }
+    if (source === 'quick') { quickPlay(); return }
+    launch(source === 'bots' ? 'solo' : source === 'room' ? 'host' : 'guest', source === 'join' ? code : '')
+  }
+
+  // ---- labels for the mode card / play button ----
+  const modeInfo = MODES[gameMode]
+  const sourceLabel = gameMode === 'historia'
+    ? (coop ? 'CO-OP · ONLINE' : 'SOLO MISSION')
+    : source === 'bots' ? 'OFFLINE · VS BOTS'
+      : source === 'room' ? `ONLINE · ${roomKind.toUpperCase()}`
+        : source === 'join' ? 'JOIN BY CODE'
+          : 'QUICK MATCH · ONLINE'
+  const playLabel = partyActive && !amLeader
+    ? (iAmReady ? 'READY ✓' : 'READY')
+    : quickState === 'scanning'
+      ? 'SEARCHING…'
+      : quickState === 'joining'
+        ? 'JOINING…'
+        : gameMode === 'historia'
+          ? (coop ? 'CREATE CO-OP' : 'BEGIN OPERATION')
+          : source === 'bots'
+            ? 'PLAY'
+            : source === 'room'
+              ? 'CREATE ROOM'
+              : source === 'join'
+                ? 'JOIN ROOM'
+                : 'QUICK PLAY'
+
+  const lobbyChars: LobbyChar[] = [
+    { id: 'me', name: effectiveName || 'Operator', leader: amLeader, you: true, weapon: previewWeapon },
+    ...partyMembers
+      .filter(m => m.u !== oid)
+      .map(m => ({ id: m.u, name: m.n, leader: m.leader, you: false, weapon: 'cr4' as WeaponId })),
+  ]
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
+    <div className="fixed inset-0 z-50 overflow-hidden" style={{ fontFamily: 'var(--font-geist-sans), system-ui, sans-serif' }}>
       <MenuBackdrop />
 
-      <div className="relative min-h-screen flex flex-col items-center px-4 py-6 sm:py-8">
-        {/* hero header + v9 user widget (top-right) */}
-        <div className="w-full max-w-5xl mb-5">
-          <div className="flex items-end justify-between gap-4">
-            <div className="select-none">
-              <h1 className="font-tac text-4xl sm:text-[52px] tracking-[0.22em] text-stone-100 leading-none uppercase"
-                style={{ textShadow: '0 2px 28px rgba(0,0,0,0.8), 0 0 60px rgba(217,160,91,0.18)' }}>
-                Emergency<span className="text-amber-400 ml-3">Strike</span>
-              </h1>
-              <div className="flex items-center gap-3 mt-2">
-                <span className="h-px w-14 bg-amber-500/50" />
-                <p className="font-tac-md text-stone-400 text-[10px]">
-                  Tactical multiplayer FPS · Operation Ashfall
-                </p>
+      {/* ============ TOP BAR: title (left) · tools + user (right) ============ */}
+      <div className="absolute top-0 left-0 right-0 z-20 px-4 sm:px-6 py-4 flex items-start justify-between gap-3 pointer-events-none">
+        <div className="select-none pointer-events-auto">
+          <h1 className="font-tac text-3xl sm:text-[44px] tracking-[0.22em] text-stone-100 leading-none uppercase"
+            style={{ textShadow: '0 2px 28px rgba(0,0,0,0.8), 0 0 60px rgba(217,160,91,0.18)' }}>
+            Emergency<span className="text-amber-400 ml-3">Strike</span>
+          </h1>
+          <div className="flex items-center gap-3 mt-2">
+            <span className="h-px w-14 bg-amber-500/50" />
+            <p className="font-tac-md text-stone-400 text-[10px]">
+              Tactical multiplayer FPS · Operation Ashfall
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0 pointer-events-auto">
+          {([
+            { id: 'controls' as const, icon: Keyboard, label: 'CONTROLS' },
+            { id: 'settings' as const, icon: Settings, label: 'SETTINGS' },
+            { id: 'info' as const, icon: Info, label: 'INFO' },
+          ]).map(t => (
+            <button
+              key={t.id}
+              onClick={() => { getAudio().uiClick(); setOverlay(t.id) }}
+              className="w-10 h-10 rounded-md border border-stone-700/70 bg-[#0b0e11]/85 flex items-center justify-center text-stone-400 hover:text-amber-200 hover:border-amber-500/60 transition-colors shadow-xl"
+              title={t.label}
+            >
+              <t.icon className="w-4.5 h-4.5" />
+            </button>
+          ))}
+          <UserWidget onOpen={() => setProfileOpen(true)} />
+        </div>
+      </div>
+
+      {/* ============ CENTER: the 3D lobby stage ============ */}
+      <div className="absolute inset-0 z-10">
+        <LobbyStage chars={lobbyChars} />
+      </div>
+
+      {/* ============ LEFT: squad panel (adapts to the people) ============ */}
+      <div className="absolute left-4 sm:left-6 top-1/2 -translate-y-1/2 z-20 w-[228px] hidden md:block">
+        {partyActive ? (
+          <div className="rounded-lg border border-amber-700/40 bg-[#0b0e11]/88 backdrop-blur-md shadow-2xl overflow-hidden tac-corner">
+            <div className="px-3.5 py-2.5 border-b border-stone-800/80 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-tac-md text-[10px] text-amber-300/90 tracking-[0.18em] truncate">SQUAD · {readyCount}/{partyMembers.length} READY</div>
+                <div className="font-tac-md text-[9px] text-stone-600 truncate">{partyName || 'SQUAD'}</div>
+              </div>
+              <Users className="w-4 h-4 text-amber-400/70 shrink-0" />
+            </div>
+            <div className="p-2 space-y-1.5 max-h-[38vh] overflow-y-auto">
+              {partyMembers.map(m => (
+                <div key={m.u}
+                  className={`flex items-center gap-2.5 rounded-md border px-2.5 py-2 ${
+                    m.u === oid
+                      ? 'border-amber-500/50 bg-amber-500/[0.07]'
+                      : 'border-stone-800 bg-stone-950/60'
+                  }`}>
+                  <span className={`w-7 h-7 rounded border flex items-center justify-center font-tac text-[10px] shrink-0 ${
+                    m.u === oid ? 'border-amber-600/50 bg-amber-950/40 text-amber-300' : 'border-stone-700 bg-stone-900 text-stone-400'
+                  }`}>
+                    {m.n.slice(0, 2).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-tac-md text-[11px] text-stone-200 truncate">
+                      {m.n}
+                      {m.u === oid && <span className="text-amber-300/80 text-[8px] ml-1">(YOU)</span>}
+                    </div>
+                    <div className="font-tac-md text-[8px] text-stone-600 tracking-widest">
+                      {m.leader ? 'LEADER' : 'OPERATOR'} · {MODES[gameMode].short}
+                    </div>
+                  </div>
+                  {partyReady[m.u] && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                </div>
+              ))}
+              {partyMembers.length < 5 && (
+                <button
+                  onClick={() => { getAudio().uiClick(); setProfileOpen(true) }}
+                  className="w-full flex items-center gap-2 rounded-md border border-dashed border-stone-700/80 bg-stone-950/40 px-2.5 py-2 text-stone-500 hover:text-amber-200 hover:border-amber-500/50 transition-colors"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span className="font-tac-md text-[10px] tracking-widest">INVITE OPERATOR</span>
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => { getAudio().uiClick(); esNet.leaveParty() }}
+              className="w-full font-tac-md text-[10px] tracking-widest px-3 py-2.5 text-stone-500 hover:text-red-300 border-t border-stone-800/80 transition-colors"
+            >
+              LEAVE SQUAD
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => { getAudio().uiClick(); setProfileOpen(true) }}
+            className="w-full rounded-lg border border-stone-700/70 bg-[#0b0e11]/88 backdrop-blur-md shadow-2xl p-4 text-left hover:border-amber-500/60 transition-colors tac-corner"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-md border border-stone-700 bg-stone-900 flex items-center justify-center shrink-0">
+                <Users className="w-5 h-5 text-stone-500" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-tac-md text-[11px] text-stone-200">PLAY WITH FRIENDS</div>
+                <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                  Build a squad — they stand here and deploy with you
+                </div>
               </div>
             </div>
-            <div className="flex flex-col items-end gap-2 shrink-0">
-              <UserWidget onOpen={() => setProfileOpen(true)} />
-              <span className="font-tac-md text-[10px] text-stone-600 hidden sm:block">
-                Three.js · WebRTC · 5 modes + Battle Royale
-              </span>
+          </button>
+        )}
+      </div>
+
+      {/* ============ RIGHT: online status (quick glance) ============ */}
+      <div className="absolute right-4 sm:right-6 top-24 z-20 hidden lg:flex flex-col items-end gap-1.5 pointer-events-none">
+        <div className="font-tac-md text-[9px] tracking-widest px-2.5 py-1.5 rounded border bg-[#0b0e11]/80 flex items-center gap-2"
+          style={{ borderColor: netStatus === 'online' ? 'rgba(52,211,153,0.4)' : 'rgba(120,113,108,0.4)' }}>
+          {netStatus === 'online' ? <Wifi className="w-3 h-3 text-emerald-400" /> : <WifiOff className="w-3 h-3 text-stone-500" />}
+          <span className={netStatus === 'online' ? 'text-emerald-300' : 'text-stone-500'}>
+            {netStatus === 'online' ? `NETWORK · ${rooms.length} OPEN ROOM${rooms.length === 1 ? '' : 'S'}` : 'NETWORK OFFLINE'}
+          </span>
+        </div>
+        {modeOpen && netStatus === 'online' && rooms.length > 0 && (
+          <div className="font-tac-md text-[9px] text-stone-500 tracking-widest">
+            LIVE ROOMS ON THE MODE PANEL ↓
+          </div>
+        )}
+      </div>
+
+      {/* ============ BOTTOM BAR: mode card + PLAY ============ */}
+      <div className="absolute bottom-0 left-0 right-0 z-20 px-4 sm:px-6 pb-5 pt-16 bg-gradient-to-t from-[#050709]/95 via-[#050709]/55 to-transparent">
+        <div className="max-w-6xl mx-auto flex items-end justify-between gap-3">
+          {/* left: live strip (compact) */}
+          <div className="hidden sm:flex items-center gap-2 select-none pb-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-60" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+            </span>
+            <span className="font-tac-md text-[10px] text-stone-500">LIVE · WEBGL COMBAT SIMULATION</span>
+          </div>
+          <div className="flex-1" />
+
+          {/* mode selector card — click to open the full picker (drops UP) */}
+          <button
+            onClick={() => { getAudio().uiClick(); setModeOpen(true) }}
+            className="group w-[min(280px,44vw)] rounded-lg border border-stone-700/70 bg-[#0b0e11]/92 backdrop-blur-md shadow-2xl p-3.5 text-left hover:border-amber-500/70 transition-colors tac-corner"
+          >
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="font-tac-md text-[9px] tracking-[0.22em] text-stone-500">SELECTED MODE</span>
+              <ChevronUp className="w-4 h-4 text-amber-400/80 group-hover:text-amber-300 transition-colors" />
+            </div>
+            <div className="font-tac text-[15px] tracking-[0.12em] text-stone-100 uppercase truncate">
+              {modeInfo.name}
+            </div>
+            <div className="font-tac-md text-[9px] text-amber-300/70 tracking-widest mt-0.5 truncate">
+              {sourceLabel} · {lobbyWeaponLabel(previewWeapon)}
+            </div>
+          </button>
+
+          {/* the big play / ready button */}
+          <button
+            onClick={onPlay}
+            disabled={(source === 'join' && code.length < 4) || quickState !== ''}
+            className={`group h-[64px] w-[min(220px,38vw)] rounded-lg font-tac text-[17px] tracking-[0.24em] uppercase transition-all active:scale-[0.99]
+              flex items-center justify-center gap-3 shadow-2xl border-b-4
+              ${partyActive && !amLeader
+                ? iAmReady
+                  ? 'bg-emerald-400 text-stone-950 border-emerald-600 hover:bg-emerald-300'
+                  : 'bg-stone-200 text-stone-900 border-stone-400 hover:bg-white'
+                : 'bg-amber-400 text-stone-950 border-amber-600 hover:bg-amber-300'}
+              disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            {quickState === 'scanning' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+            {playLabel}
+          </button>
+        </div>
+
+        {/* sub-line under the play bar */}
+        <div className="max-w-6xl mx-auto mt-2 flex items-center justify-between gap-3">
+          <p className="font-tac-md text-[9px] text-stone-600 tracking-[0.2em] hidden sm:block">
+            EMERGENCY STRIKE v14 · THREE.JS · WEBRTC P2P · MQTT PRESENCE
+          </p>
+          <p className="font-tac-md text-[9px] text-stone-500 tracking-widest truncate">
+            {partyActive && !amLeader
+              ? 'THE LEADER LAUNCHES THE MATCH FOR THE WHOLE SQUAD'
+              : partyActive && amLeader && partyMembers.length > 1
+                ? `${readyCount}/${partyMembers.length - 1} SQUADMATES READY — LAUNCH WHEN YOU WANT`
+                : 'PICK A MODE ↑ · CHANGE LOADOUT PREVIEW IN THE PANEL'}
+          </p>
+        </div>
+      </div>
+
+      {/* ============ MODE SELECT PANEL (drops up, Fortnite-style) ============ */}
+      {modeOpen && (
+        <ModeSelectPanel
+          onClose={() => { getAudio().uiClick(); setModeOpen(false) }}
+          gameMode={gameMode}
+          setGameMode={setGameMode}
+          source={source}
+          setSource={setSource}
+          difficulty={difficulty}
+          setDifficulty={setDifficulty}
+          roomKind={roomKind}
+          setRoomKind={setRoomKind}
+          fillEmpty={fillEmpty}
+          setFillEmpty={setFillEmpty}
+          fillBots={fillBots}
+          setFillBots={setFillBots}
+          code={code}
+          setCode={setCode}
+          coop={coop}
+          setCoop={setCoop}
+          coopCode={code}
+          name={name}
+          setName={setName}
+          error={error}
+          previewWeapon={previewWeapon}
+          setPreviewWeapon={setPreviewWeapon}
+          rooms={rooms}
+          netStatus={netStatus}
+          onJoinRoom={(c) => launch('guest', c)}
+          onQuickPlay={quickPlay}
+          onLaunchCoopJoin={() => launch('guest', code, 'historia', 'coop')}
+          partyActive={partyActive}
+          amLeader={amLeader}
+        />
+      )}
+
+      {/* ============ modals ============ */}
+      {profileOpen && <ProfileModal onClose={() => setProfileOpen(false)} />}
+      {overlay && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setOverlay(null)}>
+          <div className="w-[min(880px,94vw)] max-h-[90vh] overflow-y-auto bg-[#0b0e11]/97 border border-stone-800 shadow-2xl rounded-xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="px-5 sm:px-7 pt-5 flex items-center justify-between gap-3 sticky top-0 bg-[#0b0e11]/97 z-10 pb-3">
+              <h2 className="font-tac text-xl tracking-[0.2em] text-white uppercase">
+                {overlay === 'controls' ? 'Controls' : overlay === 'settings' ? 'Settings' : 'About the game'}
+              </h2>
+              <button onClick={() => setOverlay(null)}
+                className="w-9 h-9 rounded-md border border-stone-700 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-500/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 sm:px-7 pb-6">
+              {overlay === 'controls' && <KeybindsPanel />}
+              {overlay === 'settings' && <SettingsPanel />}
+              {overlay === 'info' && <InfoPanel />}
             </div>
           </div>
         </div>
+      )}
+    </div>
+  )
+}
 
-        {profileOpen && <ProfileModal onClose={() => setProfileOpen(false)} />}
-
-        <StatusStrip />
-
-        {/* tabs */}
-        <div className="w-full max-w-5xl flex items-stretch gap-1 mb-0 border-b border-stone-800">
-          <TabButton icon={Play} label="Deploy" active={tab === 'deploy'} onClick={() => setTab('deploy')} />
-          <TabButton icon={Radio} label="Campaign" active={tab === 'story'} onClick={() => setTab('story')} />
-          <TabButton icon={Rocket} label="Battle Royale" active={tab === 'br'} onClick={() => setTab('br')} />
-          <TabButton icon={Keyboard} label="Controls" active={tab === 'controls'} onClick={() => setTab('controls')} />
-          <TabButton icon={Settings} label="Settings" active={tab === 'settings'} onClick={() => setTab('settings')} />
-          <TabButton icon={Info} label="Info" active={tab === 'info'} onClick={() => setTab('info')} />
+// ============================================================
+// v14 — MODE SELECT PANEL: drops up over the lobby with EVERY
+// mode in the game, the deploy config, the live room browser
+// and the loadout preview for your lobby character.
+// ============================================================
+function ModeSelectPanel(p: {
+  onClose: () => void
+  gameMode: GameMode
+  setGameMode: (m: GameMode) => void
+  source: PlaySource
+  setSource: (s: PlaySource) => void
+  difficulty: BotDifficulty
+  setDifficulty: (d: BotDifficulty) => void
+  roomKind: RoomKind
+  setRoomKind: (k: RoomKind) => void
+  fillEmpty: boolean
+  setFillEmpty: (v: boolean) => void
+  fillBots: number
+  setFillBots: (n: number) => void
+  code: string
+  setCode: (c: string) => void
+  coop: boolean
+  setCoop: (v: boolean) => void
+  coopCode: string
+  name: string
+  setName: (n: string) => void
+  error: string
+  previewWeapon: WeaponId
+  setPreviewWeapon: (w: WeaponId) => void
+  rooms: { code: string; host: string; kind: string; mode: string; players: number; cap: number; t: number }[]
+  netStatus: string
+  onJoinRoom: (code: string) => void
+  onQuickPlay: () => void
+  onLaunchCoopJoin: () => void
+  partyActive: boolean
+  amLeader: boolean
+}) {
+  const modeIds: GameMode[] = ['escaramuza', 'ffa', 'bandera', 'dominacion', 'historia']
+  const modeIcon = (id: GameMode): typeof Play => (
+    id === 'bandera' ? Flag : id === 'dominacion' ? Target : id === 'ffa' ? Zap : id === 'historia' ? Radio : Swords
+  )
+  const isCampaign = p.gameMode === 'historia'
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-[3px]"
+      onClick={p.onClose}>
+      <div className="w-[min(1060px,96vw)] max-h-[92vh] overflow-y-auto bg-[#0b0e11]/97 border-x border-t border-stone-800 shadow-2xl rounded-t-2xl animate-[slideUp_0.18s_ease-out]"
+        onClick={e => e.stopPropagation()}
+        style={{ animation: 'slideUp .18s ease-out' }}>
+        <div className="px-5 sm:px-7 pt-5 flex items-center justify-between gap-3 sticky top-0 bg-[#0b0e11]/97 z-10 pb-3 border-b border-stone-800/80">
+          <div className="flex items-center gap-3">
+            <Swords className="w-5 h-5 text-amber-300/90" />
+            <h2 className="font-tac text-xl tracking-[0.2em] text-white uppercase">Select <span className="text-amber-300">mode</span></h2>
+          </div>
+          <button onClick={p.onClose}
+            className="w-9 h-9 rounded-md border border-stone-700 flex items-center justify-center text-stone-400 hover:text-white hover:border-amber-500/60 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* content card */}
-        <div className="w-full max-w-5xl bg-[#0b0e11]/92 backdrop-blur-md border-x border-b border-stone-800 shadow-2xl">
+        {/* ---- the modes ---- */}
+        <div className="p-5 sm:p-7 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+          {modeIds.map(id => {
+            const m = MODES[id]
+            const Icon = modeIcon(id)
+            const active = p.gameMode === id
+            return (
+              <button key={id}
+                onClick={() => { getAudio().uiClick(); p.setGameMode(id) }}
+                className={`rounded-lg border p-3 text-left transition-colors tac-corner ${
+                  active ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                }`}>
+                <Icon className={`w-5 h-5 mb-1.5 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
+                <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>{m.name}</div>
+                <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
+                  {id === 'historia' ? '6 chapters · solo or co-op' : m.teams ? 'team vs team' : 'everyone vs everyone'}
+                </div>
+                {active && <span className="absolute" />}
+              </button>
+            )
+          })}
+        </div>
 
-          {tab === 'deploy' && (
-            <div className="p-5 sm:p-7 grid lg:grid-cols-[1.12fr_0.88fr] gap-6">
-              {/* left column: deployment */}
-              <div className="space-y-5">
+        {/* ---- campaign detail ---- */}
+        {isCampaign && (
+          <div className="px-5 sm:px-7 pb-5 grid lg:grid-cols-[1.05fr_0.95fr] gap-5">
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 space-y-3 tac-corner">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-md border border-amber-700/50 bg-amber-950/40 flex items-center justify-center shrink-0">
+                  <Radio className="w-5 h-5 text-amber-300" />
+                </div>
                 <div>
-                  <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">
-                    Operator name
-                  </label>
+                  <h3 className="font-tac text-white text-base tracking-[0.16em] uppercase">Operation Ashfall</h3>
+                  <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">Single-player campaign · Serene Valley</p>
+                </div>
+              </div>
+              <p className="text-stone-400 text-xs leading-relaxed">
+                Six chapters with cinematic flyovers, radio dialogue, live battle fronts, a rescue,
+                a boss duel and a timed helicopter extraction. Falling restarts the chapter with your inventory.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <Chip active={!p.coop} onClick={() => p.setCoop(false)}>SOLO MISSION</Chip>
+                <Chip active={p.coop} onClick={() => p.setCoop(true)}>CO-OP · ONLINE</Chip>
+              </div>
+              {p.coop && (
+                <div className="flex gap-2 pt-1">
                   <Input
-                    value={name}
-                    onChange={e => { setName(e.target.value); setError('') }}
-                    placeholder={authUser || 'Enter your callsign'}
-                    maxLength={16}
-                    className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
+                    value={p.code}
+                    onChange={e => p.setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                    onKeyDown={e => { if (e.key === 'Enter' && p.code.length >= 4) p.onLaunchCoopJoin() }}
+                    placeholder="SQUAD CODE"
+                    className="bg-stone-950/80 border-stone-600 text-white text-lg h-11 font-bold tracking-[0.25em] text-center"
                   />
-                  {error && <p className="text-red-400 text-xs mt-2 font-bold">{error}</p>}
+                  <button
+                    onClick={p.onLaunchCoopJoin}
+                    disabled={p.code.length < 4}
+                    className="px-5 rounded-md font-tac text-xs tracking-[0.2em] uppercase bg-stone-100 text-stone-900 hover:bg-emerald-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    Join
+                  </button>
                 </div>
+              )}
+              <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="MISSION DIFFICULTY" />
+            </div>
+            <div className="space-y-2.5">
+              <h3 className="font-tac-md text-stone-200 text-[11px] mb-1">Mission structure</h3>
+              {[
+                { n: '01', title: 'First Light', desc: 'Recover 3 intel caches: the mill, the chapel, the watchtower.' },
+                { n: '02', title: 'Hold the Line', desc: 'Defend the village uplink for 4 minutes.' },
+                { n: '03', title: 'Cut the Tower', desc: 'Plant charges on the 3 antennas and get clear.' },
+                { n: '04', title: 'The Prisoner', desc: 'Open Sergeant Rivera\u2019s cell and survive the alarm.' },
+                { n: '05', title: 'The Commander', desc: 'Eliminate Col. Vega — armored, in the heart of the complex.' },
+                { n: '06', title: 'Exfil', desc: 'Sprint to the north helipad before the helicopter leaves.' },
+              ].map(c => (
+                <div key={c.n} className="flex gap-3.5 bg-stone-950/60 border border-stone-800 rounded-md p-3 tac-corner">
+                  <span className="font-tac-md text-[10px] text-stone-600 pt-0.5">{c.n}</span>
+                  <div>
+                    <span className="font-tac-md text-stone-200 text-[12px] uppercase">{c.title}</span>
+                    <p className="text-stone-500 text-[11px] leading-snug mt-0.5">{c.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-                {/* connection mode selector */}
-                <div className="grid grid-cols-3 gap-2.5">
-                  {([
-                    { id: 'solo', icon: Bot, title: 'BOTS', desc: 'Team deathmatch 4v4 vs AI', meta: 'offline' },
-                    { icon: Users, id: 'host', title: 'CREATE ROOM', desc: '1v1 to 5v5 with a P2P code', meta: 'online' },
-                    { icon: Link2, id: 'guest', title: 'JOIN', desc: 'Enter with a code', meta: 'online' },
-                  ] as const).map(m => (
-                    <button
-                      key={m.id}
-                      onClick={() => setMode(m.id)}
+        {/* ---- PvP deploy config ---- */}
+        {!isCampaign && (
+          <div className="px-5 sm:px-7 pb-5 space-y-5">
+            <div>
+              <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                <Gauge className="w-3.5 h-3.5" /> How do you want to play
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  { id: 'bots' as const, icon: Bot, title: 'VS BOTS', desc: 'offline · instant' },
+                  { id: 'room' as const, icon: Users, title: 'CREATE ROOM', desc: 'P2P code · 1v1-5v5' },
+                  { id: 'join' as const, icon: Link2, title: 'JOIN', desc: 'enter a code' },
+                  { id: 'quick' as const, icon: Zap, title: 'QUICK MATCH', desc: 'auto-find or host' },
+                ]).map(s => {
+                  const active = p.source === s.id
+                  return (
+                    <button key={s.id}
+                      onClick={() => { getAudio().uiClick(); p.setSource(s.id) }}
                       className={`rounded-lg border p-3 text-left transition-colors tac-corner ${
-                        mode === m.id
-                          ? 'border-amber-500/70 bg-amber-500/[0.07]'
-                          : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
-                      }`}
-                    >
-                      <m.icon className={`w-5 h-5 mb-1.5 ${mode === m.id ? 'text-amber-300' : 'text-stone-500'}`} />
-                      <div className={`font-tac-md text-[11px] ${mode === m.id ? 'text-white' : 'text-stone-300'}`}>
-                        {m.title}
-                      </div>
-                      <div className="text-[10px] text-stone-500 leading-snug mt-0.5">{m.desc}</div>
-                      <div className={`font-tac-md text-[9px] mt-1 ${mode === m.id ? 'text-amber-300/70' : 'text-stone-600'}`}>
-                        {m.meta}
-                      </div>
+                        active ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
+                      }`}>
+                      <s.icon className={`w-5 h-5 mb-1.5 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
+                      <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>{s.title}</div>
+                      <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{s.desc}</div>
                     </button>
-                  ))}
+                  )
+                })}
+              </div>
+            </div>
+
+            {p.source === 'bots' && (
+              <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="AI DIFFICULTY" />
+            )}
+
+            {p.source === 'room' && (
+              <div className="space-y-4">
+                <div>
+                  <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                    <Users className="w-3.5 h-3.5" /> Room format
+                  </p>
+                  <div className="grid grid-cols-5 gap-2">
+                    {(['1v1', '2v2', '3v3', '4v4', '5v5'] as const).map(k => (
+                      <Chip key={k} active={p.roomKind === k} onClick={() => p.setRoomKind(k)}>
+                        {k.toUpperCase()}
+                      </Chip>
+                    ))}
+                  </div>
                 </div>
-
-                {/* game mode selector (solo/host; the guest plays the host's mode) */}
-                {mode !== 'guest' && (
+                {p.roomKind === '1v1' ? (
                   <div>
-                    <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
-                      <Swords className="w-3.5 h-3.5" /> Game mode
-                    </p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {MODE_LIST.map(id => {
-                        const m = MODES[id]
-                        const active = gameMode === id
-                        const Icon = id === 'bandera' ? Flag : id === 'dominacion' ? Target : id === 'ffa' ? Zap : Swords
-                        return (
-                          <button
-                            key={id}
-                            onClick={() => setGameMode(id)}
-                            className={`rounded-lg border p-2.5 text-left transition-colors tac-corner ${
-                              active
-                                ? 'border-amber-500/70 bg-amber-500/[0.07]'
-                                : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
-                            }`}
-                          >
-                            <Icon className={`w-4 h-4 mb-1 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
-                            <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>
-                              {m.name}
-                            </div>
-                            <div className="text-[9px] text-stone-500 leading-snug mt-0.5">{m.desc}</div>
-                          </button>
-                        )
-                      })}
+                    <p className="font-tac-md text-stone-400 text-[11px] mb-2">FILLER BOTS (PER TEAM)</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[0, 1, 2, 3].map(n => (
+                        <Chip key={n} active={p.fillBots === n} onClick={() => p.setFillBots(n)}>
+                          {n === 0 ? 'PURE 1v1' : `${n} vs ${n}`}
+                        </Chip>
+                      ))}
                     </div>
                   </div>
-                )}
-
-                {/* mode-specific config */}
-                {mode === 'solo' && (
-                  <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="AI DIFFICULTY" />
-                )}
-                {mode === 'host' && (
-                  <div className="space-y-4">
-                    {/* v9: online room format — 1v1 · 2v2 · 3v3 · 4v4 · 5v5 */}
-                    <div>
-                      <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
-                        <Users className="w-3.5 h-3.5" /> Room format
-                      </p>
-                      <div className="grid grid-cols-5 gap-2">
-                        {(['1v1', '2v2', '3v3', '4v4', '5v5'] as const).map(k => (
-                          <button
-                            key={k}
-                            onClick={() => setRoomKind(k)}
-                            className={`rounded-lg border p-2 text-center transition-colors tac-corner ${
-                              roomKind === k
-                                ? 'border-amber-500/70 bg-amber-500/[0.07]'
-                                : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
-                            }`}
-                          >
-                            <div className={`font-tac-md text-[11px] ${roomKind === k ? 'text-white' : 'text-stone-300'}`}>
-                              {k.toUpperCase()}
-                            </div>
-                            <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
-                              {k === '1v1' ? 'duel' : `${roomCapacity(k)} players`}
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {roomKind === '1v1' ? (
-                      <div>
-                        <p className="font-tac-md text-stone-400 text-[11px] mb-2">FILLER BOTS (PER TEAM)</p>
-                        <div className="grid grid-cols-4 gap-2">
-                          {[0, 1, 2, 3].map(n => (
-                            <Chip key={n} active={fillBots === n} onClick={() => setFillBots(n)}>
-                              {n === 0 ? 'PURE 1v1' : `${n} vs ${n}`}
-                            </Chip>
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setFillEmpty(f => !f)}
-                        className={`w-full flex items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors ${
-                          fillEmpty
-                            ? 'border-amber-500/70 bg-amber-500/[0.07]'
-                            : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
-                        }`}
-                      >
-                        <div>
-                          <div className={`font-tac-md text-[11px] ${fillEmpty ? 'text-white' : 'text-stone-300'}`}>
-                            FILL EMPTY SLOTS WITH BOTS
-                          </div>
-                          <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
-                            Missing operators at start are covered by AI — the 2v2 never plays unbalanced
-                          </div>
-                        </div>
-                        <span className={`w-10 h-6 rounded-full border flex items-center px-0.5 transition-colors shrink-0 ${
-                          fillEmpty ? 'bg-amber-500/80 border-amber-400' : 'bg-stone-800 border-stone-600'
-                        }`}>
-                          <span className={`w-[18px] h-[18px] rounded-full bg-stone-100 transition-transform ${fillEmpty ? 'translate-x-[16px]' : ''}`} />
-                        </span>
-                      </button>
-                    )}
-                    <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="BOT DIFFICULTY" />
-                  </div>
-                )}
-                {mode === 'guest' && (
-                  <div>
-                    <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Room code</label>
-                    <Input
-                      value={code}
-                      onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
-                      onKeyDown={e => { if (e.key === 'Enter' && code.length >= 4) launch('guest', code) }}
-                      placeholder="E.G. K7M2P"
-                      className="bg-stone-950/80 border-stone-600 text-white text-2xl h-14 font-bold tracking-[0.3em] text-center"
-                    />
-                    <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
-                      P2P (WebRTC) connection through the public PeerJS signaling server,
-                      with up to 3 automatic retries.
-                    </p>
-                  </div>
-                )}
-
-                {/* v11: REAL squad — online friends auto-join your room */}
-                {mode !== 'guest' && (
-                  <div className={`rounded-lg border p-3 flex items-center gap-3 tac-corner ${
-                    partyActive
-                      ? 'border-amber-500/50 bg-amber-500/[0.05]'
-                      : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
-                  }`}>
-                    <div className={`w-10 h-10 rounded-md border flex items-center justify-center shrink-0 ${
-                      partyActive ? 'border-amber-700/50 bg-amber-950/40' : 'border-stone-700 bg-stone-900'
+                ) : (
+                  <button
+                    onClick={() => p.setFillEmpty(!p.fillEmpty)}
+                    className={`w-full flex items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      p.fillEmpty ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
                     }`}>
-                      <Users className={`w-5 h-5 ${partyActive ? 'text-amber-300' : 'text-stone-500'}`} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className={`font-tac-md text-[11px] ${partyActive ? 'text-white' : 'text-stone-300'}`}>
-                        {partyActive ? 'REAL SQUAD — they auto-join your room' : 'NO ACTIVE SQUAD'}
+                    <div>
+                      <div className={`font-tac-md text-[11px] ${p.fillEmpty ? 'text-white' : 'text-stone-300'}`}>
+                        FILL EMPTY SLOTS WITH BOTS
                       </div>
                       <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
-                        {partyActive
-                          ? 'Accepted friends join live through the network — Battle Royale stays SOLOS'
-                          : 'Add operators by their ID in your profile (top right); they accept and join your squad'}
+                        Missing operators at start are covered by AI — the match never plays unbalanced
                       </div>
                     </div>
-                    <button
-                      onClick={() => { getAudio().uiClick(); setProfileOpen(true) }}
-                      className="font-tac-md text-[10px] tracking-widest rounded px-3 py-2 border border-stone-600 bg-stone-900 text-stone-300 hover:border-amber-500/60 hover:text-amber-200 transition-colors shrink-0"
-                    >
-                      MANAGE
-                    </button>
+                    <span className={`w-10 h-6 rounded-full border flex items-center px-0.5 transition-colors shrink-0 ${
+                      p.fillEmpty ? 'bg-amber-500/80 border-amber-400' : 'bg-stone-800 border-stone-600'
+                    }`}>
+                      <span className={`w-[18px] h-[18px] rounded-full bg-stone-100 transition-transform ${p.fillEmpty ? 'translate-x-[16px]' : ''}`} />
+                    </span>
+                  </button>
+                )}
+                <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="BOT DIFFICULTY" />
+              </div>
+            )}
+
+            {p.source === 'join' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Room code</label>
+                  <Input
+                    value={p.code}
+                    onChange={e => p.setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                    onKeyDown={e => { if (e.key === 'Enter' && p.code.length >= 4) p.onJoinRoom(p.code) }}
+                    placeholder="E.G. K7M2P"
+                    className="bg-stone-950/80 border-stone-600 text-white text-2xl h-14 font-bold tracking-[0.3em] text-center"
+                  />
+                  <p className="text-stone-600 text-[10px] mt-2 leading-relaxed">
+                    P2P (WebRTC) connection through the public PeerJS signaling server, with up to 3 automatic retries.
+                  </p>
+                </div>
+                {p.error && <p className="text-red-400 text-xs font-bold">{p.error}</p>}
+              </div>
+            )}
+
+            {p.source === 'quick' && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 flex items-center gap-3.5 tac-corner">
+                <Zap className="w-5 h-5 text-amber-300 shrink-0" />
+                <p className="text-stone-400 text-xs leading-relaxed">
+                  <b className="text-stone-200">Quick match:</b> the game scans the public rooms on the network for
+                  ~6 seconds looking for someone playing <b className="text-amber-200">{MODES[p.gameMode].name}</b>.
+                  Found → you join them instantly. Not found → you become the host and your room appears
+                  in everyone else&apos;s browser.
+                </p>
+              </div>
+            )}
+
+            {/* ---- live room browser (dynamic online) ---- */}
+            {p.netStatus === 'online' && (
+              <div>
+                <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                  <Activity className="w-3.5 h-3.5" /> Public rooms right now
+                  <span className="text-stone-600">· live on the network</span>
+                </p>
+                {p.rooms.length === 0 ? (
+                  <div className="rounded-md border border-stone-800 bg-stone-950/60 px-4 py-3 text-stone-500 text-[11px]">
+                    No public rooms open — create one (or quick match) and it appears here for everyone.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {p.rooms.slice(0, 6).map(r => (
+                      <div key={r.code} className="rounded-md border border-stone-800 bg-stone-950/60 px-3.5 py-2.5 flex items-center gap-3 tac-corner">
+                        <span className="font-tac-md text-[10px] text-amber-300/80 tracking-[0.18em] w-16 shrink-0">{r.code}</span>
+                        <span className="font-tac-md text-[11px] text-stone-300 truncate flex-1">
+                          {r.host}&apos;s {MODES[r.mode as GameMode]?.name ?? r.mode}
+                        </span>
+                        <span className="font-tac-md text-[9px] text-stone-500 shrink-0">{r.kind.toUpperCase()} · {r.players}/{r.cap}</span>
+                        <button
+                          onClick={() => { getAudio().uiClick(); p.onJoinRoom(r.code) }}
+                          disabled={r.players >= r.cap}
+                          className="font-tac text-[10px] tracking-[0.18em] uppercase rounded px-3.5 py-1.5 bg-stone-100 text-stone-900 hover:bg-amber-200 disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                        >
+                          Join
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
-
-                {/* deploy button */}
-                <button
-                  onClick={() => launch(mode, mode === 'guest' ? code : '')}
-                  disabled={mode === 'guest' && code.length < 4}
-                  className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
-                    bg-stone-100 text-stone-900 hover:bg-amber-200 active:scale-[0.99]
-                    disabled:opacity-30 disabled:cursor-not-allowed
-                    flex items-center justify-center gap-3"
-                >
-                  <Play className="w-5 h-5" />
-                  {mode === 'solo' ? 'Start deployment' : mode === 'host' ? 'Create room' : 'Join room'}
-                  <ChevronRight className="w-5 h-5 opacity-50 group-hover:translate-x-0.5 transition-transform" />
-                </button>
               </div>
+            )}
 
-              {/* right column: deployment summary */}
-              <div className="border-t lg:border-t-0 lg:border-l border-stone-800/80 pt-5 lg:pt-0 lg:pl-6 space-y-4">
-                <h3 className="font-tac-md text-stone-200 text-[11px] flex items-center gap-2">
-                  <Map className="w-4 h-4 text-amber-300/80" /> Sector Meridian
-                </h3>
-                <div className="space-y-2.5 text-xs">
-                  {[
-                    ['Terrain', '140×140 m city with ordered districts'],
-                    ['Buildings', '3-floor hotel · 4-floor tower · market · warehouses'],
-                    ['Interiors', '13 enterable buildings with stairways'],
-                    ['Cover', 'Containers, sandbags, explosive barrels'],
-                    ['Verticality', 'Ziplines, jump pads and rooftops'],
-                  ].map(([k, v]) => (
-                    <div key={k} className="flex gap-3 items-baseline">
-                      <span className="font-tac-md text-stone-600 text-[10px] w-24 shrink-0">{k.toUpperCase()}</span>
-                      <span className="text-stone-400">{v}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
-                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-2 flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5" /> What's new in v13
-                  </h4>
-                  <ul className="space-y-1.5">
-                    {[
-                      '9 new real textures: grass, sand, asphalt, concrete, rock, container, wood, brick and metal across every mode',
-                      'Battle Royale builds with real materials: WALL = brick · FLOOR = wood planks · RAMP = steel',
-                      'REAL loading gate: the game now waits until every texture and 3D model is fully loaded',
-                      'Loading screen shows live progress of each texture and model as it downloads',
-                    ].map(t => (
-                      <li key={t} className="text-stone-400 text-[11px] leading-snug flex gap-2">
-                        <span className="text-amber-400/70 mt-0.5">·</span> {t}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab === 'story' && (
-            <div className="p-5 sm:p-7 grid lg:grid-cols-[1.05fr_0.95fr] gap-6">
-              <div className="space-y-5">
-                <div>
-                  <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">
-                    Operator name
-                  </label>
-                  <Input
-                    value={name}
-                    onChange={e => { setName(e.target.value); setError('') }}
-                    placeholder="Enter your callsign"
-                    maxLength={16}
-                    className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
-                  />
-                  {error && <p className="text-red-400 text-xs mt-2 font-bold">{error}</p>}
-                </div>
-
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 tac-corner">
-                  <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-md border border-amber-700/50 bg-amber-950/40 flex items-center justify-center shrink-0">
-                      <Radio className="w-5 h-5 text-amber-300" />
-                    </div>
-                    <div>
-                      <h3 className="font-tac text-white text-base tracking-[0.16em] uppercase">Operation Ashfall</h3>
-                      <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">
-                        Single-player campaign · Serene Valley
-                      </p>
-                    </div>
-                  </div>
-                  <p className="text-stone-400 text-xs leading-relaxed mt-3">
-                    A valley at dusk locked in by the ridge: a river with a stone bridge, a lake
-                    with a pier, a village with a square, a ruined chapel and the walled military
-                    complex to the north. Six chapters with cinematic flyovers, radio dialogue,
-                    live battle fronts, a rescue, a boss duel and a timed helicopter extraction.
-                  </p>
-                  <div className="flex flex-wrap gap-4 mt-3 font-tac-md text-[10px] text-stone-500">
-                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 25-35 min</span>
-                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> 140×140 valley</span>
-                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 1 operator vs AI</span>
-                  </div>
-                </div>
-
-                <DifficultyPicker difficulty={difficulty} setDifficulty={setDifficulty} label="MISSION DIFFICULTY" />
-
-                <button
-                  onClick={() => launch('solo', '', 'historia')}
-                  className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
-                    bg-amber-400 text-stone-950 hover:bg-amber-300 active:scale-[0.99]
-                    flex items-center justify-center gap-3"
-                >
-                  <Radio className="w-5 h-5" />
-                  Begin operation
-                  <ChevronRight className="w-5 h-5 opacity-60 group-hover:translate-x-0.5 transition-transform" />
-                </button>
-
-                {/* v9 — CO-OP ONLINE (hasta 5, SIN bots de relleno) */}
-                <div className="rounded-lg border border-emerald-700/40 bg-emerald-900/[0.08] p-4 space-y-3.5 tac-corner">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-md border border-emerald-700/50 bg-emerald-950/40 flex items-center justify-center shrink-0">
-                      <Users className="w-5 h-5 text-emerald-300" />
-                    </div>
-                    <div>
-                      <h4 className="font-tac text-sm tracking-[0.16em] text-stone-100 uppercase">Co-op squad · online</h4>
-                      <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">
-                        Up to 5 operators · empty slots are NEVER filled with bots
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => launch('host', '', 'historia', 'coop')}
-                    className="w-full py-3 rounded-md font-tac text-sm tracking-[0.22em] uppercase transition-all
-                      bg-emerald-500/90 text-stone-950 hover:bg-emerald-400 active:scale-[0.99]
-                      flex items-center justify-center gap-2.5"
-                  >
-                    <Users className="w-4 h-4" /> Create co-op squad
-                  </button>
-                  <div className="flex gap-2">
-                    <Input
-                      value={coopCode}
-                      onChange={e => setCoopCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
-                      onKeyDown={e => { if (e.key === 'Enter' && coopCode.length >= 4) launch('guest', coopCode, 'historia', 'coop') }}
-                      placeholder="SQUAD CODE"
-                      className="bg-stone-950/80 border-stone-600 text-white text-lg h-11 font-bold tracking-[0.25em] text-center"
-                    />
-                    <button
-                      onClick={() => launch('guest', coopCode, 'historia', 'coop')}
-                      disabled={coopCode.length < 4}
-                      className="px-5 rounded-md font-tac text-xs tracking-[0.2em] uppercase bg-stone-100 text-stone-900 hover:bg-emerald-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      Join
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* chapters */}
-              <div className="border-t lg:border-t-0 lg:border-l border-stone-800/80 pt-5 lg:pt-0 lg:pl-6 space-y-2.5">
-                <h3 className="font-tac-md text-stone-200 text-[11px] mb-2">
-                  Mission structure
-                </h3>
-                {[
-                  { n: '01', title: 'First Light', desc: 'Cross the ridge, ford the river and recover 3 intel caches: the mill, the chapel and the watchtower.', icon: Eye },
-                  { n: '02', title: 'Hold the Line', desc: 'Defend the village uplink for 4 minutes while Red drains their defense grid.', icon: Shield },
-                  { n: '03', title: 'Cut the Tower', desc: 'Plant charges on the 3 antennas (ALPHA · BRAVO · CHARLIE) and get clear of the blast.', icon: Bomb },
-                  { n: '04', title: 'The Prisoner', desc: 'Open Sergeant Rivera\u2019s cell holding E and survive the alarm while he escapes.', icon: Heart },
-                  { n: '05', title: 'The Commander', desc: 'Eliminate Col. Vega — armored and waiting in the heart of the complex.', icon: Crosshair },
-                  { n: '06', title: 'Exfil', desc: 'Sprint to the north helipad against the clock before the helicopter leaves.', icon: Plane },
-                ].map(c => (
-                  <div key={c.n} className="flex gap-3.5 bg-stone-950/60 border border-stone-800 rounded-md p-3.5 tac-corner">
-                    <div className="shrink-0 w-9 h-9 rounded border border-stone-700 bg-stone-900 flex items-center justify-center">
-                      <c.icon className="w-4 h-4 text-amber-300/80" />
-                    </div>
-                    <div>
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-tac-md text-[10px] text-stone-600">{c.n}</span>
-                        <span className="font-tac-md text-stone-200 text-[12px] uppercase">{c.title}</span>
-                      </div>
-                      <p className="text-stone-500 text-[11px] leading-snug mt-0.5">{c.desc}</p>
-                    </div>
-                  </div>
+            {/* ---- loadout preview ---- */}
+            <div>
+              <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                <Crosshair className="w-3.5 h-3.5" /> Lobby loadout preview
+                <span className="text-stone-600">· what your operator holds</span>
+              </p>
+              <div className="grid grid-cols-5 gap-2">
+                {(['mp9', 'ar47', 'cr4', 'aguila', 'awp338'] as WeaponId[]).map(w => (
+                  <Chip key={w} active={p.previewWeapon === w} onClick={() => { getAudio().uiClick(); p.setPreviewWeapon(w) }}>
+                    {lobbyWeaponLabel(w).split(' ')[0]}
+                  </Chip>
                 ))}
-                <p className="text-stone-600 text-[10px] leading-relaxed pt-1">
-                  If you fall, the current chapter restarts from its checkpoint — your
-                  inventory is kept. Mission weapons are delivered as you go.
-                </p>
               </div>
             </div>
-          )}
 
-          {tab === 'br' && (
-            <div className="p-5 sm:p-7 grid lg:grid-cols-[1.05fr_0.95fr] gap-6">
-              {/* left: what BR is + play */}
-              <div className="space-y-5">
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/[0.05] p-4 tac-corner">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-md border border-amber-700/50 bg-amber-950/40 flex items-center justify-center shrink-0">
-                      <Rocket className="w-6 h-6 text-amber-300" />
-                    </div>
-                    <div>
-                      <h3 className="font-tac text-white text-lg tracking-[0.14em] uppercase">Battle Royale</h3>
-                      <p className="font-tac-md text-stone-500 text-[10px] mt-0.5">
-                        20 operators · last one standing · NEW standalone mode
-                      </p>
-                    </div>
-                  </div>
-                  <p className="text-stone-400 text-xs leading-relaxed mt-3">
-                    Drop from a plane onto an island twice the size of Meridian City: cities,
-                    mountains and lakes, drivable vehicles, weapon loot and supply crates.
-                    A progressive storm closes in — outlive 19 rivals and become the
-                    <b className="text-amber-200"> LAST OPERATOR STANDING</b>.
-                  </p>
-                  <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3 font-tac-md text-[10px] text-stone-500">
-                    <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-amber-300/70" /> 20 operators (bots fill AFTER)</span>
-                    <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-300/70" /> 60 s countdown at 4 REAL</span>
-                    <span className="flex items-center gap-1.5"><Map className="w-3.5 h-3.5 text-amber-300/70" /> 280×280 m island</span>
-                    <span className="flex items-center gap-1.5"><Wind className="w-3.5 h-3.5 text-amber-300/70" /> Storm damage</span>
-                  </div>
-                </div>
-
-                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4">
-                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-2.5 flex items-center gap-2">
-                    <Plane className="w-3.5 h-3.5" /> How a match flows
-                  </h4>
-                  <ol className="space-y-2 text-stone-400 text-xs leading-relaxed">
-                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">01</span> Matchmaking on the lobby island — <b className="text-stone-300">4 REAL operators</b> connected start the 60 s countdown. Bots never trigger it; they only fill to 20 after it.</li>
-                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">02</span> Board the plane, pick your drop with <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">SPACE</kbd> and glide down.</li>
-                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">03</span> Loot weapons, drive vehicles, fight inside the shrinking storm circle — press <kbd className="bg-stone-800 px-1.5 rounded text-[10px]">T</kbd> to chat.</li>
-                    <li className="flex gap-2.5"><span className="font-tac-md text-amber-400/80 shrink-0">04</span> Survive everyone — the storm does not forgive. #1 or nothing.</li>
-                  </ol>
-                </div>
-
-                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4 space-y-2.5">
-                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-1 flex items-center gap-2">
-                    <Swords className="w-3.5 h-3.5" /> Same arsenal, Fortnite rarities
-                  </h4>
-                  <p className="text-stone-400 text-[11px] leading-relaxed">
-                    Every weapon from the normal modes spawns as loot — P9, MP-9, Breacher-12, AR-47,
-                    CR-4, Eagle .50 and the FR-338 — each rolling a rarity tier:
-                  </p>
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {BR_RARITIES.map(r => (
-                      <div key={r.id} className="text-center rounded border py-1.5" style={{ borderColor: `${r.css}66`, background: `${r.css}14` }}>
-                        <div className="font-tac-md text-[8px] tracking-wider" style={{ color: r.css }}>{r.label}</div>
-                        <div className="font-tac text-[11px] text-stone-200 tabular-nums">{Math.round(r.dmgMult * 100)}%</div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-stone-500 text-[10px] leading-relaxed">
-                    Supply crates always drop RARE or better. Higher tiers hit harder and burn brighter —
-                    chase the golden beams.
-                  </p>
-                </div>
-
-                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-3.5 flex gap-3">
-                  <Gauge className="w-4 h-4 text-amber-400/70 shrink-0 mt-0.5" />
-                  <p className="text-stone-400 text-[11px] leading-relaxed">
-                    <b className="text-stone-200">Isolated module, full graphics:</b> Battle Royale loads only
-                    while you play it — and now honors every graphics profile up to
-                    <b className="text-amber-200"> HIGH and ULTRA</b>: sharper resolution, 4K shadows,
-                    richer dusk sky with sun and drifting clouds.
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => {
-                    getAudio().uiClick()
-                    brSet({
-                      active: true,
-                      practice: false,
-                      phase: 'queue',
-                      queuePlayers: [],
-                      countdown: 0,
-                      countdownActive: false,
-                      alive: 0,
-                      kills: 0,
-                      placement: 0,
-                      hp: 100,
-                      qualityNote: '',
-                      loadingMap: false,
-                      weaponRarity: -1,
-                      netStatus: 'connecting',
-                    })
-                  }}
-                  className="group w-full h-14 rounded-md font-tac text-lg tracking-[0.28em] uppercase transition-all
-                    bg-amber-400 text-stone-950 hover:bg-amber-300 active:scale-[0.99]
-                    flex items-center justify-center gap-3"
-                >
-                  <Rocket className="w-5 h-5" />
-                  Find match
-                  <ChevronRight className="w-5 h-5 opacity-60 group-hover:translate-x-0.5 transition-transform" />
-                </button>
-                <p className="font-tac-md text-[10px] text-stone-500 leading-relaxed text-center">
-                  REAL matchmaking — you will drop with actual operators (invite friends or share the page).
-                  {partyActive ? ' Battle Royale is ALWAYS solos — your squad waits at the menu.' : ''}
-                </p>
-                <button
-                  onClick={() => {
-                    getAudio().uiClick()
-                    brSet({
-                      active: true,
-                      practice: true,
-                      phase: 'queue',
-                      queuePlayers: [],
-                      countdown: 0,
-                      countdownActive: false,
-                      alive: 0,
-                      kills: 0,
-                      placement: 0,
-                      hp: 100,
-                      qualityNote: '',
-                      loadingMap: false,
-                      weaponRarity: -1,
-                      netStatus: 'offline',
-                    })
-                  }}
-                  className="group w-full h-11 rounded-md font-tac text-sm tracking-[0.24em] uppercase transition-all
-                    bg-stone-900 border border-stone-600 text-stone-300 hover:border-amber-500/50 hover:text-amber-200
-                    flex items-center justify-center gap-2.5"
-                >
-                  <Bot className="w-4 h-4" />
-                  Practice vs bots (offline)
-                </button>
-              </div>
-
-              {/* right: player's BR record */}
-              <div className="border-t lg:border-t-0 lg:border-l border-stone-800/80 pt-5 lg:pt-0 lg:pl-6 space-y-4">
-                <h3 className="font-tac-md text-stone-200 text-[11px] mb-2 flex items-center gap-2">
-                  <Trophy className="w-4 h-4 text-amber-300/80" /> Your BR record
-                </h3>
-                <BrRecordGrid />
-                <div className="bg-stone-900/50 border border-stone-800 rounded-md p-4 space-y-2">
-                  <h4 className="font-tac-md text-amber-200/90 text-[10px] mb-1">Drop zones</h4>
-                  {[ 
-                    ['RIVERSIDE', 'SW city · rooftops, markets, garages'],
-                    ['NORTHGATE', 'NE industrial docks and warehouses'],
-                    ['SERENE LAKE', 'center lakeside loot and cabins'],
-                    ['THE RIDGE', 'mountain compounds — long sightlines'],
-                  ].map(([k, v]) => (
-                    <div key={k} className="flex gap-3 items-baseline">
-                      <span className="font-tac-md text-stone-600 text-[10px] w-24 shrink-0">{k}</span>
-                      <span className="text-stone-400 text-[11px]">{v}</span>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-stone-600 text-[10px] leading-relaxed">
-                  Vehicles spawn near the cities — press <kbd className="bg-stone-800 px-1.5 py-0.5 rounded text-[10px]">E</kbd> to
-                  drive. Supply crates glow amber. The red wall is the storm: crossing it hurts more every phase.
-                </p>
-              </div>
+            {/* ---- operator name ---- */}
+            <div>
+              <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Operator name</label>
+              <Input
+                value={p.name}
+                onChange={e => { p.setName(e.target.value); }}
+                placeholder="Enter your callsign"
+                maxLength={16}
+                className="bg-stone-950/80 border-stone-600 text-white text-lg h-12 font-bold focus:border-amber-500/70 focus-visible:ring-amber-500/20"
+              />
+              {p.error && <p className="text-red-400 text-xs mt-2 font-bold">{p.error}</p>}
             </div>
-          )}
-
-          {tab === 'controls' && (
-            <div className="p-5 sm:p-7">
-              <h3 className="font-tac-md text-stone-200 text-[11px] mb-4 flex items-center gap-2">
-                <Keyboard className="w-4 h-4 text-amber-300/80" /> Key bindings
-              </h3>
-              <KeybindsPanel />
-            </div>
-          )}
-
-          {tab === 'settings' && (
-            <div className="p-5 sm:p-7">
-              <h3 className="font-tac-md text-stone-200 text-[11px] mb-5 flex items-center gap-2">
-                <Settings className="w-4 h-4 text-amber-300/80" /> Game settings
-              </h3>
-              <SettingsPanel />
-            </div>
-          )}
-
-          {tab === 'info' && (
-            <div className="p-5 sm:p-7">
-              <h3 className="font-tac-md text-stone-200 text-[11px] mb-4 flex items-center gap-2">
-                <Info className="w-4 h-4 text-amber-300/80" /> About the game
-              </h3>
-              <InfoPanel />
-            </div>
-          )}
-        </div>
-
-        <p className="font-tac-md text-stone-700 text-[10px] mt-6 tracking-[0.25em]">
-          Emergency Strike v7 · Three.js + WebRTC (PeerJS) · 5 modes · Meridian City 140×140 · Serene Valley 140×140
-        </p>
+          </div>
+        )}
       </div>
+      <style>{`@keyframes slideUp { from { transform: translateY(28px); opacity: 0.4 } to { transform: translateY(0); opacity: 1 } }`}</style>
     </div>
   )
 }
@@ -1804,21 +1873,6 @@ function Chip({ active, onClick, children }: {
     >
       {children}
     </button>
-  )
-}
-
-/** v9: récord de Battle Royale del perfil (pestaña BR) */
-function BrRecordGrid() {
-  const user = useAuth(s => s.user)
-  const p = getProfile()
-  if (!user) return null
-  return (
-    <div className="grid grid-cols-2 gap-2.5">
-      <StatCell icon={<Rocket className="w-3.5 h-3.5" />} label="BR MATCHES" value={String(p.brPlays)} />
-      <StatCell icon={<Crown className="w-3.5 h-3.5" />} label="BR VICTORIES" value={String(p.brWins)} />
-      <StatCell icon={<Trophy className="w-3.5 h-3.5" />} label="BEST PLACEMENT" value={p.brTop > 0 ? `#${p.brTop}` : '—'} />
-      <StatCell icon={<Skull className="w-3.5 h-3.5" />} label="BR ELIMINATIONS" value={String(p.brKills)} />
-    </div>
   )
 }
 

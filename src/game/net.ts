@@ -243,6 +243,9 @@ export class NetClient {
       )
       // v11: REAL squad — members auto-join with the code over the network
       esNet.shareRoomCode(code, kind)
+      // v14: DYNAMIC ONLINE — announce the room on the public network so
+      // the room browser + quick match can discover it
+      esNet.roomPublish(code, kind, gameMode, 1, roomCapacity(kind))
       // v11: relay the match chat through the host
       setRoomChatRelay(text => {
         const clean = text.trim().slice(0, 90)
@@ -506,6 +509,8 @@ export class NetClient {
   private pushLobby(): void {
     const players = this.lobbyPlayers()
     useGame.getState().setHud({ lobby: { kind: this.roomKind, players } })
+    // v14: live occupancy on the public room browser
+    esNet.roomUpdate(players.length)
     for (const s of this.duoSlots) {
       if (s.conn) this.sendToSlot(s, { e: 'lobby', d: { kind: this.roomKind, players } })
     }
@@ -532,6 +537,8 @@ export class NetClient {
     if (this.roomKind === '1v1' || this.worker) return // ya iniciada / no es sala con lobby
     const kind = this.roomKind
     const players = this.lobbyPlayers()
+    // v14: the room leaves the public browser once the match is live
+    esNet.stopRoomPublish()
     const humansA = players.filter(p => p.team === 'A').length
     const humansB = players.filter(p => p.team === 'B').length
     if (kind === 'coop') {
@@ -876,6 +883,21 @@ export class NetClient {
     this.sendToSim({ e: 'barrelShot', d: { id: this.id, data: { pos } } })
   }
 
+  /** v14: modo de pruebas (?cratetest=1) — entregas cada 12 s */
+  debugFastCrates(): void {
+    if (this.mode === 'guest') return   // el anfitrión manda
+    this.sendToSim({ e: 'crateFast' })
+  }
+
+  /** v14: abrir una entrega aérea que está a los pies del jugador */
+  openCrate(crateId: number): void {
+    if (this.mode === 'guest') {
+      if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'crateOpen', d: { crateId } })
+      return
+    }
+    this.sendToSim({ e: 'crateOpen', d: { id: this.id, crateId } })
+  }
+
   /** Comandos del director del modo historia (jefe, entrega de armas) */
   sendStoryCmd(data: { cmd: string; botId?: string; weapon?: WeaponId; count?: number; x?: number; z?: number }): void {
     if (this.mode === 'guest') return   // la misión es local
@@ -885,6 +907,8 @@ export class NetClient {
   disconnect(): void {
     this.disposed = true
     setRoomChatRelay(null)
+    // v14: the room stops being visible on the public browser
+    esNet.stopRoomPublish()
     // v12: voice chat goes down with the room
     voiceChat.setRelay(null)
     voiceChat.setRoom(false)
@@ -1026,6 +1050,16 @@ export class NetClient {
           if (d.text.includes('ROUND') && d.text.includes('FIGHT')) game.audio.roundStart()
           else game.audio.roundEnd()
         }
+        break
+      }
+      case 'crateIncoming': {
+        const d = data as { id: number; x: number; z: number; label: string; landAt: number }
+        game.onCrateIncoming(d.id, d.x, d.z, d.label, d.landAt)
+        break
+      }
+      case 'crateEvent': {
+        const d = data as { weaponLabel: string; shieldGain: number; hpGain: number; money: number; label: string }
+        game.onCrateLooted(d.weaponLabel, d.shieldGain, d.hpGain, d.money, d.label)
         break
       }
       case 'roundEnd': {

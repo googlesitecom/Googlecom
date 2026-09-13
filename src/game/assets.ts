@@ -326,7 +326,7 @@ export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean; soldi
   }
 
   // ---- v13: soldier1.glb (calentamiento de caché HTTP) ----
-  // el soldado lo instancian remote-players.ts y battle-royale.ts con su
+  // el soldado lo instancian remote-players.ts (y el lobby) con su
   // propio GLTFLoader; aquí solo se descarga COMPLETO para que esos
   // cargadores posteriores salgan de la caché del navegador (instantáneo)
   if (warmSoldier) {

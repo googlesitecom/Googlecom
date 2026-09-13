@@ -2,7 +2,7 @@
 
 // ============================================================
 // EMERGENCY STRIKE — Match chat box (v10)
-// Works in EVERY mode (PvP, campaign, Battle Royale):
+// Works in EVERY mode (PvP, campaign):
 //   [T] or [ENTER] opens the input (mouse unlocks to type)
 //   [ENTER] sends · [ESC] closes
 // Bots/operators keep the channel alive with canned chatter.
@@ -10,14 +10,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useChat, sendChatLine } from '@/game/chat'
 import { useGame } from '@/game/store'
-import { useBr } from '@/game/br-store'
-import { getBrGame } from '@/game/br-instance'
 
 /** re-lock the mouse for whichever engine is running */
 function relockPointer(): void {
   try {
-    const br = getBrGame()
-    if (br) { br.requestLock(); return }
     const w = window as unknown as { __game?: { requestLock?: () => void } }
     w.__game?.requestLock?.()
   } catch { /* the click-to-play overlay covers this case */ }
@@ -25,7 +21,6 @@ function relockPointer(): void {
 
 export function ChatBox() {
   const open = useChat(s => s.open)
-  const mode = useChat(s => s.mode)
   const messages = useChat(s => s.messages)
   const openChat = useChat(s => s.openChat)
   const closeChat = useChat(s => s.closeChat)
@@ -33,13 +28,9 @@ export function ChatBox() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   const phase = useGame(s => s.phase)
-  const brPhase = useBr(s => s.phase)
-  const brActive = useBr(s => s.active)
   const buyOpen = useGame(s => s.buyOpen)
 
-  const inMatch = brActive
-    ? (brPhase === 'live' || brPhase === 'plane')
-    : phase === 'playing'
+  const inMatch = phase === 'playing'
 
   // ---- [T] / [ENTER] opens the chat while in a match ----
   useEffect(() => {
@@ -64,11 +55,6 @@ export function ChatBox() {
       return () => clearTimeout(t)
     }
   }, [open])
-
-  // ---- pvp chat mode follows the active game ----
-  useEffect(() => {
-    if (!brActive) useChat.getState().setMode('pvp')
-  }, [brActive])
 
   const send = (): void => {
     if (draft.trim()) sendChatLine(draft)
@@ -97,14 +83,12 @@ export function ChatBox() {
             className={`text-[12px] leading-snug font-medium rounded px-2.5 py-1 w-fit max-w-full backdrop-blur-[2px] border ${
               m.kind === 'me'
                 ? 'bg-amber-950/70 border-amber-700/50 text-amber-100'
-                : m.kind === 'br'
-                  ? 'bg-stone-950/70 border-stone-800/80 text-stone-300'
-                  : m.kind === 'system'
+                : m.kind === 'system'
                     ? 'bg-sky-950/60 border-sky-800/50 text-sky-200'
                     : 'bg-stone-950/70 border-stone-800/80 text-stone-200'
             }`}
           >
-            <span className="font-bold mr-1.5" style={{ color: m.kind === 'me' ? '#fcd34d' : m.kind === 'br' ? '#a8a29e' : '#7dd3fc' }}>
+            <span className="font-bold mr-1.5" style={{ color: m.kind === 'me' ? '#fcd34d' : m.kind === 'enemy' ? '#f87171' : '#7dd3fc' }}>
               {m.from}:
             </span>
             {m.text}
@@ -116,7 +100,7 @@ export function ChatBox() {
       {open ? (
         <div className="pointer-events-auto flex items-center gap-2 bg-stone-950/90 border border-amber-600/60 rounded-md px-3 py-2 shadow-2xl">
           <span className="font-tac-md text-[10px] text-amber-300/80 tracking-widest shrink-0">
-            {mode === 'br' ? 'ALL' : 'TEAM'}
+            TEAM
           </span>
           <input
             ref={inputRef}

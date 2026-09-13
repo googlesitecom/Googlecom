@@ -1,34 +1,30 @@
 // ============================================================
 // EMERGENCY STRIKE — Match chat (v10)
-// In-match text chat shared by EVERY mode (normal PvP, campaign
-// and Battle Royale): press [T] (or Enter) while playing, type,
-// Enter to send. v11: REAL multiplayer — when the match runs on
-// the network (BR over MQTT or a P2P room), your line travels to
-// the other operators and theirs appear live. Offline/bot matches
-// keep the canned squad chatter so the channel still feels alive.
+// In-match text chat shared by EVERY mode (normal PvP and
+// campaign): press [T] (or Enter) while playing, type, Enter to
+// send. v11: REAL multiplayer — when the match runs on a P2P
+// room, your line travels to the other operators and theirs
+// appear live. Offline/bot matches keep the canned squad chatter
+// so the channel still feels alive.
 // Pure local state — nothing here touches the render loop.
 // ============================================================
 import { create } from 'zustand'
 import { useAuth } from './auth'
 import { useGame } from './store'
-import { esNet } from './esnet'
 
 export interface ChatMsg {
   id: number
   from: string
   text: string
   mine: boolean
-  /** color accent: 'me' | 'team' | 'enemy' | 'br' | 'system' */
-  kind: 'me' | 'team' | 'enemy' | 'br' | 'system'
+  /** color accent: 'me' | 'team' | 'enemy' | 'system' */
+  kind: 'me' | 'team' | 'enemy' | 'system'
   t: number
 }
 
 interface ChatState {
   messages: ChatMsg[]
   open: boolean
-  /** match context the box adapts to ('pvp' | 'br') */
-  mode: 'pvp' | 'br'
-  setMode: (m: 'pvp' | 'br') => void
   openChat: () => void
   closeChat: () => void
   push: (from: string, text: string, kind: ChatMsg['kind']) => void
@@ -40,8 +36,6 @@ let chatId = 0
 export const useChat = create<ChatState>((set) => ({
   messages: [],
   open: false,
-  mode: 'pvp',
-  setMode: (m) => set({ mode: m }),
   openChat: () => set({ open: true }),
   closeChat: () => set({ open: false }),
   push: (from, text, kind) => {
@@ -64,20 +58,18 @@ export function sendChatLine(text: string): void {
   if (!clean) return
   const name = chatLocalName()
   useChat.getState().push(name, clean, 'me')
-  // v11: BR match → the line goes to the REAL operators on the island
-  if (esNet.brChatSend(clean)) return
   // v11: P2P room → the line goes through the host relay
   if (roomRelay && roomRelay(clean)) return
-  // offline/bot match: a teammate/operator answers ~1-2.4 s later
+  // offline/bot match: a teammate answers ~1-2.4 s later
   if (Math.random() < 0.72) {
     const reply = pick(REPLIES)
-    const who = useChat.getState().mode === 'br' ? pick(BR_NAMES) : pick(SQUAD_NAMES)
-    setTimeout(() => useChat.getState().push(who, reply, useChat.getState().mode === 'br' ? 'br' : 'team'), 900 + Math.random() * 1500)
+    const who = pick(SQUAD_NAMES)
+    setTimeout(() => useChat.getState().push(who, reply, 'team'), 900 + Math.random() * 1500)
   }
 }
 
-/** v11: a line arrived from a REAL operator (BR channel or P2P room) */
-export function pushNetChatLine(from: string, text: string, kind: 'br' | 'team' = 'br'): void {
+/** v11: a line arrived from a REAL operator on the P2P room */
+export function pushNetChatLine(from: string, text: string, kind: 'team' | 'enemy' | 'me' = 'team'): void {
   useChat.getState().push(from.slice(0, 16), text.slice(0, 90), kind)
 }
 
@@ -92,10 +84,7 @@ export function setRoomChatRelay(fn: ((text: string) => boolean) | null): void {
 export function ambientChatter(): void {
   const st = useChat.getState()
   if (st.open) return
-  const br = st.mode === 'br'
-  const who = br ? pick(BR_NAMES) : pick(SQUAD_NAMES)
-  const line = br ? pick(BR_LINES) : pick(MATCH_LINES)
-  st.push(who, line, br ? 'br' : 'team')
+  st.push(pick(SQUAD_NAMES), pick(MATCH_LINES), 'team')
 }
 
 export function systemChatter(text: string): void {
@@ -107,7 +96,6 @@ export function systemChatter(text: string): void {
 // the game copy)
 // ------------------------------------------------------------
 const SQUAD_NAMES = ['Kero', 'Delta', 'Sixto', 'Vera', 'Rojo', 'Mora', 'Iris', 'Tadeo']
-const BR_NAMES = ['Kilo', 'Nova', 'Vante', 'Zumo', 'Rayo', 'Nico', 'Danna', 'Enzo', 'Ciro', 'Nyx']
 
 const MATCH_LINES = [
   'Enemy spotted near the tower',
@@ -124,21 +112,9 @@ const MATCH_LINES = [
   'Zone BRAVO is theirs, retake?',
   'Nice shot operator',
   'Half of my mag gone on that push',
-]
-
-const BR_LINES = [
-  'Dropping near the city',
-  'Anyone else landing at the lake?',
-  'Storm is closing, rotate NOW',
-  'Got a Rare AR here, all mine',
-  'Heard shots north of the ridge',
-  'That crate is a trap, careful',
-  'Top 10, keep it quiet',
-  'Vehicle by the gas station',
-  'Just got a Legendary, feel bad for you',
-  'Third party at the farm',
-  'The water is colder than my aim',
-  'Glider deployed, see you down there',
+  'Supply drop incoming, watch the sky',
+  'Grabbed a crate, new rifle smells nice',
+  'Careful, someone is camping that drop',
 ]
 
 const REPLIES = [

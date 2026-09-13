@@ -40,7 +40,6 @@ export function GameMount() {
     }
 
     // v10: chat de partida (canal PvP + conversación ambiente del escuadrón)
-    useChat.getState().setMode('pvp')
     useChat.getState().reset()
     const stopChat = startAmbientChat()
 

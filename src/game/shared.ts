@@ -32,7 +32,6 @@ export const GAME = {
   LOSE_REWARD: 1900,
   BOT_COUNT: 8,
   GRAVITY: 14.0,
-  MAP_HALF: 70,
   // sistema de vida estilo Fortnite
   PICKUP_RADIUS: 1.7,    // metros para recoger un objeto
   PICKUP_RESPAWN: 32,    // segundos hasta reaparecer una poción
@@ -48,11 +47,12 @@ export const GAME = {
   DOM_TARGET: 150,       // puntos para ganar la ronda
   // todos contra todos (v9: la partida termina al primer 50)
   FFA_KILLS: 50,         // bajas individuales para ganar la PARTIDA
-  // battle royale (v9)
-  BR_PLAYERS: 20,        // operadores por partida (bots rellenan)
-  BR_REAL_FOR_COUNTDOWN: 4,  // jugadores conectados que activan la cuenta atrás
-  BR_COUNTDOWN: 60,      // s de matchmaking tras detectar 4 conectados
-  BR_MAP_HALF: 140,      // mapa 280×280 (el doble que el 140×140 de combate)
+  // v14: entregas aéreas (suministros que caen del avión en los modos normales)
+  CRATE_FIRST_AT: 20,    // s de partida para el primer suministro
+  CRATE_INTERVAL: 45,    // s entre entregas
+  CRATE_FALL_TIME: 9,    // s de caída con paracaídas
+  CRATE_OPEN_RADIUS: 2.4,// m para abrir con [E]
+  MAP_HALF: 100,         // v14: mapa ampliado 200×200 (antes 140×140)
 } as const
 
 // ------------------------------------------------------------
@@ -500,9 +500,55 @@ export const PICKUP_SPOTS: PickupSpot[] = [
   { kind: 'medkit', x: -50, z: 56 },
   // parque SE
   { kind: 'shieldSmall', x: 46, z: 58 },
+  // v14: distritos exteriores
+  { kind: 'shieldBig', x: 80, z: -76 },      // nave NE
+  { kind: 'medkit', x: 76, z: 80 },          // suburbio SE
+  { kind: 'shieldSmall', x: 88, z: 86 },     // plaza SE
+  { kind: 'bandage', x: -84, z: 80 },        // gasolinera SO
+  { kind: 'medkit', x: -86, z: 92 },         // planta de tanques SO
+  { kind: 'shieldBig', x: -80, z: -80 },     // patio de contenedores NO
+  { kind: 'bandage', x: 88, z: 88 },         // anillo SE
+  { kind: 'shieldSmall', x: -88, z: -88 },   // anillo NO
 ]
 
 export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
+
+// ------------------------------------------------------------
+// v14 — ENTREGAS AÉREAS (supply drops en los modos normales):
+// cada ~45 s un avión cruza el mapa y suelta una caja con
+// paracaídas; al aterrizar se abre con [E] (o la abren los bots
+// al pasar) y contiene arma + escudo + equipo táctico.
+// ------------------------------------------------------------
+export interface CrateZone { x: number; z: number; label: string }
+/** zonas abiertas de aterrizaje (sin techo, fuera de muros) */
+export const CRATE_ZONES: CrateZone[] = [
+  { x: 0, z: 24, label: 'CENTRAL AVENUE' },
+  { x: 52, z: -46, label: 'PARKING NE' },
+  { x: -19, z: -51, label: 'CONTAINER DEPOT' },
+  { x: 54, z: 56, label: 'SOUTH PARK' },
+  { x: 66, z: 0, label: 'EAST AVENUE' },
+  { x: -66, z: 0, label: 'WEST AVENUE' },
+  { x: 0, z: 60, label: 'NORTH AVENUE' },
+  { x: 0, z: -60, label: 'SOUTH AVENUE' },
+  { x: 78, z: -90, label: 'NE WAREHOUSE GATE' },
+  { x: 78, z: 88, label: 'SE SUBURBS' },
+  { x: -66, z: 88, label: 'SW FUEL DEPOT' },
+  { x: -78, z: -80, label: 'NW CONTAINER YARD' },
+  { x: 92, z: 30, label: 'RING ROAD EAST' },
+  { x: -92, z: -30, label: 'RING ROAD WEST' },
+]
+
+/** estado de una entrega en el snapshot de red */
+export interface NetCrate {
+  id: number
+  x: number
+  z: number
+  /** ms (reloj de partida) en que el avión SUELTA la caja */
+  dropAt: number
+  /** ms en que toca el suelo (dropAt + CRATE_FALL_TIME) */
+  landAt: number
+  opened: boolean
+}
 
 export type MatKey = 'sand' | 'concrete' | 'floor' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock'
 
@@ -519,16 +565,34 @@ function box(x: number, y: number, z: number, w: number, h: number, d: number, m
 const MAP: MapBox[] = []
 function B(...a: Parameters<typeof box>) { MAP.push(box(...a)) }
 
-// --- Perímetro 140×140 (muros de 6.5 m) ---
-B(0, 3.25, -70.5, 142, 6.5, 1.5, 'sand')
-B(0, 3.25, 70.5, 142, 6.5, 1.5, 'sand')
-B(-70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
-B(70.5, 3.25, 0, 1.5, 6.5, 142, 'sand')
-for (const v of [-64, -48, -32, -16, 0, 16, 32, 48, 64]) {
-  B(v, 3.6, -70.5, 2.4, 7.2, 2.4, 'concrete')
-  B(v, 3.6, 70.5, 2.4, 7.2, 2.4, 'concrete')
-  B(-70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
-  B(70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+// --- Perímetro del núcleo urbano (muros de 6.5 m) ---
+// v14: el mapa crece a 200×200 → las AVENIDAS y las calles
+// secundarias atraviesan el antiguo muro por PUERTAS (z/x = 0 y
+// ±35) y conectan con la circunvalación exterior.
+{
+  // segmentos de muro (dejan huecos de 16 m en 0 y de 12 m en ±35)
+  const segs: [number, number][] = [[-71, -41], [-29, -8], [8, 29], [41, 71]]
+  for (const [lo, hi] of segs) {
+    const c = (lo + hi) / 2, len = hi - lo
+    B(c, 3.25, -70.5, len, 6.5, 1.5, 'sand')   // muro norte
+    B(c, 3.25, 70.5, len, 6.5, 1.5, 'sand')    // muro sur
+    B(-70.5, 3.25, c, 1.5, 6.5, len, 'sand')   // muro oeste
+    B(70.5, 3.25, c, 1.5, 6.5, len, 'sand')    // muro este
+  }
+  // pilastres (fuera de los huecos: |v|<9 o 26<|v|<44 se saltan)
+  for (const v of [-64, -48, -16, 16, 48, 64]) {
+    B(v, 3.6, -70.5, 2.4, 7.2, 2.4, 'concrete')
+    B(v, 3.6, 70.5, 2.4, 7.2, 2.4, 'concrete')
+    B(-70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+    B(70.5, 3.6, v, 2.4, 7.2, 2.4, 'concrete')
+  }
+  // marcos de puerta: pilastres gemelos en los bordes de cada hueco
+  for (const v of [-41, -29, -8, 8, 29, 41]) {
+    B(v, 3.9, -70.5, 2.2, 7.8, 2.8, 'concrete')
+    B(v, 3.9, 70.5, 2.2, 7.8, 2.8, 'concrete')
+    B(-70.5, 3.9, v, 2.8, 7.8, 2.2, 'concrete')
+    B(70.5, 3.9, v, 2.8, 7.8, 2.2, 'concrete')
+  }
 }
 
 // --- Muros con puerta central ---
@@ -1528,6 +1592,14 @@ export const TREES: [number, number][] = [
   [40, -40], [60, -40], [38, -30],
   // perímetro
   [64, 20], [-64, -20], [20, -64], [-20, 64], [64, -30], [-64, 30],
+  // v14: suburbio SE exterior y plaza (fuera del carril ±87..97)
+  [70, 72], [72, 88], [86, 70], [70, 70],
+  // v14: avenidas prolongadas (líneas verdes junto al asfalto, z/x ±10)
+  [72, 10], [-72, -10], [90, 10], [-90, -10], [10, 72], [-10, -72], [10, -90], [-10, 90],
+  // v14: esquinas interiores de la circunvalación
+  [84, 84], [-84, 84], [84, -84], [-84, -84],
+  // v14: perímetro de los distritos exteriores
+  [-64, -64], [64, 64], [64, -88], [-64, 88],
 ]
 for (const [tx, tz] of TREES) B(tx, 2.1, tz, 0.5, 4.2, 0.5, 'wood')
 
@@ -1543,6 +1615,12 @@ export const LAMPS: [number, number][] = [
   [31, 31], [-31, 31], [31, -31], [-31, -31],
   // parque y aparcamientos
   [50, 40], [54, -42],
+  // v14: avenidas prolongadas y anillo de circunvalación (en la acera
+  // INTERIOR del anillo, x/z ±86 — fuera del carril 87..97)
+  [80, 7], [-80, -7], [7, 80], [-7, -80], [96, 7], [-96, -7],
+  [7, 96], [-7, -96], [86, 44], [-86, -44], [44, 86], [-44, -86],
+  // v14: distritos exteriores
+  [80, -74], [76, 82], [-80, 76], [-80, -78],
 ]
 for (const [lx, lz] of LAMPS) B(lx, 2.6, lz, 0.35, 5.2, 0.35, 'metalGrey')
 
@@ -1559,6 +1637,10 @@ export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
   { x: 11, z: -11 }, { x: -11, z: 11 },
   // depósito de contenedores
   { x: -22, z: -51 }, { x: -13, z: -62.5 },
+  // v14: depósito de combustible SO (gasolinera exterior + tanques)
+  { x: -78, z: 74.5 }, { x: -86, z: 88.5 },
+  // v14: patio de contenedores NO y nave NE
+  { x: -74, z: -82 }, { x: 78, z: -76 },
   // aparcamiento NE / parque
   { x: 54, z: -48 }, { x: 58, z: 44 },
   // planta de tanques / radar
@@ -1604,39 +1686,105 @@ export const DOM_ZONES: DomZoneSpec[] = [
 ]
 
 // ------------------------------------------------------------
+// v14 — DISTRITOS EXTERIORES: el mapa pasa de 140×140 a 200×200.
+// Anillo de circunvalación en ±92 (carril 87..97), avenidas
+// prolongadas hasta el borde y cuatro distritos nuevos entre el
+// núcleo urbano (±70) y la circunvalación. Los carriles quedan
+// LIBRES de geometría para el tráfico y los bots.
+// ------------------------------------------------------------
+// === extensión de avenidas (coches + cobertura ordenada) ===
+car(76, 2.2, true, 'metalRed')
+car(88, -2.2, true, 'metalGrey')
+car(-76, -2.2, true, 'metalOrange')
+car(-88, 2.2, true, 'metalBlue')
+car(2.2, 76, false, 'metalGreen')
+car(-2.2, 88, false, 'metalRed')
+car(2.2, -76, false, 'metalBlue')
+car(-2.2, -88, false, 'metalOrange')
+bus(78, 0, true)
+bus(0, -78, false)
+// barreras de carril en los tramos largos (junto a la acera ±6.2)
+B(84, 0.55, 6.2, 3, 1.1, 0.5, 'concrete')
+B(-84, 0.55, -6.2, 3, 1.1, 0.5, 'concrete')
+B(6.2, 0.55, -84, 0.5, 1.1, 3, 'concrete')
+B(-6.2, 0.55, 84, 0.5, 1.1, 3, 'concrete')
+
+// === NE exterior (x 70..86 · z -86..-70): nave industrial ===
+almacen(78, -78, 'S', 8, 6, 6)               // x 70..86 · z -84..-72 (puerta al sur)
+watchTower(84, -64, 1)                        // torreta en la franja del brazo este
+car(72, -78, false, 'metalGrey')             // coche aparcado junto a la nave
+B(78, 0.4, -70.5, 3, 0.8, 0.6, 'sandbag')    // cobertura al norte de la nave
+WP_EXTRA.push([78, -68], [78, -87])
+
+// === SE exterior (x 70..86 · z 70..86): suburbio + plaza ===
+smallHouse(77, 77, 'W')                       // x 71..83 · z 72..82
+kiosco(82, 84)                                // quiosco de la plaza (x 79..85 · z 81..87)
+fountain(85, 72)                              // fuente (esquina interior)
+B(78, 0.45, 84, 1.8, 0.28, 0.6, 'wood')      // bancos de la plaza
+B(85, 0.45, 84, 1.8, 0.28, 0.6, 'wood')
+bigHouse(40, 79, 'S')                         // casa grande en la franja del brazo este
+WP_EXTRA.push([84, 78], [74, 86])
+
+// === SO exterior (x -86..-71 · z 70..86): gasolinera de circunvalación ===
+gasStation(-78, 78, 'E')                      // tienda x -83.5..-72.5 · patio hacia el centro
+B(-72, 0.4, 86, 3, 0.8, 0.5, 'sandbag')      // cobertura junto al carril
+WP_EXTRA.push([-70, 78], [-84, 86])
+
+// === NO exterior (x -86..-66 · z -86..-70): patio de contenedores 2.0 ===
+{
+  const rowA: MatKey[] = ['metalOrange', 'metalBlue']
+  const rowB: MatKey[] = ['metalRed', 'metalGreen']
+  const xs = [-82, -74]
+  for (let i = 0; i < 2; i++) {
+    B(xs[i], 1.2, -83, 6, 2.4, 2.5, rowA[i])
+    B(xs[i], 1.2, -77, 6, 2.4, 2.5, rowB[i])
+  }
+  B(-78, 3.6, -83, 6, 2.4, 2.5, 'metalGrey')  // apilado
+  watchTower(-66, -84, 1)                     // torreta del patio
+  B(-70, 0.4, -74, 3, 0.8, 0.6, 'sandbag')
+  WP_EXTRA.push([-78, -80], [-66, -78])
+}
+
+// === cobertura del anillo (fuera del carril, en las esquinas interiores) ===
+B(86, 0.4, 40, 0.5, 0.8, 3, 'sandbag')
+B(-86, 0.4, -40, 0.5, 0.8, 3, 'sandbag')
+B(40, 0.4, 86, 3, 0.8, 0.5, 'sandbag')
+B(-40, 0.4, -86, 3, 0.8, 0.5, 'sandbag')
+
+// ------------------------------------------------------------
 // v6.3 — GRÁFICOS DEL VALLE PARA TODOS LOS MODOS (ciudad):
 // sierra perimetral natural (el mismo anillo montañoso del modo
 // historia cierra el horizonte urbano y limita el mapa) y rocas
 // de cobertura. Debe añadirse ANTES de calcular MAP_AABBS.
 // ------------------------------------------------------------
 {
-  // sierra alrededor de la ciudad, FUERA de la zona jugable (±70) y de
-  // los anillos de compra (spawns ±62 + radio 8): masas de roca con la
-  // misma textura de estratos del valle
-  const R = 84          // este/oeste
-  const RN = 86         // norte/sur
+  // v14: la sierra se DESPLAZA HACIA FUERA con el mapa ampliado — la
+  // zona jugable pasa de ±70 a ±100 y las masas de roca cierran el
+  // horizonte más allá del anillo de circunvalación (±92)
+  const R = 116         // este/oeste
+  const RN = 118        // norte/sur
   const ridge = (x: number, z: number, w: number, d: number, h: number): void => B(x, h / 2 - 1.4, z, w, h, d, 'rock')
-  ridge(0, R, 200, 18, 15)
-  ridge(0, -RN, 200, 18, 13)
-  ridge(R, 0, 18, 200, 14)
-  ridge(-R, 0, 18, 200, 12)
+  ridge(0, R, 260, 20, 17)
+  ridge(0, -RN, 260, 20, 15)
+  ridge(R, 0, 20, 260, 16)
+  ridge(-R, 0, 20, 260, 13)
   // macizos en las cuatro esquinas (más altos: cierran las diagonales)
-  ridge(84, 84, 28, 28, 26)
-  ridge(-84, 84, 28, 28, 22)
-  ridge(84, -84, 28, 28, 24)
-  ridge(-84, -84, 28, 28, 20)
+  ridge(114, 114, 32, 32, 28)
+  ridge(-114, 114, 32, 32, 24)
+  ridge(114, -114, 32, 32, 26)
+  ridge(-114, -114, 32, 32, 22)
   // picos irregulares deterministas a lo largo del anillo
   let rs = 104729
   const rnd = (): number => { rs = (rs * 16807) % 2147483647; return rs / 2147483647 }
-  for (let k = 0; k < 40; k++) {
-    const u = -76 + rnd() * 152
-    const h = 9 + rnd() * 13
+  for (let k = 0; k < 48; k++) {
+    const u = -106 + rnd() * 212
+    const h = 10 + rnd() * 15
     const w = 10 + rnd() * 9
     const side = k % 4
-    if (side === 0) ridge(u, R + 5, w, 12, h)
-    else if (side === 1) ridge(u, -(RN + 5), w, 12, h)
-    else if (side === 2) ridge(R + 5, u, 12, w, h)
-    else ridge(-(R + 5), u, 12, w, h)
+    if (side === 0) ridge(u, R + 6, w, 12, h)
+    else if (side === 1) ridge(u, -(RN + 6), w, 12, h)
+    else if (side === 2) ridge(R + 6, u, 12, w, h)
+    else ridge(-(R + 6), u, 12, w, h)
   }
 }
 // rocas sueltas de cobertura (parques y perímetro verde)
@@ -1721,6 +1869,12 @@ export function segmentBlocked(px: number, py: number, pz: number, qx: number, q
 // ------------------------------------------------------------
 // WAYPOINTS para bots (calles + interiores)
 // ------------------------------------------------------------
+/** v14: puntos del anillo de circunvalación (±92), cada ~17 m */
+const RING_WPS: [number, number][] = []
+for (const k of [-86, -69, -52, -35, -17, 17, 35, 52, 69, 86]) {
+  RING_WPS.push([92, k], [-92, k], [k, 92], [k, -92])
+}
+
 export const WAYPOINTS: [number, number][] = [
   // anillo rotonda (r=12, fuera de las jardineras)
   [12, 0], [8.5, 8.5], [0, 12], [-8.5, 8.5], [-12, 0], [-8.5, -8.5], [0, -12], [8.5, -8.5],
@@ -1751,6 +1905,18 @@ export const WAYPOINTS: [number, number][] = [
   [48, -42], [51, -42], [44, -48], [-14, 14], [-24, 20], [-24, 14],
   // planta de tanques / radar exterior
   [-49, -46], [-38, 51], [-33, 63],
+  // v14: brazos prolongados de las avenidas (hasta el anillo ±92)
+  [76, 5], [84, 5], [92, 5], [76, -5], [84, -5], [92, -5],
+  [-76, 5], [-84, 5], [-92, 5], [-76, -5], [-84, -5], [-92, -5],
+  [5, 76], [5, 84], [5, 92], [-5, 76], [-5, 84], [-5, 92],
+  [5, -76], [5, -84], [5, -92], [-5, -76], [-5, -84], [-5, -92],
+  // v14: anillo de circunvalación — generado cada ~17 m por lado
+  ...RING_WPS,
+  [86, 68], [86, -68], [-72, 72], [-72, -88],
+  // v14: calles de los distritos exteriores (las uniones con los
+  // waypoints de las avenidas y del anillo salen solas por LOS)
+  [78, 64], [-70, 64], [78, -64], [-64, -78],
+  [64, 78], [-64, 78], [70, -70], [-64, -64],
   // interiores de edificios (generados por las funciones de construcción)
   ...WP_EXTRA,
 ]
@@ -1862,6 +2028,8 @@ export interface NetSnapshot {
   players: NetPlayerState[]
   grenades: NetGrenade[]
   pickups: NetPickup[]
+  /** v14: entregas aéreas activas (la vista las crea/destruye) */
+  crates?: NetCrate[]
   round: NetRoundState
 }
 

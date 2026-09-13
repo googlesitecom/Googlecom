@@ -135,6 +135,19 @@ self.onmessage = (ev: MessageEvent) => {
       if (sim && pid) sim.handleStoryCmd(pid, c.data ?? {})
       break
     }
+    case 'crateFast': {
+      // v14 (?cratetest=1): entregas rápidas para pruebas
+      sim?.debugFastCrates()
+      break
+    }
+    case 'crateOpen': {
+      // v14: abrir una entrega aérea con [E]
+      const c = d as { id: string; crateId: number; data?: { crateId?: number } }
+      const crateId = Number(c.crateId ?? c.data?.crateId ?? -1)
+      const p = sim?.getPlayer(c.id)
+      if (p && sim && crateId >= 0) sim.handleCrateOpen(c.id, crateId)
+      break
+    }
     case 'fillBot': {
       // v6.2: sustituir por un bot al jugador que abandonó la 2v2
       const c = d as { team?: Team; data?: { team?: Team } }

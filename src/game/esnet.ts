@@ -109,11 +109,9 @@ const T = {
   freqIn: (me: string) => `${NS}/f/+/${me}`,
   dm: (oid: string) => `${NS}/dm/${oid}`,
   party: (gid: string) => `${NS}/p/${gid}`,
-  brLobby: `${NS}/br/q`,
-  brmPose: (mid: string) => `${NS}/brm/${mid}/pose/+`,
-  brmEv: (mid: string) => `${NS}/brm/${mid}/ev`,
-  brmChat: (mid: string) => `${NS}/brm/${mid}/chat`,
-  brmBots: (mid: string) => `${NS}/brm/${mid}/bots`,
+  // v14: public room announcements — hosts publish their open room so
+  // anyone on the network can discover it and quick-join (room browser)
+  rooms: `${NS}/rooms`,
 }
 
 /** does an exact topic match a pattern that may contain '+' levels? */
@@ -195,11 +193,14 @@ interface PartyState {
   leaderOid: string
   leaderName: string
   members: PartyMemberUI[]
+  /** v14: who pressed READY (lobby, estilo Fortnite) */
+  ready: Record<string, boolean>
   /** room code auto-received from the leader to deploy together */
   roomCode: string
   roomKind: string
-  setParty: (p: Partial<Omit<PartyState, 'setParty' | 'clear' | 'setRoom' | 'clearRoom'>>) => void
+  setParty: (p: Partial<Omit<PartyState, 'setParty' | 'clear' | 'setRoom' | 'clearRoom' | 'setReady'>>) => void
   setMembers: (m: PartyMemberUI[]) => void
+  setReady: (u: string, v: boolean) => void
   setRoom: (code: string, kind: string) => void
   clearRoom: () => void
   clear: () => void
@@ -211,37 +212,36 @@ export const useParty = create<PartyState>((set) => ({
   leaderOid: '',
   leaderName: '',
   members: [],
+  ready: {},
   roomCode: '',
   roomKind: '',
   setParty: (p) => set(p),
   setMembers: (members) => set({ members }),
+  setReady: (u, v) => set((s) => ({ ready: { ...s.ready, [u]: v } })),
   setRoom: (roomCode, roomKind) => set({ roomCode, roomKind }),
   clearRoom: () => set({ roomCode: '', roomKind: '' }),
-  clear: () => set({ active: false, gid: '', name: '', leaderOid: '', leaderName: '', members: [], roomCode: '', roomKind: '' }),
+  clear: () => set({ active: false, gid: '', name: '', leaderOid: '', leaderName: '', members: [], ready: {}, roomCode: '', roomKind: '' }),
 }))
 
-export interface BrQueueOp { u: string; n: string }
-export interface BrCountInfo { t0: number; seed: number; mid: string }
-
-interface BrNetState {
-  queuing: boolean
-  status: NetStatus
-  roster: BrQueueOp[]
-  countInfo: BrCountInfo | null
-  setQueuing: (q: boolean) => void
-  setStatus: (s: NetStatus) => void
-  setRoster: (r: BrQueueOp[]) => void
-  setCount: (c: BrCountInfo | null) => void
+// ------------------------------------------------------------
+// v14: PUBLIC ROOMS — live room browser + quick match
+// ------------------------------------------------------------
+export interface PublicRoomUI {
+  code: string
+  host: string
+  kind: string
+  mode: string
+  players: number
+  cap: number
+  t: number
 }
-export const useBrNet = create<BrNetState>((set) => ({
-  queuing: false,
-  status: 'offline',
-  roster: [],
-  countInfo: null,
-  setQueuing: (queuing) => set({ queuing }),
-  setStatus: (status) => set({ status }),
-  setRoster: (roster) => set({ roster }),
-  setCount: (countInfo) => set({ countInfo }),
+interface RoomsState {
+  rooms: PublicRoomUI[]
+  setRooms: (r: PublicRoomUI[]) => void
+}
+export const useRooms = create<RoomsState>((set) => ({
+  rooms: [],
+  setRooms: (rooms) => set({ rooms }),
 }))
 
 // ------------------------------------------------------------
@@ -310,22 +310,6 @@ class EsNet {
   private presTick: ReturnType<typeof setInterval> | null = null
   private partyHb: ReturnType<typeof setInterval> | null = null
   private partyGid = ''
-  private brHb: ReturnType<typeof setInterval> | null = null
-  private brRoster = new Map<string, { n: string; t: number }>()
-  private brCountCheck: ReturnType<typeof setInterval> | null = null
-  private brCallbacks: {
-    onRoster?: (ops: BrQueueOp[]) => void
-    onCountdown?: (c: BrCountInfo) => void
-    onOffline?: () => void
-  } = {}
-  private brMid = ''
-  private brInMatch = false
-  private matchHandlers: {
-    pose?: (u: string, p: Rec) => void
-    ev?: (p: Rec) => void
-    chat?: (p: Rec) => void
-    bots?: (p: Rec) => void
-  } = {}
   private outgoing = new Map<string, { name: string; t: number }>()
   private incoming = new Map<string, { name: string; t: number }>()
   private dirWaiters = new Map<string, (oid: string | null) => void>()
@@ -411,8 +395,6 @@ class EsNet {
     this.startPresence()
     this.initSocial()
     if (this.partyGid) this.resumeParty()
-    if (this.brHb) this.resumeBrQueue()
-    if (this.brInMatch && this.brMid) this.subscribeMatch(this.brMid)
   }
 
   private onOfflineNet(): void {
@@ -420,10 +402,6 @@ class EsNet {
     this.status = 'offline'
     useNet.getState().setStatus('offline')
     if (this.presTimer) { clearInterval(this.presTimer); this.presTimer = null }
-    if (this.brHb) {
-      useBrNet.getState().setStatus('offline')
-      this.brCallbacks.onOffline?.()
-    }
   }
 
   disconnect(): void {
@@ -437,11 +415,8 @@ class EsNet {
     if (this.presTimer) { clearInterval(this.presTimer); this.presTimer = null }
     if (this.presTick) { clearInterval(this.presTick); this.presTick = null }
     if (this.partyHb) { clearInterval(this.partyHb); this.partyHb = null }
-    if (this.brHb) { clearInterval(this.brHb); this.brHb = null }
-    if (this.brCountCheck) { clearInterval(this.brCountCheck); this.brCountCheck = null }
     this.leavePartySilent()
-    this.brLeaveQueue()
-    this.brMatchLeave()
+    this.stopRoomPublish()
     try { this.ws?.close() } catch { /* ok */ }
     this.ws = null
     this.status = 'offline'
@@ -834,6 +809,12 @@ class EsNet {
       this.pruneParty()
       return
     }
+    if (ty === 'ready') {
+      // v14: estado LISTO de un miembro del escuadrón (lobby estilo Fortnite)
+      const u = str(p.u)
+      if (u) useParty.getState().setReady(u, p.v === 1)
+      return
+    }
     if (ty === 'meta') {
       useParty.getState().setParty({ name: str(p.name, 'SQUAD'), leaderOid: str(p.leader), leaderName: str(p.leaderName) })
       return
@@ -864,6 +845,14 @@ class EsNet {
     if (!this.partyGid) return
     this.sub(T.party(this.partyGid), this.onPartyMsg)
     this.startPartyHb(useParty.getState().leaderOid === myOid())
+  }
+
+  /** v14: marca tu estado LISTO en el lobby (miembros del escuadrón) */
+  setPartyReady(v: boolean): void {
+    const oid = myOid()
+    if (!oid || !this.partyGid) return
+    useParty.getState().setReady(oid, v)
+    this.pub(T.party(this.partyGid), { ty: 'ready', u: oid, v: v ? 1 : 0, t: now() })
   }
 
   inviteToParty(oid: string, pname: string): void {
@@ -898,172 +887,81 @@ class EsNet {
     this.partyRoster.clear()
   }
 
-  // ---------------- BR LOBBY — REAL operators only ----------------
-  brQueueEnter(cbs: {
-    onRoster?: (ops: BrQueueOp[]) => void
-    onCountdown?: (c: BrCountInfo) => void
-    onOffline?: () => void
-  }): void {
-    this.brCallbacks = cbs
-    const oid = myOid()
-    if (!oid) return
-    useBrNet.getState().setQueuing(true)
-    useBrNet.getState().setStatus(this.status === 'online' ? 'online' : this.status)
-    this.brRoster.clear()
-    this.brRoster.set(oid, { n: myOperatorName(), t: now() })
-    this.sub(T.brLobby, this.onBrLobbyMsg)
-    if (this.status === 'online') this.resumeBrQueue()
-    else this.brCallbacks.onOffline?.()
-  }
+  // ---------------- v14: PUBLIC ROOMS — dynamic matchmaking ----------------
+  // Hosts publish their open room on a shared topic; the menu shows a
+  // live browser (mode · format · occupancy) and QUICK PLAY joins the
+  // first matching room — or hosts one after a short scan. This is the
+  // "dynamic online" layer: rooms appear/disappear as hosts open/close.
+  private roomHb: ReturnType<typeof setInterval> | null = null
+  private roomsCheck: ReturnType<typeof setInterval> | null = null
+  private roomInfo: { code: string; kind: string; mode: string; players: number; cap: number } | null = null
+  private browsing = false
 
-  private resumeBrQueue(): void {
-    const oid = myOid()
-    if (!oid) return
-    if (!this.brHb) {
-      this.brHb = setInterval(() => {
-        this.pub(T.brLobby, { ty: 'hb', u: oid, n: myOperatorName(), t: now() })
-      }, 2500)
-      this.pub(T.brLobby, { ty: 'hb', u: oid, n: myOperatorName(), t: now() })
-    }
-    useBrNet.getState().setStatus('online')
-    // watch the roster + trigger countdown when 4 REAL operators are in
-    if (!this.brCountCheck) {
-      this.brCountCheck = setInterval(() => this.brTick(), 1000)
-    }
-  }
-
-  /** bots NEVER count: only real heartbeats live in brRoster */
-  private brTick(): void {
-    if (!this.brHb) return
-    const t = now()
-    for (const [u, v] of [...this.brRoster]) {
-      if (u !== myOid() && t - v.t > 10000) this.brRoster.delete(u)
-    }
-    const ops = [...this.brRoster.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([u, v]) => ({ u, n: v.n }))
-    useBrNet.getState().setRoster(ops)
-    this.brCallbacks.onRoster?.(ops)
-    // leader = lowest oid among REAL operators
-    const countActive = useBrNet.getState().countInfo
-    const fresh = countActive && countActive.t0 > t - 15000
-    if (!fresh && ops.length >= 4 && ops[0].u === myOid()) {
-      // I am the lobby leader → start the 60 s countdown for everyone
-      const seed = (Math.random() * 0x7fffffff) | 0
-      const mid = `m${now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-      this.pub(T.brLobby, { ty: 'count', mid, seed, t0: now() + 61000, t: now() }, true)
-    }
-  }
-
-  private onBrLobbyMsg = (p: Rec): void => {
-    const oid = myOid()
+  private onRoomsMsg = (p: Rec): void => {
     const ty = str(p.ty)
-    if (ty === 'hb') {
-      const u = str(p.u)
-      if (u) this.brRoster.set(u, { n: str(p.n, 'Operator'), t: now() })  // ours too
-      return
-    }
-    if (ty === 'count') {
-      const t0 = num(p.t0)
-      const seed = num(p.seed)
-      const mid = str(p.mid)
-      if (!t0 || !mid) return
-      if (t0 < now() - 12000) return // stale retained copy from an old match
-      const info = { t0, seed, mid }
-      useBrNet.getState().setCount(info)
-      this.brCallbacks.onCountdown?.(info)
-      return
-    }
-    if (ty === 'cancel') {
-      const c = useBrNet.getState().countInfo
-      if (c && c.mid === str(p.mid)) {
-        useBrNet.getState().setCount(null)
-        // engine returns to waiting state via onRoster ticks
+    const code = str(p.code)
+    if (!code) return
+    const rooms = useRooms.getState().rooms
+    if (ty === 'room') {
+      if (this.roomInfo && code === this.roomInfo.code) return   // our own echo
+      const entry: PublicRoomUI = {
+        code, host: str(p.n, 'Operator'), kind: str(p.kind, '2v2'), mode: str(p.mode, 'escaramuza'),
+        players: num(p.players, 1), cap: num(p.cap, 4), t: now(),
       }
+      const i = rooms.findIndex(r => r.code === code)
+      const next = i >= 0 ? rooms.with(i, entry) : [...rooms, entry]
+      useRooms.getState().setRooms(next)
+    } else if (ty === 'close') {
+      useRooms.getState().setRooms(rooms.filter(r => r.code !== code))
     }
   }
 
-  brLeaveQueue(): void {
-    if (this.brHb) { clearInterval(this.brHb); this.brHb = null }
-    if (this.brCountCheck) { clearInterval(this.brCountCheck); this.brCountCheck = null }
-    if (this.brCallbacks.onRoster || this.brCallbacks.onCountdown) {
-      this.unsub(T.brLobby, this.onBrLobbyMsg)
+  /** subscribe to the public rooms feed (room browser / quick match) */
+  roomsBrowse(): void {
+    if (this.browsing) return
+    this.browsing = true
+    this.sub(T.rooms, this.onRoomsMsg)
+    if (!this.roomsCheck) {
+      this.roomsCheck = setInterval(() => {
+        const t = now()
+        useRooms.getState().setRooms(useRooms.getState().rooms.filter(r => t - r.t < 12000))
+      }, 4000)
     }
-    this.brCallbacks = {}
-    this.brRoster.clear()
-    useBrNet.getState().setQueuing(false)
-    useBrNet.getState().setRoster([])
-    useBrNet.getState().setCount(null)
   }
 
-  // ---------------- BR MATCH channels ----------------
-  /** subscribe match channels at COUNTDOWN time so no message is lost;
-   *  the lobby heartbeat keeps running until brMatchGo() */
-  brMatchEnter(mid: string, handlers: {
-    pose?: (u: string, p: Rec) => void
-    ev?: (p: Rec) => void
-    chat?: (p: Rec) => void
-    bots?: (p: Rec) => void
-  }): void {
-    this.brMid = mid
-    this.brInMatch = true
-    this.matchHandlers = handlers
-    this.subscribeMatch(mid)
+  roomsStopBrowse(): void {
+    if (!this.browsing) return
+    this.browsing = false
+    this.unsub(T.rooms, this.onRoomsMsg)
+    if (this.roomsCheck) { clearInterval(this.roomsCheck); this.roomsCheck = null }
+    useRooms.getState().setRooms([])
   }
 
-  /** countdown ended — match is live: stop the lobby heartbeat */
-  brMatchGo(): void {
-    if (this.brHb) { clearInterval(this.brHb); this.brHb = null }
-    if (this.brCountCheck) { clearInterval(this.brCountCheck); this.brCountCheck = null }
-  }
-
-  private brPoseH = (p: Rec, topic: string): void => {
-    const u = oidFromTopic(topic, `${NS}/brm/${this.brMid}/pose/`)
-    this.matchHandlers.pose?.(u, p)
-  }
-  private brEvH = (p: Rec): void => { this.matchHandlers.ev?.(p) }
-  private brChatH = (p: Rec): void => { this.matchHandlers.chat?.(p) }
-  private brBotsH = (p: Rec): void => { this.matchHandlers.bots?.(p) }
-
-  private subscribeMatch(mid: string): void {
-    this.sub(T.brmPose(mid), this.brPoseH)
-    this.sub(T.brmEv(mid), this.brEvH)
-    this.sub(T.brmChat(mid), this.brChatH)
-    this.sub(T.brmBots(mid), this.brBotsH)
-  }
-
-  brMatchLeave(): void {
-    if (this.brMid) {
-      const mid = this.brMid
-      this.unsub(T.brmPose(mid), this.brPoseH)
-      this.unsub(T.brmEv(mid), this.brEvH)
-      this.unsub(T.brmChat(mid), this.brChatH)
-      this.unsub(T.brmBots(mid), this.brBotsH)
+  /** host: announce our room so others can discover it */
+  roomPublish(code: string, kind: string, mode: string, players: number, cap: number): void {
+    this.roomInfo = { code, kind, mode, players, cap }
+    if (this.roomHb) return
+    const beat = (): void => {
+      const r = this.roomInfo
+      if (!r) return
+      this.pub(T.rooms, { ty: 'room', code: r.code, kind: r.kind, mode: r.mode, players: r.players, cap: r.cap, n: myOperatorName(), u: myOid(), t: now() })
     }
-    this.brMid = ''
-    this.brInMatch = false
-    this.matchHandlers = {}
+    this.roomHb = setInterval(beat, 4000)
+    if (this.status === 'online') beat()
   }
 
-  brPublishPose(pos: [number, number, number], yaw: number, moving: number, weapon: string, st: string, veh: number): void {
-    if (!this.brMid) return
-    this.pub(`${NS}/brm/${this.brMid}/pose/${myOid()}`, {
-      u: myOid(), n: myOperatorName(), p: [r1(pos[0]), r1(pos[1]), r1(pos[2])],
-      y: r2(yaw), m: moving, w: weapon, st, veh,
-    })
+  /** host: live occupancy updates while players join/leave the lobby */
+  roomUpdate(players: number): void {
+    if (!this.roomInfo) return
+    this.roomInfo.players = players
   }
-  brPublishEv(ev: Rec): void {
-    if (!this.brMid) return
-    this.pub(T.brmEv(this.brMid), { ...ev, t: now() })
-  }
-  brPublishBots(payload: string): void {
-    if (!this.brMid) return
-    this.pub(T.brmBots(this.brMid), payload)
-  }
-  brChatSend(text: string): boolean {
-    if (!this.brMid) return false
-    this.pub(T.brmChat(this.brMid), { u: myOid(), n: myOperatorName(), text })
-    return true
+
+  stopRoomPublish(): void {
+    if (this.roomHb) { clearInterval(this.roomHb); this.roomHb = null }
+    if (this.roomInfo) {
+      this.pub(T.rooms, { ty: 'close', code: this.roomInfo.code }, true)
+      this.roomInfo = null
+    }
   }
 
   /** recompute the friends list online dots (presence re-evaluation) */
@@ -1071,9 +969,6 @@ class EsNet {
     this.pushFriendsUI()
   }
 }
-
-const r1 = (v: number): number => Math.round(v * 10) / 10
-const r2 = (v: number): number => Math.round(v * 100) / 100
 
 export const esNet = new EsNet()
 

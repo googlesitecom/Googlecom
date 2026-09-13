@@ -43,6 +43,26 @@ interface DamageDir { angle: number; t: number }
 interface Ping { x: number; z: number; t: number }
 interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
 
+/** v14: vista de una entrega aérea (avión + caja con paracaídas + haz) */
+interface CrateView {
+  id: number
+  group: THREE.Group          // caja + canopy + haz + anillo (todo junto)
+  crate: THREE.Mesh
+  canopy: THREE.Group
+  beam: THREE.Mesh
+  ring: THREE.Mesh
+  glow: THREE.Sprite
+  x: number; z: number
+  label: string
+  /** performance.now() en que toca el suelo */
+  landAt: number
+  landed: boolean
+  bornAt: number
+  phase: number
+  sway: number
+  plane?: { group: THREE.Group; props: THREE.Object3D[]; dir: THREE.Vector3; bornAt: number }
+}
+
 interface WeaponRuntime { mag: number; reserve: number }
 
 /** niveles de calidad gráfica (v6.2: ULTRA opcional, desactivado por defecto) */
@@ -483,6 +503,8 @@ export class Game {
 
   // pociones visibles
   private pickupViews = new Map<string, PickupView>()
+  // v14: entregas aéreas
+  private crateViews = new Map<number, CrateView>()
 
   // ---- mecánicas del mapa ----
   private barrels: BarrelView[] = []
@@ -646,6 +668,12 @@ export class Game {
     this.bindEvents()
 
     this.net = new NetClient(this)
+
+    // v14: ?cratetest=1 — entregas aéreas rápidas (verificación de la
+    // mecánica sin esperar 20 s + 45 s entre cajas)
+    try {
+      if (new URLSearchParams(location.search).has('cratetest')) this.net.debugFastCrates()
+    } catch { /* sin URL utilizable */ }
 
     // gancho de depuración (tests automatizados)
     ;(window as unknown as Record<string, unknown>).__game = this
@@ -1755,11 +1783,14 @@ export class Game {
     const Y_RING = 0.05
     const Y_DASH = 0.08
     const planes: [number, number, number, number][] = [
-      // [cx, cz, w, d] — avenidas y calles secundarias
-      [0, 0, 140, 12],      // avenida E-O
-      [0, 0, 12, 140],      // avenida N-S
-      [35, 0, 140, 8], [-35, 0, 140, 8],    // secundarias N-S
-      [0, 35, 8, 140], [0, -35, 8, 140],    // secundarias E-O
+      // [cx, cz, w, d] — avenidas y calles secundarias (v14: 200×200)
+      [0, 0, 200, 12],      // avenida E-O (prolongada hasta el borde)
+      [0, 0, 12, 200],      // avenida N-S
+      [35, 0, 200, 8], [-35, 0, 200, 8],    // secundarias N-S
+      [0, 35, 8, 200], [0, -35, 8, 200],    // secundarias E-O
+      // v14: anillo de circunvalación en ±92 (carril de 10 m)
+      [0, 92, 200, 10], [0, -92, 200, 10],
+      [92, 0, 10, 200], [-92, 0, 10, 200],
     ]
     for (const [cx, cz, w, d] of planes) {
       const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 6), asphalt)
@@ -1789,10 +1820,13 @@ export class Game {
     this.scene.add(inner)
     // aceras (franjas claras junto a las avenidas)
     const walks: [number, number, number, number][] = [
-      [0, 7.1, 140, 1.4], [0, -7.1, 140, 1.4],
-      [7.1, 0, 1.4, 140], [-7.1, 0, 1.4, 140],
-      [35, 4.6, 140, 1.2], [35, -4.6, 140, 1.2], [-35, 4.6, 140, 1.2], [-35, -4.6, 140, 1.2],
-      [4.6, 35, 1.2, 140], [-4.6, 35, 1.2, 140], [4.6, -35, 1.2, 140], [-4.6, -35, 1.2, 140],
+      [0, 7.1, 200, 1.4], [0, -7.1, 200, 1.4],
+      [7.1, 0, 1.4, 200], [-7.1, 0, 1.4, 200],
+      [35, 4.6, 200, 1.2], [35, -4.6, 200, 1.2], [-35, 4.6, 200, 1.2], [-35, -4.6, 200, 1.2],
+      [4.6, 35, 1.2, 200], [-4.6, 35, 1.2, 200], [4.6, -35, 1.2, 200], [-4.6, -35, 1.2, 200],
+      // v14: aceras interiores del anillo de circunvalación
+      [0, 86.2, 200, 1.6], [0, -86.2, 200, 1.6],
+      [86.2, 0, 1.6, 200], [-86.2, 0, 1.6, 200],
     ]
     for (const [cx, cz, w, d] of walks) {
       const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 3), sidewalk)
@@ -1810,11 +1844,11 @@ export class Game {
       g.translate(x, Y_DASH, z)
       dashes.push(g)
     }
-    for (let x = -66; x <= 66; x += 4) {
+    for (let x = -96; x <= 96; x += 4) {
       if (Math.abs(x) < 11) continue          // rotonda
       addDash(x, 0, false)
     }
-    for (let z = -66; z <= 66; z += 4) {
+    for (let z = -96; z <= 96; z += 4) {
       if (Math.abs(z) < 11) continue
       addDash(0, z, true)
     }
@@ -2337,6 +2371,12 @@ export class Game {
       }
     }
     this.flareViews = []
+    // v14: entregas aéreas
+    for (const cv of this.crateViews.values()) {
+      this.scene.remove(cv.group)
+      if (cv.plane) this.scene.remove(cv.plane.group)
+    }
+    this.crateViews.clear()
     this.composer?.dispose()
     this.renderer?.dispose()
   }
@@ -2417,7 +2457,7 @@ export class Game {
     else if (code === this.kb('flare')) this.useFlare()
     else if (code === this.kb('stim')) this.useStim()
     else if (code === this.kb('lastWeapon')) this.switchTo(this.lastWeapon)
-    else if (code === this.kb('zipline')) this.tryAttachZipline()
+    else if (code === this.kb('zipline')) { if (!this.tryOpenCrate()) this.tryAttachZipline() }
     else if (code === this.kb('voice')) voiceChat.setPtt(true)   // v12: push-to-talk
     else if (code === this.kb('slot1')) {
       // v6.1: hueco 1 asignado en la tienda (antes era por preferencia fija)
@@ -2789,6 +2829,8 @@ export class Game {
 
     // pociones flotantes
     this.updatePickupViews(dt, t)
+    // v14: entregas aéreas (caída, aterrizaje, avión, hint de apertura)
+    this.updateCrateViews(dt, t)
 
     // mecánicas del mapa: barriles y saltadores
     this.updateBarrels()
@@ -3062,6 +3104,12 @@ export class Game {
     if (this.dead) return
     if (this.ziplineIdx >= 0) {
       this.interactHint = `[${keyLabel(this.kb('jump'))}] RELEASE ZIPLINE`
+      return
+    }
+    // v14: caja de suministro a los pies → abrir tiene prioridad
+    const crate = this.crateWithinReach()
+    if (crate) {
+      this.interactHint = `[${keyLabel(this.kb('zipline'))}] OPEN SUPPLY CRATE — ${crate.label}`
       return
     }
     if (performance.now() < this.ziplineCooldownUntil) return
@@ -4535,6 +4583,207 @@ export class Game {
   }
 
   /** Recogida de poción/botiquín */
+  // ----------------------------------------------------------
+  // v14 — ENTREGAS AÉREAS (supply drops): el avión cruza el mapa,
+  // la caja cae con paracaídas ámbar y al aterrizar marca su
+  // posición con un haz vertical. Se abre con [E].
+  // ----------------------------------------------------------
+  /** evento del simulador: acaba de soltarse una caja */
+  onCrateIncoming(id: number, x: number, z: number, label: string, landAt: number): void {
+    this.buildCrateView(id, x, z, label, landAt)
+    // motor de sonido: el avión pasa cerca
+    this.audio.planeFlyby(Math.max(3, GAME.CRATE_FALL_TIME))
+  }
+
+  /** evento del simulador: contenido recogido por el jugador local */
+  onCrateLooted(weaponLabel: string, shieldGain: number, hpGain: number, money: number, label: string): void {
+    this.audio.pickup(true)
+    this.audio.announceDing()
+    const bits: string[] = [weaponLabel]
+    if (shieldGain > 0) bits.push(`+${shieldGain} SHIELD`)
+    if (hpGain > 0) bits.push(`+${hpGain} HP`)
+    bits.push(`+$${money}`)
+    useGame.getState().addAnnouncement(`SUPPLY CRATE (${label}) — ${bits.join(' · ')}`, 'info')
+  }
+
+  /** construye la vista completa (caja + canopy + haz + anillo + avión) */
+  private buildCrateView(id: number, x: number, z: number, label: string, landAt: number): void {
+    if (this.crateViews.has(id)) return
+    const landIn = Math.max(0, landAt - Date.now())
+    const group = new THREE.Group()
+    group.position.set(x, 0, z)
+
+    // ---- caja de suministros (madera + refuerzos) ----
+    const texs = makeWorldTextures()
+    const crateMat = new THREE.MeshStandardMaterial({ map: texs.crate, roughness: 0.8, metalness: 0.05 })
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.15, 1.5), crateMat)
+    crate.castShadow = true
+    crate.receiveShadow = true
+    crate.position.y = 0.6
+    // banda ámbar para leerla a distancia
+    const band = new THREE.Mesh(
+      new THREE.BoxGeometry(1.54, 0.18, 1.54),
+      new THREE.MeshStandardMaterial({ color: 0xd9a441, emissive: 0x8a5f1e, emissiveIntensity: 0.55, roughness: 0.5 }),
+    )
+    band.position.y = 0.62
+    group.add(crate, band)
+
+    // ---- paracaídas (plegado hasta la apertura) ----
+    const canopy = buildParachute(0xd9a441)
+    canopy.position.y = 4.4
+    canopy.scale.setScalar(0.02)
+    group.add(canopy)
+
+    // ---- haz de luz vertical (visible al aterrizar) ----
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.42, 0.85, 60, 12, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xffc14d, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+    )
+    beam.position.y = 30
+    group.add(beam)
+
+    // ---- anillo en el suelo ----
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(1.15, 1.45, 32),
+      new THREE.MeshBasicMaterial({ color: 0xd9a441, transparent: true, opacity: 0, side: THREE.DoubleSide }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.y = 0.04
+    group.add(ring)
+
+    // ---- halo ----
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: makeSparkTexture(), color: 0xffc14d, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+    }))
+    glow.scale.setScalar(2.4)
+    glow.position.y = 1.1
+    group.add(glow)
+
+    this.scene.add(group)
+
+    // ---- avión de carga que suelta la caja (solo si aún está cayendo:
+    //      un invitado que entra a mitad de partida no ve aviones
+    //      fantasma de cajas ya aterrizadas) ----
+    const willFall = landAt - Date.now() > 400
+    let plane: CrateView['plane'] | undefined
+    if (willFall) {
+      const { plane: pGroup, props } = buildDropPlane()
+      const ang = Math.random() * Math.PI * 2
+      const dir = new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang)).normalize()
+      pGroup.position.set(x - dir.x * 14, 55, z - dir.z * 14)
+      pGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir)
+      this.scene.add(pGroup)
+      plane = { group: pGroup, props, dir, bornAt: performance.now() }
+    }
+
+    // posición inicial de caída
+    const fallTotal = Math.max(0.2, landIn)
+    const cv: CrateView = {
+      id, group, crate, canopy, beam, ring, glow,
+      x, z, label,
+      landAt: performance.now() + fallTotal,
+      landed: fallTotal <= 0,
+      bornAt: performance.now(),
+      phase: Math.random() * Math.PI * 2,
+      sway: Math.random() * Math.PI * 2,
+      plane,
+    }
+    if (cv.landed) {
+      crate.position.y = 0.6
+      canopy.visible = false
+    } else {
+      group.position.y = 0
+      crate.position.y = 105
+    }
+    this.crateViews.set(id, cv)
+  }
+
+  /** caja aterrizada al alcance del jugador (para el hint y la [E]) */
+  private crateWithinReach(): CrateView | null {
+    if (this.dead) return null
+    const now = performance.now()
+    for (const cv of this.crateViews.values()) {
+      if (!cv.landed || now < cv.landAt) continue
+      const d = Math.hypot(cv.x - this.pos.x, cv.z - this.pos.z)
+      if (d <= GAME.CRATE_OPEN_RADIUS) return cv
+    }
+    return null
+  }
+
+  /** [E] junto a la caja → pedir la apertura al simulador */
+  private tryOpenCrate(): boolean {
+    const cv = this.crateWithinReach()
+    if (!cv) return false
+    this.net.openCrate(cv.id)
+    this.audio.uiClick()
+    return true
+  }
+
+  private updateCrateViews(dt: number, t: number): void {
+    const now = performance.now()
+    for (const cv of this.crateViews.values()) {
+      // ---- avión: sigue su rumbo y desaparece a los 14 s ----
+      if (cv.plane) {
+        const age = (now - cv.plane.bornAt) / 1000
+        const pl = cv.plane
+        pl.group.position.addScaledVector(pl.dir, 46 * dt)
+        pl.group.position.y = 55 + Math.sin(t * 0.7 + cv.phase) * 0.5
+        for (let i = 0; i < pl.props.length; i++) pl.props[i].rotation.z = t * (38 + (i % 2) * 6)
+        if (age > 14) {
+          this.scene.remove(pl.group)
+          cv.plane = undefined
+        }
+      }
+
+      // ---- caída ----
+      if (!cv.landed) {
+        const remain = cv.landAt - now
+        if (remain <= 0) {
+          // aterrizaje
+          cv.landed = true
+          cv.crate.position.y = 0.6
+          cv.group.position.set(cv.x, 0, cv.z)
+          cv.canopy.visible = false
+          const beamMat = cv.beam.material as THREE.MeshBasicMaterial
+          const ringMat = cv.ring.material as THREE.MeshBasicMaterial
+          const glowMat = cv.glow.material as THREE.SpriteMaterial
+          beamMat.opacity = 0.34
+          ringMat.opacity = 0.55
+          glowMat.opacity = 0.75
+          this.audio.chuteOpen(0)
+          // pequeña sacudida de aterrizaje si está cerca
+          const d = Math.hypot(cv.x - this.pos.x, cv.z - this.pos.z)
+          if (d < 40) this.trauma = Math.max(this.trauma, 0.12)
+        } else {
+          // progreso 1 → 0: la caja desciende de 105 m con freno
+          const total = Math.max(0.2, cv.landAt - cv.bornAt)
+          const prog = remain / total            // 1 arriba · 0 abajo
+          const eased = prog * prog * 0.35 + prog * 0.65
+          cv.crate.position.y = 0.6 + eased * 104
+          // canopy: se abre al 12 % de la caída
+          const opened = Math.min(1, (1 - prog) / 0.12)
+          const elast = 1 + Math.sin(opened * Math.PI) * 0.15
+          cv.canopy.scale.setScalar(Math.max(0.02, opened * elast))
+          cv.canopy.position.y = 4.0
+          // vaivén del paracaídas
+          cv.sway += dt * 1.1
+          cv.group.position.x = cv.x + Math.sin(cv.sway) * 1.5
+          cv.group.position.z = cv.z + Math.cos(cv.sway * 0.8) * 1.2
+          cv.crate.rotation.y = cv.sway * 0.4
+        }
+      } else {
+        // ---- aterrizada: pulso del haz/anillo ----
+        cv.phase += dt * 1.6
+        const beamMat = cv.beam.material as THREE.MeshBasicMaterial
+        const ringMat = cv.ring.material as THREE.MeshBasicMaterial
+        const glowMat = cv.glow.material as THREE.SpriteMaterial
+        beamMat.opacity = 0.26 + 0.12 * Math.sin(cv.phase)
+        ringMat.opacity = 0.45 + 0.25 * Math.sin(cv.phase)
+        glowMat.opacity = 0.6 + 0.25 * Math.sin(cv.phase)
+      }
+    }
+  }
+
   onPickup(kind: PickupKind, hpGain: number, shieldGain: number): void {
     const info = PICKUP_INFO[kind]
     this.audio.pickup(info.shield > 0)
@@ -4686,6 +4935,22 @@ export class Game {
       if (!seenP.has(id)) {
         this.scene.remove(pv.group)
         this.pickupViews.delete(id)
+      }
+    }
+    // v14: entregas aéreas — crear las que llegan por snapshot (los
+    // invitados pueden ver la caja antes que el evento) y retirar las
+    // abiertas (las recién creadas por evento se respetan 2 s)
+    const seenC = new Set<number>()
+    for (const c of snap.crates ?? []) {
+      seenC.add(c.id)
+      if (!this.crateViews.has(c.id)) this.buildCrateView(c.id, c.x, c.z, 'SUPPLY', c.landAt)
+    }
+    const nowMs = performance.now()
+    for (const [id, cv] of this.crateViews) {
+      if (!seenC.has(id) && nowMs - cv.bornAt > 2000) {
+        this.scene.remove(cv.group)
+        if (cv.plane) this.scene.remove(cv.plane.group)
+        this.crateViews.delete(id)
       }
     }
     // granadas visibles
@@ -5316,6 +5581,27 @@ export class Game {
       ctx.strokeStyle = 'rgba(255,255,255,0.85)'
       ctx.lineWidth = lw(1)
       ctx.stroke()
+    }
+
+    // v14: entregas aéreas — cuadrados ámbar (parpadean mientras caen)
+    for (const cv of this.crateViews.values()) {
+      const x = O + cv.x * S, y = O + cv.z * S
+      const falling = !cv.landed
+      const alpha = falling ? 0.5 + 0.5 * Math.sin(now / 180) : 0.85
+      ctx.globalAlpha = alpha
+      ctx.fillStyle = '#ffc14d'
+      ctx.fillRect(x - 3.6, y - 3.6, 7.2, 7.2)
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.lineWidth = lw(1)
+      ctx.strokeRect(x - 3.6, y - 3.6, 7.2, 7.2)
+      // icono de paracaídas mientras cae
+      if (falling) {
+        ctx.beginPath()
+        ctx.arc(x, y - 5.5, 2.6, Math.PI, 0)
+        ctx.fillStyle = '#fff3d6'
+        ctx.fill()
+      }
+      ctx.globalAlpha = 1
     }
 
     // zonas de dominación

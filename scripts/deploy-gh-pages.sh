@@ -23,7 +23,7 @@ touch .nojekyll   # imprescindible: sin esto Jekyll ignora _next/
 
 git add -A
 git -c user.name="Super Z" -c user.email="dev@fronteracero.local" \
-  commit -m "deploy: v13.6 — espalda 3.ª persona + bots del avión + edición Fortnite + balas vs estructuras + pausa + gráficos" >/dev/null
+  commit -m "deploy: v14 — BR eliminado + lobby Fortnite + entregas aéreas + mapa 200×200 + salas públicas" >/dev/null
 git push "${GITHUB_PUSH_URL:?exporta GITHUB_PUSH_URL=https://x-access-token:TOKEN_NUEVO@github.com/googlesitecom/Googlecom.git}" gh-pages:gh-pages --force 2>&1 | tail -2
 
 cd "$REPO_ROOT"
