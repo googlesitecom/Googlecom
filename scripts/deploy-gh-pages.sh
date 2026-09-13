@@ -12,7 +12,7 @@ git worktree prune >/dev/null 2>&1 || true
 rm -rf "$TMP" "$REPO_ROOT/.git/worktrees/-gh-pages-tmp" 2>/dev/null || true
 git worktree add -f --detach "$TMP" HEAD
 cd "$TMP"
-git branch -D gh-pages >/dev/null 2>&1 || true   # borrar la local anterior (la remota se sobreescribe)
+git branch -D gh-pages >/dev/null 2>&1 1|| true   # borrar la local anterior (la remota se sobreescribe)
 git checkout --orphan gh-pages >/dev/null 2>&1
 git rm -rf --cached . >/dev/null 2>&1 || true
 find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
@@ -23,9 +23,8 @@ touch .nojekyll   # imprescindible: sin esto Jekyll ignora _next/
 
 git add -A
 git -c user.name="Super Z" -c user.email="dev@fronteracero.local" \
-  commit -m "deploy: v13.3 — lanzamiento aéreo (avión+paracaídas), pistola a dos manos calibrada, arena -10%, anti-shimmer v2 (256px doble filtrado + baldosas 8m)" >/dev/null
-git push "${GITHUB_PUSH_URL:?exporta GITHUB_PUSH_URL=https://x-access-token:TOKEN@github.com/googlesitecom/Googlecom.git}" gh-pages:gh-pages --force 2>&1 | tail -2
+  commit -m "deploy: v13.5 — BR 3.ª persona + inventario 5 slots + pico de materiales + edificios con interior + bots con dificultad global + 4K nativo en ULTRA" >/dev/null
+git push "${GITHUB_PUSH_URL:?exporta GITHUB_PUSH_URL=https://x-access-token:TOKEN_NUEVO@github.com/googlesitecom/Googlecom.git}" gh-pages:gh-pages --force 2>&1 | tail -2
 
 cd "$REPO_ROOT"
 git worktree remove "$TMP" --force
-echo "OK: rama gh-pages publicada"
