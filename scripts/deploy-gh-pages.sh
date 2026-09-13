@@ -23,7 +23,7 @@ touch .nojekyll   # imprescindible: sin esto Jekyll ignora _next/
 
 git add -A
 git -c user.name="Super Z" -c user.email="dev@fronteracero.local" \
-  commit -m "deploy: v11 — REAL online layer (MQTT public brokers): friends with request+acceptance, squads, BR lobby with 4 REAL operators countdown, BR aiming/controls/pause parity, denser island, guest lobby fix" >/dev/null
+  commit -m "deploy: v13.2 — fix asfalto glitchiado (anti-shimmer: textura pre-filtrada + anisotropia 16 en calles/aceras/suelo)" >/dev/null
 git push "${GITHUB_PUSH_URL:?exporta GITHUB_PUSH_URL=https://x-access-token:TOKEN@github.com/googlesitecom/Googlecom.git}" gh-pages:gh-pages --force 2>&1 | tail -2
 
 cd "$REPO_ROOT"

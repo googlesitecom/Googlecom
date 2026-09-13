@@ -491,3 +491,25 @@ Stage Summary:
 - Matchmaking behavior kept and clearer: 4 OPERATORS ONLINE start the 60-second countdown, then the room fills to 20.
 - Fixed the v9 bug that silently shrunk the BR room to ~4-6 operators.
 - Pendiente: recomendar ROTAR el PAT (expuesto en el chat).
+
+---
+Task ID: v13.2-release
+Agent: Super Z (main)
+Task: usuario reporta "se traban las texturas de la calle en el mapa normal" (video de la v13.1 en producción)
+
+Work Log:
+- Diagnóstico del video del usuario (frames + VLM): el grano del asfalto queda FIJO EN PANTALLA "hirviendo" mientras el mundo y las líneas de carril se mueven — moiré/aliasing clásico de textura de grano finísimo minificada en rasante.
+- Causa raíz: Asfalto.jpg (1024, piedritas de 2-4 px) tileado cada 6 m (171 px/m) con anisotropía 4 (assets.ts) → en ángulo rasante el patrón de batido es función de la posición de pantalla, no del mundo.
+- Recuperación del código: el repo de trabajo de la sesión anterior (con v13/v13.1) ya no existía en el contenedor → clonado desde GitHub (main @ 03c74d5, v13.1) a /home/z/my-project/Googlecom.
+- FIX anti-shimmer (doble capa):
+  - assets.ts: makeAntiShimmerTex() re-muestrea la imagen a 512 con blur suave (pasa-bajos: mata el ruido de 1-2 px, conserva grietas/parches/tono) + getRoadTex('asfalto'|'concreto') con caché para suelos rasantes; anisotropía base de carga 4→8.
+  - engine.ts applyRepoTextures: calles con getRoadTex('asfalto') (fallback: base con aniso máx), aceras con getRoadTex('concreto'), suelo arena aniso 8→16, canvas procedurales min(8→16, max).
+  - battle-royale.ts: carreteras/aceras BR por la misma variante anti-shimmer (buildCity directo + applyRepoTexToBr por src()); fallback canvas con aniso 8.
+- Validación del pre-filtrado con VLM (512+1.2px): "production-ready, removes high-frequency noise, keeps cracks/patches/tone".
+- Verificación en vivo (dev server, partida BOTS ciudad): streetMats.asphalt.map = 512x512 (variante filtrada), anisotropy 16, wrap Repeat; sidewalk igual; maxAniso GPU 16. Captura de la avenida: asfalto realista + aceras + 100 m de perspectiva. tsc limpio; eslint sin errores nuevos (el de chat-box.tsx es preexistente en v13.1); build de Pages OK (42 MB).
+- Despliegue: main commit 4398d6f + rama gh-pages 7690286 creada con out/ + .nojekyll. PENDIENTE el push: el PAT no está en este contenedor (el anterior quedó expuesto en el chat y hay que rotarlo).
+
+Stage Summary:
+- El glitch del asfalto ("texturas trabadas") queda arreglado de raíz: textura pre-filtrada + anisotropía 16 en todas las superficies rasantes (calles, aceras, suelo, carreteras BR).
+- main y gh-pages listas localmente; falta el push (se necesita el PAT nuevo del usuario).
+- Recordatorio: ROTAR el PAT expuesto.
