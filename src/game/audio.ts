@@ -527,6 +527,27 @@ export class AudioEngine {
     this.tone(this.sfxBus, 650, 650, 0.25, 0.28, 'triangle', 0.3)
   }
 
+  /** v13.3: rumbo grave del avión de transporte durante la cinemática */
+  planeFlyby(dur = 13): void {
+    if (!this.ctx) return
+    const bus = this.sfxBus
+    const d = Math.min(10, dur)
+    // dos sawtooth graves desafinados = batido de hélices + aire de fondo
+    this.tone(bus, 58, 44, d, 0.15, 'sawtooth')
+    this.tone(bus, 61, 46, d, 0.11, 'sawtooth')
+    this.tone(bus, 116, 88, d * 0.8, 0.045, 'triangle', d * 0.2)
+    this.noise(bus, d, 0.07, { type: 'lowpass', freq: 640 })
+  }
+
+  /** v13.3: apertura del paracaídas (golpe de tela) */
+  chuteOpen(dist = 0): void {
+    if (!this.ctx) return
+    const g = this.dGain(dist, 80)
+    if (g <= 0.02) return
+    this.noise(this.sfxBus, 0.4, 0.5 * g, { type: 'bandpass', freq: 720, q: 0.6 })
+    this.tone(this.sfxBus, 190, 85, 0.25, 0.2 * g, 'sine')
+  }
+
   roundEnd(): void {
     if (!this.ctx) return
     this.tone(this.sfxBus, 600, 300, 0.3, 0.25, 'triangle')

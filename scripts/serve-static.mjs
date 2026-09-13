@@ -25,6 +25,9 @@ const MIME = {
 
 const server = http.createServer((req, res) => {
   let url = decodeURIComponent(req.url ?? '/')
+  // v13.3: quitar query string (?posetest=1 / ?debugcine=1) antes de mapear
+  const qi = url.indexOf('?')
+  if (qi >= 0) url = url.slice(0, qi)
   if (url === BASE) url = BASE + '/'
   if (!url.startsWith(BASE)) {
     res.writeHead(404).end('no encontrado')

@@ -149,12 +149,21 @@ function makeAntiShimmerTex(src: THREE.Texture, size: number, blurPx: number): T
   if (!ctx) return null
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
-  try { ctx.filter = `blur(${blurPx}px)` } catch { /* navegadores sin filter: solo el re-muestreo */ }
+  // v13.3: doble pasada de desenfoque — una sola pasada de 1-2 px
+  // dejaba energía del grano fino (2-4 px en origen) y seguía
+  // batiendo en rasante ("parpadeo" residual). La primera pasada
+  // a media resolución + la segunda a resolución final eliminan
+  // el espectro por encima de Nyquist para TODOS los mips.
+  try { ctx.filter = `blur(${blurPx * 1.7}px)` } catch { /* navegadores sin filter */ }
   ctx.drawImage(img, 0, 0, size, size)
+  try { ctx.filter = `blur(${blurPx * 0.8}px)` } catch { /* idem */ }
+  ctx.drawImage(canvas, 0, 0)
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
   tex.anisotropy = ROAD_ANISO
+  tex.generateMipmaps = true
+  tex.minFilter = THREE.LinearMipmapLinearFilter
   return tex
 }
 
@@ -168,9 +177,25 @@ export function getRoadTex(kind: 'asfalto' | 'concreto'): THREE.Texture | null {
   if (c) return c
   const base = repoTextures[kind]
   if (!base) return null
-  const tex = makeAntiShimmerTex(base, 512, kind === 'asfalto' ? 1.2 : 1.0)
+  // v13.3: 256 px + doble pasa-bajos — el grano fino desaparece del todo
+  // (queda el tono, grietas y parches); con baldosa de 8 m la minificación
+  // por píxel baja ~40 % respecto a v13.2 → cero batido en rasante.
+  const tex = makeAntiShimmerTex(base, 256, kind === 'asfalto' ? 1.6 : 1.1)
   if (!tex) return null
   roadTexCache.set(kind, tex)
+  return tex
+}
+
+/** v13.3: variante pre-filtrada del SUELO (arena) — misma razón que las
+ *  calles: el grano fino a 170 texels/m hierve en la distancia. */
+let groundTexCache: THREE.Texture | null = null
+export function getGroundTex(): THREE.Texture | null {
+  if (groundTexCache) return groundTexCache
+  const base = repoTextures.arena
+  if (!base) return null
+  const tex = makeAntiShimmerTex(base, 512, 1.5)
+  if (!tex) return null
+  groundTexCache = tex
   return tex
 }
 

@@ -21,13 +21,13 @@ import {
 } from './shared'
 import { AudioEngine, getAudio } from './audio'
 import { Effects } from './effects'
-import { RemotePlayers, buildCineSoldier } from './remote-players'
+import { RemotePlayers, buildCineSoldier, isSoldierReady, onSoldierReady, type CineSoldierParts, type CinePoseVariant } from './remote-players'
 import { buildWeaponModel, weaponPose, buildGrenadeModel } from './viewmodel'
 import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture, makeSmokeTexture, makeCloudTexture, makeWaterNoiseTexture, makeBirdTexture } from './textures'
 import { useGame } from './store'
 import { useChat } from './chat'
 import { NetClient } from './net'
-import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, getRoadTex, onWeaponGLBsReady } from './assets'
+import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, getRoadTex, getGroundTex, onWeaponGLBsReady } from './assets'
 import { StoryDirector, type StorySyncData, type StoryRemoteMsg } from './story'
 import { voiceChat, useVoice, type RemotePos } from './voice'
 
@@ -90,6 +90,135 @@ interface CineSoldier {
   fallT: number
   /** variación de fase para no disparar en sincronía */
   phase: number
+  /** v13.3: huesos para vida en reposo (respiración/escaneo de cabeza) */
+  head?: THREE.Object3D
+  torso?: THREE.Object3D
+  /** v13.3: pose de reposo (para no reanimar a los caídos) */
+  scanAmp: number
+}
+
+// ---- v13.3: LANZAMIENTO AÉREO — paracaidista de la cinemática ----
+interface DropTrooper {
+  parts: CineSoldierParts
+  canopy: THREE.Group           // campana + suspentes (escala 0 = plegada)
+  state: 'freefall' | 'canopy' | 'landed'
+  jumpAt: number                // seg desde el inicio de la cinemática
+  stateT: number                // seg dentro del estado actual
+  pos: THREE.Vector3
+  vy: number
+  /** punto de aterrizaje objetivo (spawn + anillo) */
+  target: THREE.Vector3
+  seed: number                  // fase del vaivén del paracaídas
+  team: Team
+  /** v13.3: rotaciones de brazos al construirse (pose de arma) — se restauran al aterrizar */
+  armPose: {
+    s: THREE.Euler, t: THREE.Euler,
+    /** v13.3b: los ANTEBRAZOS también se restauran — sin esto la mano
+     *  queda en la pose de caída y el arma flota (regresión detectada
+     *  en el E2E del aterrizaje) */
+    fs: THREE.Euler | null, ft: THREE.Euler | null,
+  } | null
+}
+
+/** avión de transporte procedural estilo C-130 (sin GLB) */
+function buildDropPlane(): { plane: THREE.Group, props: THREE.Object3D[] } {
+  const plane = new THREE.Group()
+  const OLIVE = 0x5c6350
+  const OLIVE2 = 0x707a63
+  const BELLY = 0x8a917d
+  const DARK = 0x23261f
+  const mat = (c: number, rough = 0.7, metal = 0.25): THREE.MeshStandardMaterial =>
+    new THREE.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal })
+  const box = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m)
+    mesh.position.set(x, y, z)
+    return mesh
+  }
+  // fuselaje (eje Z: -Z nariz · +Z cola) — morirá mirando a -Z, el grupo
+  // se orienta luego con setFromUnitVectors
+  const fus = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 12.5, 14), mat(OLIVE))
+  fus.rotation.x = Math.PI / 2
+  plane.add(fus)
+  // morro cónico + cabina
+  const nose = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.42, 2.6, 12), mat(OLIVE2, 0.55, 0.3))
+  nose.rotation.x = -Math.PI / 2
+  nose.position.z = -7.5
+  plane.add(nose)
+  const cockpit = box(1.5, 0.55, 0.9, mat(DARK, 0.25, 0.8), 0, 0.78, -6.6)
+  plane.add(cockpit)
+  // panza más clara (look típico de transporte)
+  const belly = new THREE.Mesh(new THREE.CylinderGeometry(1.06, 1.06, 12.4, 14, 1, false, Math.PI, Math.PI), mat(BELLY, 0.75, 0.2))
+  belly.rotation.x = Math.PI / 2
+  plane.add(belly)
+  // ala alta con leve diedro
+  const wing = box(19, 0.22, 2.9, mat(OLIVE), 0, 1.05, -1.1)
+  wing.rotation.z = 0.045
+  plane.add(wing)
+  const wingTipL = box(0.9, 0.5, 1.7, mat(OLIVE2), -9.2, 1.55, -1.2)
+  wingTipL.rotation.z = 0.12
+  plane.add(wingTipL)
+  const wingTipR = box(0.9, 0.5, 1.7, mat(OLIVE2), 9.2, 1.55, -1.2)
+  wingTipR.rotation.z = -0.12
+  plane.add(wingTipR)
+  // 4 hélices bajo el ala (discos giratorios + buje)
+  const props: THREE.Object3D[] = []
+  const propMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.4, transparent: true, opacity: 0.42, side: THREE.DoubleSide })
+  for (const ex of [-6.4, -3.9, 3.9, 6.4]) {
+    const nac = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 1.5, 10), mat(DARK, 0.5, 0.6))
+    nac.rotation.x = Math.PI / 2
+    nac.position.set(ex, 0.78, -1.7)
+    plane.add(nac)
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(1.15, 20), propMat)
+    disc.position.set(ex, 0.78, -2.6)
+    plane.add(disc)
+    props.push(disc)
+    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), mat(0x666666, 0.4, 0.7))
+    hub.position.set(ex, 0.78, -2.55)
+    plane.add(hub)
+  }
+  // cola: estabilizador vertical + horizontal
+  const fin = box(0.22, 2.6, 2.1, mat(OLIVE), 0, 1.7, 6.3)
+  plane.add(fin)
+  const hstab = box(5.6, 0.18, 1.6, mat(OLIVE2), 0, 0.9, 6.4)
+  plane.add(hstab)
+  // puerto de salto abierto (lateral derecho trasero) — boca oscura
+  const door = box(1.1, 1.5, 0.1, mat(0x0d0f0c, 0.95, 0.05), 1.02, 0, 3.2)
+  plane.add(door)
+  // tren recogido (bulbos)
+  for (const pz of [-2.5, 2.5]) {
+    const pod = new THREE.Mesh(new THREE.SphereGeometry(0.42, 8, 6), mat(DARK, 0.6, 0.5))
+    pod.scale.y = 0.6
+    pod.position.set(pz > 0 ? 0.9 : -0.9, -1.02, pz)
+    plane.add(pod)
+  }
+  plane.traverse(o => { o.frustumCulled = false })
+  return { plane, props }
+}
+
+/** paracaídas procedural: campana hemisférica + suspentes + mochila */
+function buildParachute(color: number): THREE.Group {
+  const g = new THREE.Group()
+  const canopy = new THREE.Mesh(
+    new THREE.SphereGeometry(2.55, 14, 7, 0, Math.PI * 2, 0, Math.PI / 2.6),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide }),
+  )
+  canopy.scale.y = 0.62
+  canopy.position.y = 5.1
+  g.add(canopy)
+  // 8 suspentes finas desde el borde de la campana al arnés (hombros)
+  const pts: THREE.Vector3[] = []
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    pts.push(new THREE.Vector3(Math.cos(a) * 2.3, 4.85, Math.sin(a) * 2.3))
+    pts.push(new THREE.Vector3(Math.cos(a) * 0.24, 0.42, Math.sin(a) * 0.24))
+  }
+  const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
+  g.add(new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0x2a2a2a })))
+  // manguito central (contenedor del paracaídas a la espalda)
+  const pack = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.5, 0.24), new THREE.MeshStandardMaterial({ color: 0x4a4a3a, roughness: 0.95 }))
+  pack.position.set(0, 0.55, -0.26)
+  g.add(pack)
+  return g
 }
 
 interface JumpPadView {
@@ -106,6 +235,12 @@ const UP_AXIS = new THREE.Vector3(0, 1, 0)
 const EYE_STAND = 1.62
 const EYE_CROUCH = 1.14
 const BASE_FOV = 75
+/** v13.3: scratch del punto de mira de la cámara de cinemática */
+const _cineLook = new THREE.Vector3()
+/** v13.3: logs de depuración del lanzamiento aéreo (?debugcine=1) */
+const DBG_CINE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debugcine')
+/** v13.3: banco de pruebas de poses — soldados frente a cámara (?posetest=1) */
+const POSE_TEST = typeof location !== 'undefined' && new URLSearchParams(location.search).has('posetest')
 
 /** Parámetros PBR por material del mapa */
 const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
@@ -291,6 +426,25 @@ export class Game {
   }
   private cineTitleFade = 0
 
+  // ---- v13.3: LANZAMIENTO AÉREO — cinemática de entrada nueva ----
+  // llega un avión de transporte, los operadores se tiran en paracaídas,
+  // el héroes aterriza en el punto de despliegue y el juego empieza como siempre
+  private dropCine: {
+    plane: THREE.Group | null
+    props: THREE.Object3D[]
+    dir: THREE.Vector3          // rumbo unitario del avión
+    speed: number
+    start: THREE.Vector3        // posición inicial del avión
+    troopers: DropTrooper[]
+    hero: DropTrooper | null
+    spawn: THREE.Vector3
+    over: boolean
+    /** v13.3: reloj SIMULADO de la cinemática (acumula dt con clamp) —
+     *  camera y física comparten el MISMO tiempo: sin desincronización
+     *  aunque el framerate caiga (el reloj real no se usa aquí) */
+    t: number
+  } | null = null
+
   // ---- v6.3: batalla visible durante la cinemática ----
   private cineSoldiers: CineSoldier[] = []
   private cineBattles: CineBattleSpec[] = []
@@ -388,6 +542,8 @@ export class Game {
   // Inicialización
   // ----------------------------------------------------------
   init(canvas3d: HTMLCanvasElement, overlay: HTMLCanvasElement, minimap: HTMLCanvasElement): void {
+    // v13.3: handle de depuración (consola/Playwright: window.__es)
+    if (typeof window !== 'undefined') (window as unknown as Record<string, unknown>).__es = this
     this.canvas3d = canvas3d
     this.overlay = overlay
     this.minimap = minimap
@@ -1582,7 +1738,9 @@ export class Game {
     // v13: escala de UVs por dimensión — con la Asfalto.jpg/Concreto.jpg
     // del usuario (parcheadas en vivo por applyRepoTextures) cada plano
     // muestra su tamaño real de baldosa con UNA textura compartida
-    // (asfalto: 6 m por repetición · aceras: 3 m)
+    // v13.3: baldota GRANDE (asfalto 8 m · aceras 4 m) — menos texels por
+    // metro = menos minificación por píxel en rasante → menos batido
+    // (la variante pre-filtrada de getRoadTex ya elimina el grano fino)
     const scaleUVs = (geo: THREE.PlaneGeometry, w: number, d: number, tile: number): THREE.PlaneGeometry => {
       const uv = geo.attributes.uv as THREE.BufferAttribute
       for (let i = 0; i < uv.count; i++) {
@@ -1603,7 +1761,7 @@ export class Game {
       [0, 35, 8, 140], [0, -35, 8, 140],    // secundarias E-O
     ]
     for (const [cx, cz, w, d] of planes) {
-      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 6), asphalt)
+      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 8), asphalt)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_ASPHALT, cz)
       m.receiveShadow = true
@@ -1636,7 +1794,7 @@ export class Game {
       [4.6, 35, 1.2, 140], [-4.6, 35, 1.2, 140], [4.6, -35, 1.2, 140], [-4.6, -35, 1.2, 140],
     ]
     for (const [cx, cz, w, d] of walks) {
-      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 3), sidewalk)
+      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 4), sidewalk)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_SIDEWALK, cz)
       m.receiveShadow = true
@@ -1956,17 +2114,21 @@ export class Game {
     // v13: el suelo exterior prefiere la Arena.jpg del usuario (desierto
     // real, 1024 px); si no existiera, mantiene el comportamiento clásico
     // (Piso.jpg con tinte arena)
+    // v13.3: variante pre-filtrada (getGroundTex) contra el batido del
+    // grano fino + UN 10 % MÁS OSCURA (color 0.9) — pedido del usuario
     if ((arena || piso) && this.groundMesh) {
       const g = this.groundMesh
       const mat = g.material as THREE.MeshStandardMaterial
-      const tex = (arena ?? piso)!.clone()
-      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-      tex.repeat.set(arena ? 46 : 58, arena ? 46 : 58)
+      const gtex = arena ? (getGroundTex() ?? arena.clone()) : piso!.clone()
+      gtex.wrapS = gtex.wrapT = THREE.RepeatWrapping
+      // baldota de 7,6 m (antes 6 m): menos texels/m → menos batido
+      gtex.repeat.set(arena ? 34 : 58, arena ? 34 : 58)
       // v13.2: 16 (antes 8) — el suelo también se ve en rasante
-      tex.anisotropy = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
-      tex.needsUpdate = true
-      mat.map = tex
-      mat.color.set(arena ? 0xffffff : 0xb9ad93)
+      gtex.anisotropy = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
+      gtex.needsUpdate = true
+      mat.map = gtex
+      // arena: 0xe5e5e5 ≈ ×0.9 sRGB → un 10 % más oscura (pedido)
+      mat.color.set(arena ? 0xe5e5e5 : 0xb9ad93)
       mat.needsUpdate = true
     }
     // v13: bloques/escaleras de hormigón — Concreto.jpg real (antes tocaba
@@ -2574,6 +2736,9 @@ export class Game {
       this.updateWeapon(dt, t)
       this.updateShooting(t)
     }
+    // v13.3: LANZAMIENTO AÉREO — simula el avión/paracaidistas ANTES de
+    // mover la cámara (la FASE B sigue la posición del héroe en vivo)
+    if (this.cine.active && this.cine.kind === 'entry' && this.dropCine) this.updateDropCine(dt)
     this.updateCamera(dt, t)
     this.updateViewmodel(dt, t)
 
@@ -2992,15 +3157,34 @@ export class Game {
   // Cámara
   // ----------------------------------------------------------
   private updateCamera(dt: number, t: number): void {
-    // cinemática de entrada: la cámara vuela sobre el mapa hasta el despliegue
+    // cinemática de entrada: v13.3 LANZAMIENTO AÉREO (avión + paracaídas,
+    // cámara dirigida por dropCineCamera) o curva clásica (modo historia)
     if (this.cine.active) {
       const t01 = Math.min(1, (performance.now() - this.cine.t0) / (this.cine.dur * 1000))
-      const p = this.cine.curve!.getPoint(t01)
-      const lk = this.cine.look!.getPoint(Math.min(1, t01 * 1.04))
-      this.camera.position.copy(p)
-      this.camera.up.set(0, 1, 0)
-      this.camera.lookAt(lk)
-      if (t01 >= 1) this.endCinematic()
+      // v13.3: banco de pruebas — cámara fija (espera a los soldados sin
+      // cortar la cinemática: la fila se construye tras el parseo del GLB)
+      if (POSE_TEST) {
+        if (this.poseTestSoldiers.length) this.poseTestCamera()
+        return
+      }
+      if (this.cine.kind === 'entry' && this.dropCine) {
+        this.dropCineCamera(this.camera.position, _cineLook)
+        this.camera.up.set(0, 1, 0)
+        this.camera.lookAt(_cineLook)
+        // fin: héroe aterrizado (+1,4 s) o duración agotada (reloj simulado)
+        if ((this.dropCine.t >= this.cine.dur) || this.dropCine.over) this.endCinematic()
+        return
+      }
+      if (this.cine.curve && this.cine.look) {
+        const p = this.cine.curve.getPoint(t01)
+        const lk = this.cine.look.getPoint(Math.min(1, t01 * 1.04))
+        this.camera.position.copy(p)
+        this.camera.up.set(0, 1, 0)
+        this.camera.lookAt(lk)
+        if (t01 >= 1) this.endCinematic()
+      } else {
+        this.endCinematic()
+      }
       return
     }
     // altura de ojos
@@ -3235,9 +3419,10 @@ export class Game {
       this.vmGroup.position.y -= sprintA * 0.08
     }
 
-    // francotirador ADS: ocultar modelo
+    // francotirador ADS: ocultar modelo · v13.3: también durante la
+    // cinemática (el arma en primera persona no debe flotar en el plano)
     const w = WEAPONS[this.weapon]
-    this.vmHolder.visible = !(w.sniper && adsLin > 0.7) && !this.dead
+    this.vmHolder.visible = !(w.sniper && adsLin > 0.7) && !this.dead && !this.cine.active
 
     void t
   }
@@ -3740,36 +3925,353 @@ export class Game {
   startCinematic(): void {
     if (this.cine.played || this.cine.active) return
     this.cine.played = true
+    // v13.3: banco de pruebas (?posetest=1) — soldados quietos frente a
+    // la cámara para calibrar poses de agarre sin esperar la cinemática
+    if (POSE_TEST) { this.startPoseTest(); return }
     this.cine.kind = 'entry'
     this.cine.title = 'EMERGENCY STRIKE'
-    this.cine.subtitle = 'MERIDIAN STATION 59 · TOTAL EXCLUSION ZONE'
+    this.cine.subtitle = 'OPERACIÓN MERIDIAN · INSERCIÓN AÉREA'
     this.cine.onDone = null
     this.cine.active = true
     this.cine.t0 = performance.now()
-    this.cine.dur = 11   // segundos (updateCamera multiplica por 1000)
+    // v13.3: LANZAMIENTO AÉREO — llega un avión de transporte, el escuadrón
+    // se tira en paracaídas y el héroe aterriza en el punto de despliegue;
+    // después el juego empieza como siempre (mismo endCinematic)
+    this.cine.dur = 14
     const s = this.pos
-    const m = s.x < 0 ? 1 : -1   // espejo según el bando (A: vuela desde el SE · B: desde el NO)
-    this.cine.curve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(m * 62, 30, m * 62),
-      new THREE.Vector3(m * 26, 17, m * 36),
-      new THREE.Vector3(-m * 2, 12, m * 6),        // sobre el mercado central
-      new THREE.Vector3(-m * 40, 9, -m * 2),       // gasolinera / radar
-      new THREE.Vector3(m * 30, 6.5, -m * 30),
-      new THREE.Vector3(s.x + m * 5, 3.0, s.z + m * 8),
-      new THREE.Vector3(s.x, 1.7, s.z),
-    ], false, 'catmullrom', 0.4)
-    this.cine.look = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0, 3, 0),
-      new THREE.Vector3(0, 2.4, 0),
-      new THREE.Vector3(0, 2.2, 0),
-      new THREE.Vector3(-m * 49, 2, 0),
-      new THREE.Vector3(m * 44, 2, -m * 4),
-      new THREE.Vector3(s.x - m * 10, 1.5, s.z - m * 10),
-      new THREE.Vector3(s.x - m * 10, 1.5, s.z - m * 10),
-    ], false, 'catmullrom', 0.4)
+    const m = s.x < 0 ? 1 : -1   // espejo según el bando (A: entra por el SE · B: por el NO)
+    // ---- avión: rumbo fijo atravesando el mapa a 55 m ----
+    const dir = new THREE.Vector3(-m, 0, -m).normalize()
+    const start = new THREE.Vector3(m * 150, 55, m * 150)
+    const { plane, props } = buildDropPlane()
+    plane.position.copy(start)
+    // el modelo mira a -Z (nariz) → orientar -Z al rumbo
+    plane.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir)
+    this.scene.add(plane)
+    this.dropCine = {
+      plane, props, dir,
+      speed: 46,
+      start,
+      troopers: [],
+      hero: null,
+      spawn: new THREE.Vector3(s.x, 0, s.z),
+      over: false,
+      t: 0,
+    }
+    // v13.3: el escuadrón se construye con el rig GLB del soldado. El
+    // parseo del GLB (9,4 MB, ya en caché HTTP tras la pantalla de carga)
+    // tarda ~1-2 s → llega ANTES del primer salto (2,2 s). onSoldierReady
+    // dispara también en error de carga → humanoides de respaldo.
+    const dc = this.dropCine
+    const buildSquad = (): void => {
+      if (!this.dropCine || this.dropCine !== dc || dc.troopers.length) return
+      this.buildDropSquad(dc)
+    }
+    if (isSoldierReady()) buildSquad()
+    else onSoldierReady(buildSquad)
+    if (DBG_CINE) console.log('[cine] drop start dur=', this.cine.dur, 'hero=p9', 'spawn', s.x, s.z)
+    // la cámara la dirige updateDropCine (updateCamera la consulta)
+    this.cine.curve = null
+    this.cine.look = null
     this.minimap.style.opacity = '0'
     useGame.getState().setHud({ cineActive: true })
     this.audio.roundStart()
+    this.audio.planeFlyby(this.cine.dur)
+  }
+
+  /** v13.3: construye el escuadrón de paracaidistas (con rig GLB listo) */
+  private buildDropSquad(dc: { troopers: DropTrooper[], hero: DropTrooper | null, spawn: THREE.Vector3, t: number }): void {
+    const s = dc.spawn
+    const team = this.team
+    // el 1º = HÉROE aterriza EN el spawn con la MISMA arma corta del
+    // jugador → se ve el agarre de la pistola al aterrizar
+    const weapons: WeaponId[] = ['p9', 'mp9', 'aguila', 'cr4', 'ar47', 'p9', 'mp9', 'cr4', 'aguila']
+    for (let i = 0; i < 9; i++) {
+      const hero = i === 0
+      const parts = buildCineSoldier(hero ? team : (Math.random() < 0.5 ? team : (team === 'A' ? 'B' : 'A')), weapons[i], 'stand')
+      // pose de brazos al construir (se restaura al tocar tierra)
+      const armPose = parts.arms
+        ? {
+            s: parts.arms[0].rotation.clone(), t: parts.arms[1].rotation.clone(),
+            fs: parts.forearms ? parts.forearms[0].rotation.clone() : null,
+            ft: parts.forearms ? parts.forearms[1].rotation.clone() : null,
+          }
+        : null
+      const chuteColor = hero ? (team === 'A' ? 0xc79a4a : 0x5a9a6a) : (Math.random() < 0.55 ? 0xd8d3c0 : team === 'A' ? 0xc79a4a : 0x5a9a6a)
+      const canopy = buildParachute(chuteColor)
+      canopy.scale.setScalar(0.02)   // plegado hasta la apertura
+      parts.root.add(canopy)
+      parts.root.visible = false     // aparece al saltar del avión
+      // objetivo: el héroe cae EN el spawn; el resto en anillo 7-16 m
+      const ang = Math.random() * Math.PI * 2
+      const rad = hero ? 0 : 7 + Math.random() * 9
+      const target = hero
+        ? new THREE.Vector3(s.x, 0, s.z)
+        : new THREE.Vector3(s.x + Math.cos(ang) * rad, 0, s.z + Math.sin(ang) * rad)
+      this.scene.add(parts.root)
+      // salto escalonado; si el escuadrón se construyó tarde (esperando el
+      // GLB), la ventana se desplaza para no soltar a los 9 de golpe
+      const jumpAt = Math.max(dc.t + 0.4, 2.2) + i * 0.38
+      dc.troopers.push({
+        parts, canopy,
+        state: 'freefall', stateT: 0,
+        jumpAt,
+        pos: new THREE.Vector3(),
+        vy: 0,
+        target,
+        seed: Math.random() * Math.PI * 2,
+        team,
+        armPose,
+      })
+      if (i === 0) dc.hero = dc.troopers[0]
+    }
+  }
+
+  /** v13.3: banco de pruebas de poses — fila de soldados con cada arma
+   *  frente a una cámara fija (solo con ?posetest=1) */
+  private poseTestSoldiers: CineSoldierParts[] = []
+  private startPoseTest(): void {
+    this.cine.kind = 'entry'
+    this.cine.title = 'POSE TEST'
+    this.cine.subtitle = 'calibración de agarre'
+    this.cine.active = true
+    this.cine.t0 = performance.now()
+    this.cine.dur = 600
+    this.cine.curve = null
+    this.cine.look = null
+    this.minimap.style.opacity = '0'
+    useGame.getState().setHud({ cineActive: true })
+    // v13.3: esperar al rig GLB (mismo gate que el escuadrón de la cinemática)
+    const build = (): void => {
+      if (!this.poseTestSoldiers.length && this.cine.active) this.buildPoseTestRow()
+    }
+    if (isSoldierReady()) build()
+    else onSoldierReady(build)
+  }
+
+  private buildPoseTestRow(): void {
+    const s = this.pos
+    const team = this.team
+    const list: [WeaponId, CinePoseVariant][] = [
+      ['p9', 'stand'], ['aguila', 'stand'], ['ar47', 'stand'], ['mp9', 'stand'],
+      ['p9', 'kneel'], ['ar47', 'kneel'], ['p9', 'scan'],
+    ]
+    list.forEach(([w, v], i) => {
+      const parts = buildCineSoldier(team, w, v)
+      // v13.3: 1,3 m de separación — la fila entera cabe en el encuadre
+      const x = (i - (list.length - 1) / 2) * 1.3
+      parts.root.position.set(s.x + x, 0.02, s.z + 2)
+      parts.root.rotation.y = 0
+      this.scene.add(parts.root)
+      this.poseTestSoldiers.push(parts)
+    })
+  }
+
+  /** v13.3: vista del banco de pruebas — cámara fija frente a los soldados */
+  private poseTestCamera(): void {
+    const s = this.pos
+    // v13.3: 7 m de distancia → todo el ancho de la fila (±3,9 m) en plano
+    this.camera.position.set(s.x, 1.55, s.z + 7)
+    this.camera.up.set(0, 1, 0)
+    this.camera.lookAt(s.x, 1.25, s.z + 2)
+  }
+
+  private endPoseTest(): void {
+    for (const p of this.poseTestSoldiers) this.scene.remove(p.root)
+    this.poseTestSoldiers = []
+  }
+
+  /** v13.3: simulación del lanzamiento aéreo (avión + paracaidistas) */
+  private updateDropCine(dt: number): void {
+    const dc = this.dropCine
+    if (!dc || dc.over) return
+    dc.t += dt                 // reloj simulado (mismo ritmo que la física)
+    const tCine = dc.t
+
+    // ---- avión: avance recto + hélices girando ----
+    if (dc.plane) {
+      dc.plane.position.copy(dc.start).addScaledVector(dc.dir, dc.speed * tCine)
+      dc.plane.position.y = 55 + Math.sin(tCine * 0.7) * 0.6   // leve cabeceo
+      dc.plane.rotation.z = Math.sin(tCine * 0.5) * 0.02
+      for (let i = 0; i < dc.props.length; i++) {
+        dc.props[i].rotation.z = tCine * (38 + (i % 2) * 6)
+      }
+    }
+
+    // ---- paracaidistas ----
+    for (const tr of dc.troopers) {
+      // aún dentro del avión
+      if (!tr.parts.root.visible) {
+        if (tCine >= tr.jumpAt) {
+          tr.parts.root.visible = true
+          // saltar desde el portón trasero-derecho del avión (lateral real
+          // del modelo: +X local rotado con el rumbo)
+          const door = dc.plane ? dc.plane.position.clone() : new THREE.Vector3()
+          door.addScaledVector(dc.dir, 3.4)
+          if (dc.plane) door.addScaledVector(new THREE.Vector3(1, 0, 0).applyQuaternion(dc.plane.quaternion), 1.6)
+          door.y -= 1.4
+          tr.pos.copy(door)
+          tr.vy = -2.2
+          tr.state = 'freefall'
+          tr.stateT = 0
+          this.audio.jump()
+          if (DBG_CINE) console.log('[cine] jump t=', tCine.toFixed(2), 'i', dc.troopers.indexOf(tr))
+        } else continue
+      }
+      tr.stateT += dt
+
+      if (tr.state === 'freefall') {
+        // caída brava: cuerpo inclinado, brazos extendidos
+        tr.vy = Math.max(-21, tr.vy - 9.8 * dt)
+        tr.pos.y += tr.vy * dt
+        // deriva inicial con el avión (frena con el aire)
+        tr.pos.addScaledVector(dc.dir, Math.max(0, 9 - tr.stateT * 9) * dt)
+        const body = tr.parts.body
+        body.rotation.x = Math.min(1.25, tr.stateT * 1.8)
+        // brazos en cruz (alejándose del cuerpo)
+        if (tr.parts.arms) {
+          const spread = Math.min(1, tr.stateT * 2.4)
+          tr.parts.arms[0].rotation.set(0.85, 0, 1.15 * spread)
+          tr.parts.arms[1].rotation.set(0.85, 0, -1.15 * spread)
+        }
+        if (tr.parts.forearms) {
+          tr.parts.forearms[0].rotation.set(-0.5, 0, 0.3)
+          tr.parts.forearms[1].rotation.set(-0.5, 0, -0.3)
+        }
+        // abrir paracaídas tras 1.25 s (o cerca del suelo)
+        if (tr.stateT > 1.25 || tr.pos.y < 26) {
+          tr.state = 'canopy'
+          tr.stateT = 0
+          tr.canopy.scale.setScalar(0.02)
+          this.audio.chuteOpen(this.camera.position.distanceTo(tr.pos))
+          if (DBG_CINE) console.log('[cine] chute t=', tCine.toFixed(2), 'y=', tr.pos.y.toFixed(1))
+        }
+      } else if (tr.state === 'canopy') {
+        // apertura elástica (0.02 → 1 con rebote) + descenso controlado
+        const open = Math.min(1, tr.stateT / 0.65)
+        const elast = 1 + Math.sin(open * Math.PI) * 0.18
+        tr.canopy.scale.setScalar(Math.max(0.02, open * elast))
+        // frenado: vy → -4.4 m/s con suavizado
+        tr.vy += (-4.4 - tr.vy) * Math.min(1, dt * 2.6)
+        tr.pos.y += tr.vy * dt
+        // timón: deriva horizontal hacia el objetivo (paracaídas dirigible)
+        const steer = Math.min(1, dt * 0.55)
+        tr.pos.x += (tr.target.x - tr.pos.x) * steer
+        tr.pos.z += (tr.target.z - tr.pos.z) * steer
+        // vaivén del dosel + balanceo del cuerpo
+        const sway = Math.sin(tCine * 1.3 + tr.seed)
+        tr.canopy.rotation.z = sway * 0.14
+        tr.parts.body.rotation.x = 0.12
+        tr.parts.body.rotation.z = sway * 0.1
+        // brazos arriba de los elevadores
+        if (tr.parts.arms) {
+          tr.parts.arms[0].rotation.set(-0.55, 0, 0.85)
+          tr.parts.arms[1].rotation.set(-0.55, 0, -0.85)
+        }
+        if (tr.pos.y <= 1.55) {
+          // ---- TOQUE DE TIERRA ----
+          tr.state = 'landed'
+          tr.stateT = 0
+          tr.pos.y = 1.55   // el origen del rig queda a la altura de la raíz
+          tr.vy = 0
+          this.audio.land()
+          if (DBG_CINE) console.log('[cine] landed t=', tCine.toFixed(2), 'hero=', tr === dc.hero)
+        }
+      } else if (tr.state === 'landed') {
+        // colapso del dosel + POSE DE COMBATE: restaurar brazos del arma
+        // (los de la pistola vuelven a la empuñadura a dos manos)
+        const collapse = Math.min(1, tr.stateT / 0.8)
+        tr.canopy.scale.setScalar(Math.max(0.01, 0.9 * (1 - collapse)))
+        tr.canopy.rotation.x = Math.PI * 0.4 * collapse
+        tr.canopy.position.y = -collapse * 0.3
+        tr.parts.body.rotation.x = 0
+        tr.parts.body.rotation.z = 0
+        if (tr.armPose && tr.parts.arms && tr.stateT < 0.7) {
+          // v13.3b: restaurar TODOS los ejes + ANTEBRAZOS (el E2E mostró
+          // la mano de apoyo descolocada: y quedaba en 0 de la caída y los
+          // antebrazos nunca volvían a la empuñadura)
+          const k = Math.min(1, tr.stateT / 0.55)
+          const lerpE = (bone: THREE.Object3D, saved: THREE.Euler): void => {
+            bone.rotation.x += (saved.x - bone.rotation.x) * k
+            bone.rotation.y += (saved.y - bone.rotation.y) * k
+            bone.rotation.z += (saved.z - bone.rotation.z) * k
+          }
+          lerpE(tr.parts.arms[0], tr.armPose.s)
+          lerpE(tr.parts.arms[1], tr.armPose.t)
+          if (tr.parts.forearms && tr.armPose.fs && tr.armPose.ft) {
+            lerpE(tr.parts.forearms[0], tr.armPose.fs)
+            lerpE(tr.parts.forearms[1], tr.armPose.ft)
+          }
+        }
+        if (collapse >= 1 && tr.canopy.parent) tr.parts.root.remove(tr.canopy)
+      }
+      tr.parts.root.position.set(tr.pos.x, tr.pos.y - 1.55, tr.pos.z)
+      // orientación: mirando al objetivo (al aterrizar, hacia el campo)
+      const face = tr.state === 'landed' ? tr.target : dc.dir
+      tr.parts.root.rotation.y = Math.atan2(face.x, face.z)
+    }
+
+    // el héroe aterriza en el spawn → marcar el final de la secuencia
+    if (dc.hero && dc.hero.state === 'landed' && dc.hero.stateT > 1.4) dc.over = true
+  }
+
+  /** v13.3: cámara del lanzamiento (la consulta updateCamera) */
+  private dropCineCamera(out: THREE.Vector3, look: THREE.Vector3): void {
+    const dc = this.dropCine
+    if (!dc) return
+    const tCine = dc.t
+    const hero = dc.hero
+    // FASE A (0→3.8 s): persecución del avión — cámara trasera-lateral
+    if (tCine < 3.8) {
+      const k = Math.min(1, tCine / 1.2)     // fundido de entrada suave
+      const planeP = dc.start.clone().addScaledVector(dc.dir, dc.speed * tCine)
+      const back = dc.dir.clone().multiplyScalar(-17)
+      const side = new THREE.Vector3(-dc.dir.z, 0, dc.dir.x).multiplyScalar(9)
+      out.set(
+        planeP.x + back.x + side.x + 4 * (1 - k),
+        Math.min(46, planeP.y - 6 + 6 * (1 - k)),
+        planeP.z + back.z + side.z,
+      )
+      look.copy(planeP).addScaledVector(dc.dir, 8)
+      return
+    }
+    // FASE B (3.8→9.5 s): seguimiento del HÉROE en caída
+    if (tCine < 9.5 && hero && hero.parts.root.visible) {
+      const p = hero.parts.root.position
+      const orbit = tCine * 0.32
+      const r = 9 - Math.min(4, (tCine - 3.8) * 0.6)
+      out.set(
+        p.x + Math.cos(orbit) * r,
+        Math.max(2.2, p.y + 2.2),
+        p.z + Math.sin(orbit) * r,
+      )
+      look.set(p.x, p.y + 1.2, p.z)
+      return
+    }
+    // FASE C (9.5 s→fin): plano de tierra junto al punto de despliegue —
+    // el héroe toca tierra delante de la cámara y queda listo para jugar
+    const sp = dc.spawn
+    const endK = Math.min(1, Math.max(0, (tCine - 9.5) / 2.2))
+    const heroP = hero ? hero.parts.root.position : sp
+    look.set(
+      heroP.x + (sp.x - heroP.x) * 0.3,
+      1.4,
+      heroP.z + (sp.z - heroP.z) * 0.3,
+    )
+    out.set(
+      sp.x + 6.5 - endK * 2.5,
+      2.6 - endK * 0.9,
+      sp.z + 6.5 - endK * 2.5,
+    )
+  }
+
+  /** v13.3: limpia el avión y los paracaidistas */
+  private endDropCine(): void {
+    const dc = this.dropCine
+    if (!dc) return
+    if (dc.plane) this.scene.remove(dc.plane)
+    for (const tr of dc.troopers) this.scene.remove(tr.parts.root)
+    this.dropCine = null
   }
 
   /** cinemática del modo historia (la lanza el director) */
@@ -3819,6 +4321,8 @@ export class Game {
     this.cine.active = false
     this.cine.dialogues = null
     this.endCineBattle()
+    this.endDropCine()   // v13.3: avión y paracaidistas fuera de escena
+    this.endPoseTest()   // v13.3: banco de pruebas también se limpia
     this.minimap.style.opacity = '1'
     useGame.getState().setHud({ cineActive: false })
     const cb = this.cine.onDone
@@ -3853,7 +4357,11 @@ export class Game {
           const x = spec.cx + perp.x * along + dir.x * depth * sgn
           const z = spec.cz + perp.y * along + dir.y * depth * sgn
           const w = weapons[(i + side) % weapons.length]
-          const parts = buildCineSoldier(team, w)
+          // v13.3: pose variada — rodillas/agachado inspeccionando rompen la
+          // fila de latas y dan lectura táctica (francotirador de rodillas, etc.)
+          const r = Math.random()
+          const variant: CinePoseVariant = r < 0.5 ? 'stand' : r < 0.72 ? 'kneel' : r < 0.88 ? 'crouch' : 'scan'
+          const parts = buildCineSoldier(team, w, variant)
           // mirar al bando contrario (el modelo mira a +Z: yaw = atan2(dx,dz))
           // bando A (lado −dir) mira a +dir; bando B (lado +dir) mira a −dir
           parts.root.position.set(x, 0.02, z)
@@ -3863,6 +4371,8 @@ export class Game {
             root: parts.root, body: parts.body, muzzle: parts.muzzle,
             team, weapon: w, fallen: false, fallT: 0,
             phase: Math.random() * Math.PI * 2,
+            head: parts.head, torso: parts.torso,
+            scanAmp: variant === 'scan' ? 0.55 : 0.22 + Math.random() * 0.2,
           })
         }
       }
@@ -3879,6 +4389,16 @@ export class Game {
       s.fallT = Math.min(1, s.fallT + dt * 2.4)
       s.body.rotation.x = Math.PI / 2 * s.fallT
       s.body.position.y = -0.62 * s.fallT
+    }
+    // v13.3: VIDA EN REPOSO — los de pie respiran y escanean el horizonte
+    // (cabeza lenta de lado a lado + micro-vaivén del torso): rompe la
+    // sensación de soldados congelados durante el sobrevuelo
+    const tIdle = now / 1000
+    for (const s of this.cineSoldiers) {
+      if (s.fallen || !s.head) continue
+      const scan = Math.sin(tIdle * 0.55 + s.phase * 2.1)
+      s.head.rotation.y = scan * s.scanAmp
+      if (s.torso) s.torso.rotation.z = Math.sin(tIdle * 0.9 + s.phase) * 0.018
     }
     // disparos: fogonazo + trazadora + sonido lejano
     if (now >= this.cineShotNext) {

@@ -98,6 +98,25 @@ const SOLDIER_AIM = {
   sArm: { x: 1.5, y: 0.43, z: 1.5 },       // hombro apoyo (LeftArm)
   sFore: { x: -0.01, z: 0.05 },            // codo apoyo
 }
+// v13.3 — pose de PISTOLA (p9/aguila): empuñadura a dos manos al pecho,
+// manos JUNTAS en el centro (la de apoyo envuelve la del gatillo).
+// CALIBRADA NUMÉRICAMENTE (descenso por coordenadas sobre el rig real,
+// scripts/calibrate_pistol.py): objetivos mano-gatillo (−0.16, 1.24, 0.38)
+// y mano-apoyo (−0.06, 1.23, 0.34) — separación real 10 cm = envolvencia.
+const SOLDIER_AIM_PISTOL = {
+  tArm: { x: 1.53, y: -0.38, z: -0.72 },   // hombro gatillo → mano (−0.16, 1.24, 0.38)
+  tFore: { x: -0.71, z: -0.4 },            // codo gatillo doblado
+  sArm: { x: 0.95, y: 0.77, z: 1.24 },     // hombro apoyo → mano (−0.06, 1.23, 0.34)
+  sFore: { x: -0.02, z: 0.02 },            // codo apoyo extendido cruzando al centro
+}
+/** v13.3: ¿es un arma corta (empuñadura a una/two manos pegadas)? */
+export function isPistolWeapon(w: WeaponId | null | undefined): boolean {
+  return w === 'p9' || w === 'aguila'
+}
+/** v13.3: pose de apuntado según el arma (pistola vs. larga) */
+function aimPoseFor(w: WeaponId | null | undefined): typeof SOLDIER_AIM {
+  return isPistolWeapon(w) ? SOLDIER_AIM_PISTOL : SOLDIER_AIM
+}
 // Humanoide low-poly (fallback) — pivotes en hombro, brazos hacia el arma:
 //   trigger = arms[0] (armL en x −0.3) · support = arms[1] (armR en x +0.3)
 const HUM_AIM = {
@@ -212,6 +231,21 @@ interface SoldierAssets {
 }
 
 let soldierAssets: SoldierAssets | null = null
+// v13.3: gate de disponibilidad — las cinemáticas construyen soldados con
+// el rig GLB; si se construyen ANTES de que termine el parseo caen al
+// humanoide low-poly (sin poses de agarre). Los consumidores esperan aquí.
+const soldierReadyCbs: Array<() => void> = []
+export function isSoldierReady(): boolean {
+  return !!soldierAssets
+}
+export function onSoldierReady(cb: () => void): void {
+  if (soldierAssets) { cb(); return }
+  soldierReadyCbs.push(cb)
+}
+function flushSoldierReady(): void {
+  const cbs = soldierReadyCbs.splice(0)
+  for (const cb of cbs) { try { cb() } catch { /* consumidor propio */ } }
+}
 
 /** Busca un hueso por nombre dentro del rig (prefijo mixamorig…) */
 function findBone(root: THREE.Object3D, pattern: RegExp): THREE.Object3D | null {
@@ -299,16 +333,25 @@ function buildSoldier(team: Team): THREE.Object3D | null {
 // v6.3 — Soldado estático para las BATALLAS de cinemática
 // (clon del soldado GLB o humanoide low-poly, en pose de
 // apuntado con arma; el motor lo anima con fogonazos/trazas)
+// v13.3 — variantes de pose (de pie / rodillas / agachado /
+// inspeccionando) + refs de huesos para animar en vivo, y pose
+// de PISTOLA cuando el arma es corta (empuñadura correcta).
 // ----------------------------------------------------------
+export type CinePoseVariant = 'stand' | 'kneel' | 'crouch' | 'scan'
 export interface CineSoldierParts {
   root: THREE.Group
   body: THREE.Group
   weaponHolder: THREE.Group
   muzzle: THREE.Object3D | null
   usingSoldier: boolean
+  /** v13.3: huesos (si hay rig mixamo) para las animaciones de cinemática */
+  arms?: [THREE.Object3D, THREE.Object3D]
+  forearms?: [THREE.Object3D, THREE.Object3D]
+  head?: THREE.Object3D
+  torso?: THREE.Object3D
 }
 
-export function buildCineSoldier(team: Team, weapon: WeaponId): CineSoldierParts {
+export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePoseVariant = 'stand'): CineSoldierParts {
   const root = new THREE.Group()
   const body = new THREE.Group()
   root.add(body)
@@ -318,18 +361,37 @@ export function buildCineSoldier(team: Team, weapon: WeaponId): CineSoldierParts
   if (rig) {
     // ---- soldado GLB: pose de APUNTADO estática (aim = 1) ----
     body.add(rig)
+    const AIM = aimPoseFor(weapon)
     const arms = [findBone(rig, /^mixamorigLeftArm_/), findBone(rig, /^mixamorigRightArm_/)]
     const fores = [findBone(rig, /^mixamorigLeftForeArm_/), findBone(rig, /^mixamorigRightForeArm_/)]
-    if (arms[0]) arms[0].rotation.set(SOLDIER_AIM.sArm.x, SOLDIER_AIM.sArm.y, SOLDIER_AIM.sArm.z)
-    if (arms[1]) arms[1].rotation.set(SOLDIER_AIM.tArm.x, SOLDIER_AIM.tArm.y, SOLDIER_AIM.tArm.z)
-    if (fores[0]) fores[0].rotation.set(SOLDIER_AIM.sFore.x, 0, SOLDIER_AIM.sFore.z)
-    if (fores[1]) fores[1].rotation.set(SOLDIER_AIM.tFore.x, 0, SOLDIER_AIM.tFore.z)
+    const head = findBone(rig, /^mixamorigHead_/) ?? null
+    const torso = findBone(rig, /^mixamorigSpine1?_/) ?? null
+    if (arms[0]) arms[0].rotation.set(AIM.sArm.x, AIM.sArm.y, AIM.sArm.z)
+    if (arms[1]) arms[1].rotation.set(AIM.tArm.x, AIM.tArm.y, AIM.tArm.z)
+    if (fores[0]) fores[0].rotation.set(AIM.sFore.x, 0, AIM.sFore.z)
+    if (fores[1]) fores[1].rotation.set(AIM.tFore.x, 0, AIM.tFore.z)
     const legs = [findBone(rig, /^mixamorigLeftUpLeg_/), findBone(rig, /^mixamorigRightUpLeg_/)]
     const knees = [findBone(rig, /^mixamorigLeftLeg_/), findBone(rig, /^mixamorigRightLeg_/)]
-    if (legs[0]) legs[0].rotation.x = -0.14
-    if (legs[1]) legs[1].rotation.x = 0.1
-    if (knees[0]) knees[0].rotation.x = 0.16
-    if (knees[1]) knees[1].rotation.x = 0.06
+    // v13.3: VARIANTE de pose — piernas/torso según el papel del soldado
+    if (variant === 'kneel') {
+      if (legs[0]) legs[0].rotation.x = -1.5
+      if (knees[0]) knees[0].rotation.x = 2.0
+      if (legs[1]) legs[1].rotation.x = -0.35
+      if (knees[1]) knees[1].rotation.x = 0.55
+      body.position.y = -0.34
+    } else if (variant === 'crouch') {
+      if (legs[0]) legs[0].rotation.x = -1.0
+      if (legs[1]) legs[1].rotation.x = -0.78
+      if (knees[0]) knees[0].rotation.x = 1.6
+      if (knees[1]) knees[1].rotation.x = 1.3
+      body.position.y = -0.42
+    } else {
+      // stand / scan: base con ligera separación de pies
+      if (legs[0]) legs[0].rotation.x = -0.14
+      if (legs[1]) legs[1].rotation.x = 0.1
+      if (knees[0]) knees[0].rotation.x = 0.16
+      if (knees[1]) knees[1].rotation.x = 0.06
+    }
     body.add(weaponHolder)
     // IK de una sola pasada: manos tras la pose → posición del arma
     const handT = findBone(rig, /^mixamorigRightHand_/)
@@ -341,9 +403,16 @@ export function buildCineSoldier(team: Team, weapon: WeaponId): CineSoldierParts
       const v2 = new THREE.Vector3().setFromMatrixPosition(handS.matrixWorld)
       body.worldToLocal(v1)
       body.worldToLocal(v2)
+      // v13.3: log de calibración de agarre (?posetest=1)
+      if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('posetest')) {
+        console.log('[pose]', weapon, 'trigger hand', v1.x.toFixed(2), v1.y.toFixed(2), v1.z.toFixed(2),
+          '| support hand', v2.x.toFixed(2), v2.y.toFixed(2), v2.z.toFixed(2))
+      }
       const dir = v2.clone().sub(v1).multiplyScalar(0.8)
       dir.y -= 0.06
-      dir.z += 0.85
+      // v13.3: la pistola apunta al frente — la mano de apoyo está junto a
+      // la del gatillo, no medio metro adelantada como en el rifle
+      dir.z += isPistolWeapon(weapon) ? 1.6 : 0.85
       dir.normalize()
       weaponHolder.position.copy(v1)
       weaponHolder.position.y += 0.02
@@ -351,21 +420,25 @@ export function buildCineSoldier(team: Team, weapon: WeaponId): CineSoldierParts
     } else {
       weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
     }
-  } else {
-    // ---- humanoide low-poly (fallback sin GLB): brazos al arma ----
-    const h = buildHumanoid(team)
-    body.add(h.bodyGroup)
-    h.tag.visible = false
-    h.tagBg.visible = false
-    h.arms[0].rotation.set(HUM_AIM.tArm.x, 0, HUM_AIM.tArm.z)
-    h.arms[1].rotation.set(HUM_AIM.sArm.x, 0, HUM_AIM.sArm.z)
-    // el holder del humanoide ya cuelga de su bodyGroup (movido a body)
-    h.weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
-    h.weaponHolder.rotation.x = -0.06
-    return finalizeCineSoldier(root, body, h.weaponHolder, weapon, false)
+    const parts = finalizeCineSoldier(root, body, weaponHolder, weapon, true)
+    parts.arms = arms as [THREE.Object3D, THREE.Object3D]
+    parts.forearms = fores as [THREE.Object3D, THREE.Object3D]
+    parts.head = head ?? undefined
+    parts.torso = torso ?? undefined
+    return parts
   }
-
-  return finalizeCineSoldier(root, body, weaponHolder, weapon, true)
+  // ---- humanoide low-poly (fallback sin GLB): brazos al arma ----
+  const h = buildHumanoid(team)
+  body.add(h.bodyGroup)
+  h.tag.visible = false
+  h.tagBg.visible = false
+  h.arms[0].rotation.set(HUM_AIM.tArm.x, 0, HUM_AIM.tArm.z)
+  h.arms[1].rotation.set(HUM_AIM.sArm.x, 0, HUM_AIM.sArm.z)
+  if (variant === 'kneel' || variant === 'crouch') body.scale.y = 0.72
+  // el holder del humanoide ya cuelga de su bodyGroup (movido a body)
+  h.weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
+  h.weaponHolder.rotation.x = -0.06
+  return finalizeCineSoldier(root, body, h.weaponHolder, weapon, false)
 }
 
 /** acopla el arma al soporte y devuelve las partes listas */
@@ -404,6 +477,7 @@ export class RemotePlayers {
       gltf => {
         try {
           soldierAssets = prepareSoldier(gltf.scene)
+          flushSoldierReady()
           // sustituir en cascada (un jugador por tick) para repartir el costo
           const pending = [...this.map.values()]
           const step = (): void => {
@@ -415,12 +489,14 @@ export class RemotePlayers {
           step()
         } catch (e) {
           console.error('EMERGENCY STRIKE: error preparando soldier1.glb', e)
+          flushSoldierReady()
         }
       },
       undefined,
       err => {
         // sin GLB → seguimos con los humanoides low-poly
         console.warn('EMERGENCY STRIKE: soldier1.glb no disponible, usando modelo simple', err)
+        flushSoldierReady()
       },
     )
   }
@@ -671,24 +747,26 @@ export class RemotePlayers {
 
         // ---- brazos: reposo ↔ porteo (0.42) ↔ apuntado (1) ----
         // soldado mixamo: gatillo = arms[1] (RightArm, −X) · apoyo = arms[0] (LeftArm, +X)
+        // v13.3: pose PISTOLA cuando el arma es corta — manos juntas al pecho
+        const AIM = aimPoseFor(rp.weaponId)
         const armSprint = sprint * (1 - aim)          // al correr: brazos más abajo
         const effAim = aim * (1 - armSprint * 0.62)
         const sRestX = ARM_REST_X - sPh * 0.45 * (1 - effAim)
         const tRestX = ARM_REST_X + sPh * 0.45 * (1 - effAim)
-        const sAimX = SOLDIER_AIM.sArm.x + sPh * 0.10
-        const tAimX = SOLDIER_AIM.tArm.x - sPh * 0.06
+        const sAimX = AIM.sArm.x + sPh * 0.10
+        const tAimX = AIM.tArm.x - sPh * 0.06
         // bombeo de brazos al esprintar sin arma / con arma baja
         const pump = Math.sin(rp.walkPhase) * swing * 0.5 * armSprint
         rp.arms[0].rotation.x = sRestX + (sAimX - sRestX) * effAim - pump + breath
-        rp.arms[0].rotation.y = SOLDIER_AIM.sArm.y * effAim
-        rp.arms[0].rotation.z = SOLDIER_AIM.sArm.z * effAim
+        rp.arms[0].rotation.y = AIM.sArm.y * effAim
+        rp.arms[0].rotation.z = AIM.sArm.z * effAim
         rp.arms[1].rotation.x = tRestX + (tAimX - tRestX) * effAim + pump + breath + kick * 0.14
-        rp.arms[1].rotation.y = SOLDIER_AIM.tArm.y * effAim
-        rp.arms[1].rotation.z = SOLDIER_AIM.tArm.z * effAim - kick * 0.1
-        rp.forearms[0].rotation.x = FORE_BEND_X + (SOLDIER_AIM.sFore.x - FORE_BEND_X) * effAim
-        rp.forearms[0].rotation.z = SOLDIER_AIM.sFore.z * effAim
-        rp.forearms[1].rotation.x = FORE_BEND_X + (SOLDIER_AIM.tFore.x - FORE_BEND_X) * effAim - kick * 0.2 + armSprint * 0.35
-        rp.forearms[1].rotation.z = SOLDIER_AIM.tFore.z * effAim
+        rp.arms[1].rotation.y = AIM.tArm.y * effAim
+        rp.arms[1].rotation.z = AIM.tArm.z * effAim - kick * 0.1
+        rp.forearms[0].rotation.x = FORE_BEND_X + (AIM.sFore.x - FORE_BEND_X) * effAim
+        rp.forearms[0].rotation.z = AIM.sFore.z * effAim
+        rp.forearms[1].rotation.x = FORE_BEND_X + (AIM.tFore.x - FORE_BEND_X) * effAim - kick * 0.2 + armSprint * 0.35
+        rp.forearms[1].rotation.z = AIM.tFore.z * effAim
         // la cabeza mira donde apunta (pitch) y compensa la inclinación
         rp.head.rotation.x = -state.pitch * 0.5 * (0.4 + 0.6 * aim) - sprint * 0.18
       } else {
