@@ -123,6 +123,58 @@ export function getRepoTextures(): RepoTextures {
 }
 
 // ------------------------------------------------------------
+// v13.2 ANTI-SHIMMER: variantes pre-filtradas para suelos rasantes
+// ------------------------------------------------------------
+// El Asfalto.jpg/Concreto.jpg del usuario traen grano finísimo
+// (piedritas de 2-4 px). Tileados cada 6 m/3 m y vistos en ángulo
+// rasante, ese grano minifica por debajo de Nyquist → el patrón
+// de batido (moiré) queda FIJO EN PANTALLA y "hierve" al caminar
+// (el clásico "se trabán las texturas"). Solución de doble capa:
+//   1) anisotropía 16 (el GL la acota al máximo de la GPU)
+//   2) re-muestrear la imagen a la mitad con un desenfoque suave
+//      (pasa-bajos): mata el ruido de 1-2 px pero conserva grietas,
+//      parches y tono — los mips ya no tienen frecuencias que
+//      revienten en la distancia.
+const ROAD_ANISO = 16
+const roadTexCache = new Map<'asfalto' | 'concreto', THREE.Texture>()
+
+/** re-muestrea la imagen de una textura cargada (pasa-bajos suave) */
+function makeAntiShimmerTex(src: THREE.Texture, size: number, blurPx: number): THREE.Texture | null {
+  const img = src.image as HTMLImageElement | HTMLCanvasElement | null
+  if (!img || !(img.width > 0) || !(img.height > 0)) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  try { ctx.filter = `blur(${blurPx}px)` } catch { /* navegadores sin filter: solo el re-muestreo */ }
+  ctx.drawImage(img, 0, 0, size, size)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.anisotropy = ROAD_ANISO
+  return tex
+}
+
+/**
+ * v13.2: textura de calle/acera lista para planos rasantes.
+ * Devuelve la variante pre-filtrada (cachada) o, si la base aún no
+ * cargó, null (el llamador mantiene su fallback).
+ */
+export function getRoadTex(kind: 'asfalto' | 'concreto'): THREE.Texture | null {
+  const c = roadTexCache.get(kind)
+  if (c) return c
+  const base = repoTextures[kind]
+  if (!base) return null
+  const tex = makeAntiShimmerTex(base, 512, kind === 'asfalto' ? 1.2 : 1.0)
+  if (!tex) return null
+  roadTexCache.set(kind, tex)
+  return tex
+}
+
+// ------------------------------------------------------------
 // Plantilla del árbol (geometrías fusionadas por material)
 // ------------------------------------------------------------
 export interface TreeTemplate {
@@ -261,7 +313,9 @@ export function preloadAssets(opts?: { trees?: boolean; weapons?: boolean; soldi
         tex => {
           tex.colorSpace = THREE.SRGBColorSpace
           tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-          tex.anisotropy = 4
+          // v13.2: 8 como base (antes 4) — muros y suelos en ángulo se
+          // ven nítidos sin hervir; el GL acota al máximo de la GPU
+          tex.anisotropy = 8
           if (repeat) tex.repeat.set(repeat[0], repeat[1])
           resolve(tex)
         },

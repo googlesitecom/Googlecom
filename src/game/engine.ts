@@ -27,7 +27,7 @@ import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture
 import { useGame } from './store'
 import { useChat } from './chat'
 import { NetClient } from './net'
-import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
+import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, getRoadTex, onWeaponGLBsReady } from './assets'
 import { StoryDirector, type StorySyncData, type StoryRemoteMsg } from './story'
 import { voiceChat, useVoice, type RemotePos } from './voice'
 
@@ -1198,9 +1198,11 @@ export class Game {
 
     // anisotropía al máximo: los suelos y muros en ángulo se ven nítidos
     // (coste de GPU ~nulo, gran mejora visual en perspectiva)
+    // v13.2: 16 (antes 8) — misma receta anti-shimmer que las texturas
+    // reales del usuario
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy()
     for (const key of Object.keys(texs) as MatKey[]) {
-      texs[key].anisotropy = Math.min(8, maxAniso)
+      texs[key].anisotropy = Math.min(16, maxAniso)
     }
 
     // suelo (ligeramente satinado para reflejar el cielo del atardecer)
@@ -1960,7 +1962,8 @@ export class Game {
       const tex = (arena ?? piso)!.clone()
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping
       tex.repeat.set(arena ? 46 : 58, arena ? 46 : 58)
-      tex.anisotropy = 8
+      // v13.2: 16 (antes 8) — el suelo también se ve en rasante
+      tex.anisotropy = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
       tex.needsUpdate = true
       mat.map = tex
       mat.color.set(arena ? 0xffffff : 0xb9ad93)
@@ -2038,17 +2041,27 @@ export class Game {
     // v13: calles de la ciudad — asfalto real + aceras de hormigón
     // (las UVs de los planos ya se escalan por dimensión en buildStreets:
     // UNA textura compartida, densidad constante, cero clonado por malla)
+    // v13.2 ANTI-SHIMMER: el grano finísimo del Asfalto.jpg/Concreto.jpg
+    // hervía fijo en pantalla al caminar (moiré) → variante pre-filtrada
+    // (512 + pasa-bajos suave) + anisotropía 16. Fallback: la base con
+    // la anisotropía elevada.
     if (asfalto && this.streetMats) {
+      const maxAniso = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
       asfalto.wrapS = asfalto.wrapT = THREE.RepeatWrapping
       asfalto.repeat.set(1, 1)
-      this.streetMats.asphalt.map = asfalto
+      asfalto.anisotropy = maxAniso
+      asfalto.needsUpdate = true
+      const roadTex = getRoadTex('asfalto') ?? asfalto
+      this.streetMats.asphalt.map = roadTex
       this.streetMats.asphalt.color.set(0xffffff)
       this.streetMats.asphalt.needsUpdate = true
     }
     if (concreto && this.streetMats) {
-      const swTex = concreto.clone()
+      const maxAniso = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
+      const swTex = getRoadTex('concreto') ?? concreto.clone()
       swTex.wrapS = swTex.wrapT = THREE.RepeatWrapping
       swTex.repeat.set(1, 1)
+      if (swTex !== concreto) swTex.anisotropy = maxAniso
       swTex.needsUpdate = true
       this.streetMats.sidewalk.map = swTex
       this.streetMats.sidewalk.color.set(0xffffff)

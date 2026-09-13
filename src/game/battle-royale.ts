@@ -45,7 +45,7 @@ import { useChat, startAmbientChat, pushNetChatLine } from './chat'
 import { esNet, useBrNet, type BrQueueOp } from './esnet'
 import { getAudio } from './audio'
 import {
-  getRepoTextures, getTreeTemplate, preloadAssets,
+  getRepoTextures, getTreeTemplate, preloadAssets, getRoadTex,
   buildGLBWeapon, ensureWeaponGLB, onWeaponGLBsReady,
   type TreeTemplate,
 } from './assets'
@@ -244,6 +244,8 @@ function makeAsphaltTexture(): THREE.Texture {
   const tex = new THREE.CanvasTexture(c)
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
   tex.colorSpace = THREE.SRGBColorSpace
+  // v13.2: anisotropía para el fallback de canvas (grano 1.5 px)
+  tex.anisotropy = 8
   return tex
 }
 
@@ -1740,13 +1742,15 @@ export class BattleRoyaleGame {
   private applyRepoTexToBr(): boolean {
     const repo = getRepoTextures()
     if (!repo.pared || !repo.piso) return false
+    // v13.2: asfalto/concreto de SUELO (carreteras/aceras) van por la
+    // variante anti-shimmer (el grano fino hervía en rasante)
     const src = (kind: string): THREE.Texture | null =>
       kind === 'wall' ? repo.pared
       : kind === 'roof' ? repo.piso
       : kind === 'pasto' ? repo.pasto
       : kind === 'arena' ? repo.arena
-      : kind === 'asfalto' ? repo.asfalto
-      : kind === 'concreto' ? repo.concreto
+      : kind === 'asfalto' ? (getRoadTex('asfalto') ?? repo.asfalto)
+      : kind === 'concreto' ? (getRoadTex('concreto') ?? repo.concreto)
       : kind === 'roca' ? repo.roca
       : kind === 'contenedor' ? repo.contenedor
       : kind === 'madera' ? repo.madera
@@ -1764,6 +1768,8 @@ export class BattleRoyaleGame {
         t = base.clone()
         t.wrapS = t.wrapT = THREE.RepeatWrapping
         t.repeat.set(rx, ry)
+        // v13.2: el clone() arrastra la anisotropía de la base (16 para
+        // las variantes anti-shimmer, 8 para el resto)
         t.needsUpdate = true
         cloneCache.set(key, t)
       }
@@ -1812,10 +1818,12 @@ export class BattleRoyaleGame {
     // Si la textura aún no llegó: canvas clásico y parche force al llegar.
     const roadMat = new THREE.MeshStandardMaterial({ roughness: 0.94 })
     const repoAsphalt = getRepoTextures().asfalto
-    if (repoAsphalt) {
-      repoAsphalt.wrapS = repoAsphalt.wrapT = THREE.RepeatWrapping
-      repoAsphalt.repeat.set(1, 1)
-      roadMat.map = repoAsphalt
+    // v13.2: variante anti-shimmer para las carreteras rasantes
+    const roadTex = getRoadTex('asfalto') ?? repoAsphalt
+    if (roadTex) {
+      roadTex.wrapS = roadTex.wrapT = THREE.RepeatWrapping
+      if (roadTex === repoAsphalt) roadTex.repeat.set(1, 1)
+      roadMat.map = roadTex
       roadMat.color.set(0xffffff)
       roadMat.userData.sharedMap = true
     } else {
