@@ -125,6 +125,8 @@ interface BrState {
   buildMode: BrBuildKind | null
   /** v12: HP de la pieza fantasma (preview) — ya colocada no se muestra */
   buildPlaceable: boolean
+  /** v13.6: edición Fortnite activa ([F] — malla de celdas sobre la pieza) */
+  editing: boolean
 
   set: (p: Partial<BrState>) => void
   addFeed: (text: string, mine: boolean) => void
@@ -173,6 +175,7 @@ const initial = {
   mats: 0,
   buildMode: null,
   buildPlaceable: true,
+  editing: false,
 }
 
 export const useBr = create<BrState>((set) => ({

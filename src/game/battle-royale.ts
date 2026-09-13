@@ -310,7 +310,10 @@ const GRID = 4                // m per build cell
 const RISE = 3                // m of vertical grid per level
 const BUILD_COST = 10         // materials per piece
 const BUILD_MAX = 120         // max pieces per player
-const MATS_START = 300        // starting materials
+// v13.6: economía estilo Fortnite — empiezas SIN materiales y los GANAS
+// cosechando (pico en árboles/muros), abriendo cajas o eliminando (antes
+// empezabas con 300: construir no tenía mérito)
+const MATS_START = 0
 const MATS_PER_KILL = 60      // materials per elimination
 const MATS_CRATE = 80         // supply crate bonus
 const MATS_AMMO = 40          // ammo box bonus
@@ -339,6 +342,11 @@ interface BuildPiece {
   owner: string
   mine: boolean
   dead: boolean
+  /** v13.6 EDIT: bits de celdas que QUEDAN tras editar (null = pieza
+   *  completa). Muro: 2 columnas × 3 filas (idx = col + fila*2) → 0-5;
+   *  piso: 2×2 (idx = colX + filaZ*2) → 0-3. Las celdas quitadas son
+   *  agujeros reales: dejan pasar balas, bots y al jugador. */
+  quads: number | null
 }
 /** collision box registered by a build piece (bullets always, walls also block movement) */
 interface BuildCol {
@@ -398,7 +406,20 @@ interface BrBot {
   tint: number
   legPhase: number
   deadAt: number
-  dropAt: number     // becomes active when landed
+  // v13.6: los bots CAEN DEL AVIÓN como el jugador — máquina de estados
+  // plane → fall (caída + planeo con canopy) → down (aterriza y saquea)
+  st: 'plane' | 'fall' | 'down'
+  jumpT: number             // fracción del recorrido del avión en la que salta
+  fallT: number             // s transcurridos cayendo
+  fallDur: number           // duración total de la caída
+  fallFromX: number; fallFromZ: number
+  /** v13.6: sin arma al aterrizar — saquea y LUEGO porta esta arma */
+  willWeapon: WeaponId
+  lootUntil: number         // reloj del juego: deja de saquear y se arma
+  /** canopy del planeo (hija del rig → se limpia sola al dispose) */
+  canopy: THREE.Group | null
+  netGlide: boolean         // follower: bit de red «planeo abierto»
+  ty: number                // follower: y de red durante la caída
   landed: boolean
   dropX: number; dropZ: number
   /** v11 net puppet fields (followers interpolate toward these) */
@@ -649,6 +670,20 @@ export class BattleRoyaleGame {
   private clouds: THREE.Sprite[] = []
   private sunSprite: THREE.Sprite | null = null
 
+  // ---- v13.6: sombras que siguen al jugador + anisotropía + EDICIÓN ----
+  /** sol del mapa — su cámara de sombras SIGUE al jugador (antes solo
+   *  cubría el centro de la isla: fuera de ±130 m no había sombras) */
+  private mapSun: THREE.DirectionalLight | null = null
+  /** anisotropía de textura (8× o el máximo del GPU) — mata el blur de
+   *  suelo/carreteras vistos en ángulo rasante */
+  private aniso = 1
+  // edición estilo Fortnite: pieza propia + máscara borrador (bits de celda)
+  private editPiece: BuildPiece | null = null
+  private editMask = 0
+  private editHover = -1
+  private editGhost: THREE.Group | null = null
+  private editMats: THREE.MeshBasicMaterial[] = []
+
   constructor(canvas: HTMLCanvasElement, minimapCanvas: HTMLCanvasElement) {
     this.canvas = canvas
     this.minimapCanvas = minimapCanvas
@@ -671,7 +706,7 @@ export class BattleRoyaleGame {
           : '',
     })
 
-    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: q !== 'baja' })
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: q !== 'baja', powerPreference: 'high-performance' })
     // v13.5: 4K — ULTRA renderiza a la resolución NATIVA del dispositivo
     // (hasta 3× DPR: una pantalla 4K se usa entera) + sombras 4096
     this.renderer.setPixelRatio(
@@ -684,6 +719,9 @@ export class BattleRoyaleGame {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = q === 'baja' ? 1.0 : q === 'media' ? 1.04 : q === 'alta' ? 1.09 : 1.12
+    // v13.6: filtrado anisotrópico 8× (o el máx. del GPU) para TODAS las
+    // texturas clonadas — el suelo y las carreteras dejan de verse borrosos
+    this.aniso = Math.max(1, Math.min(8, this.renderer.capabilities.getMaxAnisotropy()))
 
     this.camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 0.1, 900)
 
@@ -693,9 +731,11 @@ export class BattleRoyaleGame {
     // ---- MAP SCENE (built progressively) ----
     this.mapScene = new THREE.Scene()
     this.mapScene.background = new THREE.Color(0x0c1420)
+    // v13.6: la niebla ahora es BRUMA CÁLIDA DEL ATARDECER (antes azul
+    // casi negro: el horizonte quedaba sucio y aplastaba la profundidad)
     this.mapScene.fog = new THREE.FogExp2(
-      0x0c1420,
-      q === 'baja' ? 0.0032 : q === 'media' ? 0.0024 : q === 'alta' ? 0.0016 : 0.0013,
+      0x8a5f3e,
+      q === 'baja' ? 0.0019 : q === 'media' ? 0.0014 : q === 'alta' ? 0.0009 : 0.0007,
     )
     this.buildMapSky(this.mapScene)
     this.buildMapLights(this.mapScene, q)
@@ -799,8 +839,20 @@ export class BattleRoyaleGame {
       const kind = BUILD_KEYS[e.code]
       this.setBuildMode(this.buildMode === kind ? null : kind)
     }
+    // v13.6: EDICIÓN estilo Fortnite — F entra en edición y también
+    // CONFIRMA (como Fortnite): muro 2×3 celdas / piso 2×2 — LMB alterna
+    // celdas, RMB/ESC cancela. Agujeros reales: puertas/ventanas/huecos.
+    // (si estás en modo construcción, F lo suelta primero: UN solo gesto)
+    if (e.code === 'KeyF' && this.phase === 'live' && !this.inVehicle) {
+      if (this.editPiece) this.applyEdit()
+      else {
+        if (this.buildMode) this.setBuildMode(null)
+        this.enterEditMode()
+      }
+    }
     // v11.2: ESC opens the SAME pause menu as the normal modes
     if (e.code === 'Escape') {
+      if (this.editPiece) { this.cancelEdit(); return }   // v13.6: ESC primero cancela la edición
       if (this.paused) {
         this.setPaused(false)
         this.requestLock()
@@ -836,11 +888,15 @@ export class BattleRoyaleGame {
     if (this.paused) return
     if (e.button === 0) {
       this.mouseHeld = true
+      // v13.6: en EDICIÓN el clic ALTERNA la celda apuntada (no dispara)
+      if (this.editPiece && this.phase === 'live') { this.toggleEditQuad(); return }
       // v12: en modo construcción el clic COLOCA la pieza (turbo al mantener)
       if (this.buildMode && this.phase === 'live' && !this.inVehicle) { this.tryPlaceBuild(); return }
       this.tryShoot()
     }
     if (e.button === 2) {
+      // v13.6: RMB en edición → cancelar
+      if (this.editPiece) { this.cancelEdit(); return }
       // v12: RMB con construcción activa → salir del modo (como soltar la herramienta)
       if (this.buildMode) { this.setBuildMode(null); return }
       this.ads = true      // v11.2: aim down sights
@@ -862,6 +918,16 @@ export class BattleRoyaleGame {
   private onLockChange = (): void => {
     this.locked = document.pointerLockElement === this.canvas
     if (this.locked && this.paused) this.setPaused(false)   // resume on re-lock
+    // v13.6: cuando el navegador LIBERA el puntero (ESC en un navegador
+    // real NO entrega keydown — el propio navegador se lo queda para salir
+    // del pointer-lock), el juego entra en pausa EXACTAMENTE como los
+    // modos normales → menú con PERFIL/CONTROLES/CONFIGURACIÓN.
+    // Antes: quedaba el overlay "clic para jugar" y jamás se veía el menú.
+    else if (!this.locked && !this.paused
+      && (this.phase === 'live' || this.phase === 'plane' || this.phase === 'freefall')
+      && !this.inVehicle) {
+      this.setPaused(true)
+    }
   }
   private onResize = (): void => {
     if (this.disposed) return
@@ -1625,6 +1691,11 @@ export class BattleRoyaleGame {
   private buildMapLights(scene: THREE.Scene, eff: string): void {
     const sun = new THREE.DirectionalLight(0xffcf9e, eff === 'baja' ? 1.25 : 1.5)
     sun.position.set(-120, 150, -60)
+    // v13.6: el objetivo del sol es MÓVIL — la cámara ortográfica de sombras
+    // viaja con el jugador para que TODA la isla tenga sombras nítidas
+    sun.target.position.set(0, 0, 0)
+    scene.add(sun.target)
+    this.mapSun = sun
     scene.add(sun)
     scene.add(new THREE.HemisphereLight(0x9db8d0, 0x4a4636, eff === 'baja' ? 0.55 : eff === 'media' ? 0.68 : 0.8))
     if (eff !== 'baja') {
@@ -1710,6 +1781,7 @@ export class BattleRoyaleGame {
         const t = pasto.clone()
         t.wrapS = t.wrapT = THREE.RepeatWrapping
         t.repeat.set(112, 112)   // 560 m / 112 ≈ baldosa de 5 m
+        t.anisotropy = this.aniso   // v13.6: grano del pasto nítido en rasante
         t.needsUpdate = true
         groundMat.map = t
         groundMat.userData.sharedMap = true
@@ -1863,8 +1935,9 @@ export class BattleRoyaleGame {
         t = base.clone()
         t.wrapS = t.wrapT = THREE.RepeatWrapping
         t.repeat.set(rx, ry)
-        // v13.2: el clone() arrastra la anisotropía de la base (16 para
-        // las variantes anti-shimmer, 8 para el resto)
+        // v13.6: anisotropía en TODAS las réplicas — suelo/carreteras
+        // nítidos en ángulo rasante (antes se veían borrosos = "gráficos malos")
+        t.anisotropy = this.aniso
         t.needsUpdate = true
         cloneCache.set(key, t)
       }
@@ -3068,7 +3141,10 @@ export class BattleRoyaleGame {
         z: dropZ,
         yaw: brand(0, Math.PI * 2),
         hp: 100,
-        weapon: WEAPON_POOL[Math.floor(brand(0, WEAPON_POOL.length))],
+        // v13.6: el bot cae DESARMADO del avión y saquea su arma al
+        // aterrizar (como el jugador) — antes aparecía ya armado
+        weapon: 'pico',
+        willWeapon: WEAPON_POOL[Math.floor(brand(0, WEAPON_POOL.length))],
         // v10: los operadores también portan armas con rareza (daño escalado)
         rarity: rollBrRarity(0, brnd),
         destX: anchor.x + brand(-8, 8),
@@ -3090,7 +3166,17 @@ export class BattleRoyaleGame {
         tint: i % (BR_TINTS.length - 1),
         legPhase: brand(0, 10),
         deadAt: 0,
-        dropAt: brand(1, 4),
+        // v13.6: saltan del avión en puntos distintos del recorrido
+        st: 'plane',
+        jumpT: brand(0.08, 0.78),
+        fallT: 0,
+        fallDur: brand(11, 19),
+        fallFromX: dropX,
+        fallFromZ: dropZ,
+        lootUntil: 0,
+        canopy: null,
+        netGlide: false,
+        ty: 0,
         landed: false,
         dropX,
         dropZ,
@@ -3374,6 +3460,9 @@ export class BattleRoyaleGame {
         b.rig.root.position.copy(pos)
         b.rig.root.rotation.y = yaw
         this.mapScene.add(b.rig.root)
+        // v13.6: el canopy vivía en el rig viejo (ya disposed) — se recrea
+        // en el próximo frame de updateBotDrops si el bot sigue cayendo
+        b.canopy = null
       }
       const w = walkersPend.shift()
       if (w && !w.rig.usingSoldier) {
@@ -3490,18 +3579,28 @@ export class BattleRoyaleGame {
         this.followerBot(b, dt)
         continue
       }
-      // landing delay after the player jumps
-      if (!b.landed) {
-        b.dropAt -= dt
-        if (b.dropAt <= 0) {
-          b.landed = true
-          b.y = terrainH(b.x, b.z)
-          this.ensureBotMesh(b)
+      // v13.6: la caída la anima updateBotDrops() (avión → planeo → suelo)
+      if (!b.landed) continue
+      // v13.6: al aterrizar el bot SAQUEA unos segundos (desarmado, como el
+      // jugador) y luego arma SU arma — los bots ya no nacen disparando
+      if (b.weapon === 'pico' && b.willWeapon && this.clock >= b.lootUntil && b.lootUntil > 0) {
+        b.weapon = b.willWeapon
+        b.nextShotAt = t + rand(this.botSkill().settle, this.botSkill().settle * 1.4)
+        if (b.rig) {
+          b.rig.weaponId = b.willWeapon
+          this.rebuildRigWeapon(b.rig)
         }
-        continue
       }
-      // --- think ---
-      if (t > b.thinkAt) {
+      const looting = this.clock < b.lootUntil
+      if (looting) {
+        // sin objetivos mientras saquea — se limita a moverse hacia su POI
+        b.targetBot = -1
+        b.targetPlayer = false
+        b.targetOp = null
+      }
+      // --- think --- (v13.6: mientras saquea no adquiere objetivos)
+      const hadTarget = b.targetBot >= 0 || b.targetPlayer || !!b.targetOp
+      if (!looting && t > b.thinkAt) {
         // v13.5: cadencia de reacción = BOT_SKILL.react (misma que modos normales)
         b.thinkAt = t + rand(this.botSkill().react[0], this.botSkill().react[1])
         // find target: player, a REAL operator or the nearest bot within 62 m
@@ -3526,6 +3625,12 @@ export class BattleRoyaleGame {
         }
         b.targetBot = best
         b.targetPlayer = targetPlayer
+        // v13.6 NERF: al ADQUIRIR un objetivo nuevo el bot necesita "asentar
+        // la mira" (BOT_SKILL.settle: 2,6 s en fácil / 1,5 s en normal) —
+        // antes disparaban en el mismo tick en que te veían
+        if (!hadTarget && (best >= 0 || targetPlayer || b.targetOp)) {
+          b.nextShotAt = Math.max(b.nextShotAt, t + rand(this.botSkill().settle, this.botSkill().settle * 1.5))
+        }
         // outside the storm → run to the circle center
         const dC = Math.hypot(b.x - this.stormCX, b.z - this.stormCZ)
         if (dC > this.stormR * 0.92) {
@@ -3556,36 +3661,53 @@ export class BattleRoyaleGame {
         if (d < Math.max(b.seeDist, 30) && target) {
           // tracer toward the target + shot sound (distance-based)
           const from = new THREE.Vector3(b.x, b.y + 1.4, b.z)
-          const to = new THREE.Vector3(tx, terrainH(tx, tz) + 1.2, tz)
+          // v13.6: LOS COMPLETO del bot → jugador: piezas CONSTRUIDAS (muros,
+          // pisos, rampas) Y edificios del mapa. Antes las balas de los bots
+          // atravesaban cualquier estructura y el parapeto no servía de nada.
+          const ty = b.targetPlayer ? this.py - 0.35 : terrainH(tx, tz) + 1.2
+          const los = this.botLosBlock(b.x, b.y + 1.4, b.z, tx, ty, tz)
+          let to = new THREE.Vector3(tx, ty, tz)
+          if (los) {
+            // la bala muere en la estructura — la trazadora se corta ahí
+            to = new THREE.Vector3(
+              b.x + (tx - b.x) * los.t,
+              (b.y + 1.4) + (ty - (b.y + 1.4)) * los.t,
+              b.z + (tz - b.z) * los.t,
+            )
+          }
           this.spawnTracer(from, to)
           if (b.targetPlayer || b.targetOp) {
             const distToPlayer = Math.hypot(this.px - b.x, this.pz - b.z)
             getAudio().gunshot(WEAPONS[b.weapon].sound, clamp(distToPlayer / 6, 0, 60))
             this.pings.push({ x: b.x, z: b.z, t: 2 })
-            const hitChance = b.accuracy * (1 - d / 78) * (this.movingFast() ? 0.7 : 1)
-            if (Math.random() < hitChance) {
+            // v13.6: nerf — la puntería decae con la distancia según el
+            // ALCANCE DE VISIÓN del bot (antes 78 m fijos: acertaban de lejos
+            // igual que de cerca) y el objetivo en movimiento los desconcentra
+            const hitChance = b.accuracy * (1 - d / Math.max(42, b.seeDist))
+              * (this.movingFast() ? 0.62 : 1)
+              * (this.onGround ? 1 : 0.75)
+            if (los) {
+              // impactó la cobertura: la estructura absorbe el daño
+              if (los.build) this.damageBuild(los.build, 9, false)
+              if (Math.random() < 0.3) getAudio().impact(clamp(d / 8, 0, 30))
+            } else if (Math.random() < hitChance) {
               // v10: el daño del bot escala con la rareza de SU arma
               const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
               // v13.5: daño escalado por BOT_SKILL.dmg (fácil = ×0.38)
-              const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult * b.dmgMult
+              // v13.6: tope de 26 por impacto (un awp338 de bot ya no pega 45)
+              const dmg = Math.min(26, rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult * b.dmgMult)
               if (b.targetPlayer) {
-                // v12: player-built WALLS soak bot fire — building is real cover
-                const wall = this.wallOnSegment(b.x, b.z, b.y + 1.4, this.px, this.pz, this.py - 0.35)
-                if (wall) {
-                  this.damageBuild(wall.piece, dmg * 0.8, false)
-                } else {
-                  this.damagePlayer(dmg, b.name)
-                }
+                this.damagePlayer(dmg, b.name)
               } else if (b.targetOp) {
                 // v11: the damage lands on the REAL operator's client
                 esNet.brPublishEv({ ty: 'hit', o: myOid(), tgt: b.targetOp, by: '', byN: b.name, dmg: R1(dmg), w: b.weapon })
               }
             }
           } else {
-            // bot vs bot: probabilistic damage
+            // bot vs bot: probabilistic damage (v13.6: también respetan el LOS)
             const victim = this.bots.find(o => o.id === b.targetBot)
-            if (victim && victim.alive) {
-              const hitChance = b.accuracy * (1 - d / 78)
+            if (victim && victim.alive && !los) {
+              const hitChance = b.accuracy * (1 - d / Math.max(42, b.seeDist))
               if (Math.random() < hitChance) {
                 const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
                 victim.hp -= rand(9, 16) * rarMult * b.dmgMult
@@ -3656,15 +3778,191 @@ export class BattleRoyaleGame {
       }
     }
     // v11: the leader broadcasts the bot states (~7 Hz) so every client
-    // sees the same match
+    // sees the same match (v13.6: flags + y de la caída vía publishBotStates)
     if (this.botLeader && this.matchId && !this.practice && t - this.botsPubAt > 140) {
-      this.botsPubAt = t
-      const bs: number[][] = []
-      for (const b of this.bots) {
-        bs.push([b.id, R1(b.x), R1(b.z), R2(b.yaw), (b.alive ? 1 : 0) | (b.landed ? 2 : 0) | (b.moving ? 4 : 0)])
-      }
-      esNet.brPublishBots(JSON.stringify({ bs }))
+      this.publishBotStates(t)
     }
+  }
+
+  // ----------------------------------------------------------
+  // v13.6 — BOTS QUE CAEN DEL AVIÓN (como el jugador)
+  // st: 'plane' (dentro del avión) → 'fall' (caída libre + planeo con
+  // canopy) → 'down' (aterriza, saquea 3-8 s y recién entonces arma).
+  // Corre en TODOS los clientes: líder/práctica lo simula, los followers
+  // interpolan la pose de red (bit 8 + y opcional en el snapshot).
+  // ----------------------------------------------------------
+  private updateBotDrops(dt: number): void {
+    if (this.phase !== 'plane' && this.phase !== 'freefall' && this.phase !== 'live') return
+    const t = performance.now()
+    for (const b of this.bots) {
+      if (!b.alive || b.st === 'down') continue
+      // ---- follower: la pose la manda el líder ----
+      if (!this.botLeader && !this.practice) {
+        if (b.st === 'fall') {
+          const dx = b.tx - b.x, dz = b.tz - b.z
+          const dl = Math.hypot(dx, dz)
+          if (dl > 0.05) {
+            const step = Math.min(dl, dt * 34)
+            b.x += (dx / dl) * step
+            b.z += (dz / dl) * step
+          }
+          b.y += (b.ty - b.y) * Math.min(1, dt * 10)
+          b.yaw += (b.tyaw - b.yaw) * Math.min(1, dt * 10)
+          if (b.rig) {
+            b.rig.root.position.set(b.x, b.y, b.z)
+            b.rig.root.rotation.y = b.yaw
+          }
+          this.botCanopy(b, b.netGlide)
+        }
+        continue
+      }
+      // ---- líder/práctica: simulación determinista ----
+      if (b.st === 'plane') {
+        const k = this.planeT / Math.max(0.01, this.planeDur)
+        const canJump = this.phase !== 'plane' || k >= b.jumpT
+        if (!canJump) continue
+        // punto de salto: su jumpT (o donde va el avión si ya pasó)
+        const jk = this.phase === 'plane' ? Math.min(b.jumpT, Math.max(0.02, k)) : b.jumpT
+        b.st = 'fall'
+        b.fallT = 0
+        b.fallFromX = this.planeA.x + (this.planeB.x - this.planeA.x) * jk
+        b.fallFromZ = this.planeA.z + (this.planeB.z - this.planeA.z) * jk
+        b.x = b.fallFromX
+        b.z = b.fallFromZ
+        b.y = 150
+        b.tx = b.x
+        b.tz = b.z
+        this.ensureBotDropMesh(b)
+      }
+      if (b.st !== 'fall') continue
+      b.fallT += dt
+      const u = clamp(b.fallT / b.fallDur, 0, 1)
+      // dos fases como el jugador: caída libre rápida → planeo lento
+      const groundY = terrainH(b.dropX, b.dropZ)
+      const alt0 = Math.max(0, 150 - groundY)
+      let yFrac: number
+      if (u < 0.55) yFrac = 1 - (u / 0.55) * 0.72
+      else yFrac = 0.28 * (1 - (u - 0.55) / 0.45)
+      b.y = groundY + alt0 * Math.max(0, yFrac)
+      const s = u * u * (3 - 2 * u)     // smoothstep hacia el objetivo
+      b.x = b.fallFromX + (b.dropX - b.fallFromX) * s
+      b.z = b.fallFromZ + (b.dropZ - b.fallFromZ) * s
+      b.tx = b.x
+      b.tz = b.z
+      b.ty = b.y
+      b.yaw = Math.atan2(b.dropX - b.fallFromX, b.dropZ - b.fallFromZ)
+      b.tyaw = b.yaw
+      if (b.rig) {
+        b.rig.root.position.set(b.x, b.y, b.z)
+        b.rig.root.rotation.y = b.yaw
+        // pose de salto: cuerpo inclinado hacia delante
+        b.rig.body.rotation.x = u < 0.55 ? -0.55 : -0.12
+      }
+      this.botCanopy(b, u >= 0.5)
+      if (u >= 1) {
+        b.st = 'down'
+        b.landed = true
+        b.y = groundY
+        b.lootUntil = this.clock + 3 + brnd() * 5
+        this.botCanopy(b, false)
+        if (b.rig) b.rig.body.rotation.x = 0
+        this.ensureBotMesh(b)
+      }
+    }
+    // el líder también publica durante avión/caída (los followers ven caer bots)
+    if (this.botLeader && this.matchId && !this.practice && t - this.botsPubAt > 140) {
+      this.publishBotStates(t)
+    }
+  }
+
+  /** publica el estado de los bots (v13.6: +bit caída/bit armado/bit planeo + y) */
+  private publishBotStates(t: number): void {
+    this.botsPubAt = t
+    const bs: number[][] = []
+    for (const b of this.bots) {
+      const bits = (b.alive ? 1 : 0) | (b.landed ? 2 : 0) | (b.moving ? 4 : 0)
+        | (b.st === 'fall' ? 8 : 0) | (b.weapon !== 'pico' ? 16 : 0)
+        | (b.canopy ? 32 : 0)
+      const row: number[] = [b.id, R1(b.x), R1(b.z), R2(b.yaw), bits]
+      if (b.st === 'fall') row.push(R1(b.y))
+      bs.push(row)
+    }
+    esNet.brPublishBots(JSON.stringify({ bs }))
+  }
+
+  /** rig del bot que cae (sin arma — el arma llega al saquear) */
+  private ensureBotDropMesh(b: BrBot): void {
+    if (b.rig) return
+    const rig = this.buildBotBody(b.tint, 'pico')
+    b.rig = rig
+    b.mesh = rig.root
+    this.mapScene.add(rig.root)
+  }
+
+  /** canopy del planeo: cono naranja + líneas, hija del rig del bot */
+  private botCanopy(b: BrBot, show: boolean): void {
+    if (!b.rig) return
+    if (show && !b.canopy) {
+      const g = new THREE.Group()
+      const mat = new THREE.MeshStandardMaterial({ color: 0xe8632c, roughness: 0.85, side: THREE.DoubleSide })
+      const dome = new THREE.Mesh(new THREE.ConeGeometry(1.5, 0.85, 10, 1, true), mat)
+      dome.position.y = 2.7
+      g.add(dome)
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.65 })
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2
+        const geo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(Math.cos(a) * 1.15, 2.55, Math.sin(a) * 1.15),
+          new THREE.Vector3(0, 1.6, 0),
+        ])
+        g.add(new THREE.Line(geo, lineMat))
+      }
+      b.canopy = g
+      b.rig.root.add(g)
+    } else if (!show && b.canopy) {
+      if (b.rig) b.rig.root.remove(b.canopy)
+      disposeTree(b.canopy)
+      b.canopy = null
+    }
+  }
+
+  /** v13.6: primer obstáculo 3D entre el bot y su objetivo — piezas
+   *  CONSTRUIDAS (muro/piso/rampa de cualquiera) o EDIFICIOS del mapa.
+   *  Devuelve { t (0..1), build } o null si la línea está limpia. */
+  private botLosBlock(x1: number, y1: number, z1: number, x2: number, y2: number, z2: number): { t: number; build: BuildPiece | null } | null {
+    const dx = x2 - x1, dy = y2 - y1, dz = z2 - z1
+    const len = Math.hypot(dx, dy, dz)
+    if (len < 0.5) return null
+    let bestT = 0.97
+    let build: BuildPiece | null = null
+    const slab = (mnX: number, mxX: number, mnY: number, mxY: number, mnZ: number, mxZ: number): number => {
+      let tmin = 0, tmax = 1
+      for (const [p, d, mn, mx] of [
+        [x1, dx, mnX, mxX], [y1, dy, mnY, mxY], [z1, dz, mnZ, mxZ],
+      ] as const) {
+        if (Math.abs(d) < 1e-8) {
+          if (p < mn || p > mx) return -1
+        } else {
+          let a = (mn - p) / d, b = (mx - p) / d
+          if (a > b) { const tmp = a; a = b; b = tmp }
+          tmin = Math.max(tmin, a)
+          tmax = Math.min(tmax, b)
+          if (tmin > tmax) return -1
+        }
+      }
+      return tmin
+    }
+    for (const c of this.buildCols) {
+      if (c.piece.dead) continue
+      const t = slab(c.minX, c.maxX, c.y0, c.y1, c.minZ, c.maxZ)
+      if (t > 0.04 && t < bestT) { bestT = t; build = c.piece }
+    }
+    for (const a of this.aabbs) {
+      const y0 = a.y0 ?? -30
+      const t = slab(a.minX, a.maxX, y0, a.h, a.minZ, a.maxZ)
+      if (t > 0.04 && t < bestT) { bestT = t; build = null }
+    }
+    return bestT < 0.97 ? { t: bestT, build } : null
   }
 
   /** v11: network puppet — the leader's snapshots drive this bot */
@@ -3740,6 +4038,7 @@ export class BattleRoyaleGame {
     if (!b.alive) return
     b.alive = false
     b.deadAt = this.clock
+    this.botCanopy(b, false)   // v13.6: sin canopy si muere cayendo
     if (b.rig && b.rig.usingSoldier) {
       // v9.1: la caída se anima en updateBots (easeOutCubic) — el arma
       // acompaña al cuerpo porque cuelga del mismo bodyGroup
@@ -4070,7 +4369,7 @@ export class BattleRoyaleGame {
       this.spawnPlayerBody()
       useBr.getState().set({ cam3rd: this.cam3rd })
       useBr.getState().addFeed('BOOTS ON THE GROUND — loot fast, the storm comes', false)
-      useBr.getState().addFeed('BUILD MODE: [Q] WALL · [C] RAMP · [Z] FLOOR — materials ready', false)
+      useBr.getState().addFeed('BUILD: [Q] WALL · [C] RAMP · [Z] FLOOR · [F] EDIT — you start with 0 materials: harvest with the pickaxe', false)
       useBr.getState().addFeed('[1] PICKAXE — hit trees and walls for materials · [1-5] inventory · [V] camera', false)
     }
   }
@@ -4150,6 +4449,8 @@ export class BattleRoyaleGame {
     this.updateInteraction()
     // v12: ghost preview + turbo-build
     this.updateBuild(performance.now())
+    // v13.6: overlay de edición (celda bajo la retícula + colores)
+    this.updateEdit()
   }
 
   /** circle collision vs buildings + trees + v12 build walls (with vertical overlap)
@@ -4313,6 +4614,8 @@ export class BattleRoyaleGame {
   /** per-frame: ghost placement + turbo-build while holding LMB */
   private updateBuild(t: number): void {
     if (this.phase !== 'live') { this.hideGhost(); return }
+    // v13.6: la edición tiene su propio overlay — sin ghost de construcción
+    if (this.editPiece) { this.hideGhost(); return }
     if (!this.buildMode || this.inVehicle) { this.hideGhost(); return }
     // rebuild the ghost if the piece changed
     if (this.buildGhostKind !== this.buildMode) this.rebuildGhost()
@@ -4454,7 +4757,7 @@ export class BattleRoyaleGame {
     this.mapScene.add(mesh)
     const piece: BuildPiece = {
       id, kind: tg.kind, cx: tg.cx, cz: tg.cz, edge: tg.edge, lv: tg.lv,
-      baseY, hp: BUILD_HP[tg.kind], mesh, owner, mine, dead: false,
+      baseY, hp: BUILD_HP[tg.kind], mesh, owner, mine, dead: false, quads: null,
     }
     this.builds.push(piece)
     // collision columns
@@ -4561,6 +4864,7 @@ export class BattleRoyaleGame {
         const t = tex.clone()
         t.wrapS = t.wrapT = THREE.RepeatWrapping
         t.repeat.set(rx, ry)
+        t.anisotropy = this.aniso   // v13.6
         t.needsUpdate = true
         mat.map = t
         mat.color.set(tint)
@@ -4617,6 +4921,296 @@ export class BattleRoyaleGame {
       this.buildGhost = null
     }
     this.buildGhostKind = null
+  }
+
+  // ----------------------------------------------------------
+  // v13.6 — EDICIÓN ESTILO FORTNITE
+  // [F] edita la pieza propia más cercana: malla de celdas (muro 2×3 de
+  // 2×1 m, piso 2×2 de 2×2 m), LMB alterna la celda apuntada, F confirma,
+  // RMB/ESC cancela. Las celdas eliminadas se convierten en agujeros con
+  // colisión real (puertas/ventanas en muros, huecos para caer en pisos)
+  // y la edición se replica por red ('bedit').
+  // ----------------------------------------------------------
+  /** nº de celdas editables + máscara llena por tipo */
+  private static readonly EDIT_QUADS: Record<BuildKind, number> = { wall: 6, ramp: 0, floor: 4 }
+
+  private enterEditMode(): void {
+    // pieza PROPIIA más cercana (muro o piso) a ≤ 7 m
+    let best: BuildPiece | null = null
+    let bestD = 7
+    const fy = this.py - EYE
+    for (const p of this.builds) {
+      if (!p.mine || p.dead || BattleRoyaleGame.EDIT_QUADS[p.kind] === 0) continue
+      const cx = p.cx * GRID - MAP + GRID / 2
+      const cz = p.cz * GRID - MAP + GRID / 2
+      const d = Math.hypot(cx - this.px, cz - this.pz, p.baseY + RISE / 2 - fy)
+      if (d < bestD) { bestD = d; best = p }
+    }
+    if (!best) {
+      useBr.getState().addFeed('NOTHING TO EDIT NEARBY — build a wall [Q] or floor [Z] first', false)
+      return
+    }
+    this.editPiece = best
+    this.editHover = -1
+    this.editMask = best.quads ?? this.editFullMask(best.kind)
+    this.rebuildEditGhost()
+    useBr.getState().set({ editing: true })
+    getAudio().draw()
+  }
+
+  private editFullMask(kind: BuildKind): number {
+    const n = BattleRoyaleGame.EDIT_QUADS[kind]
+    return (1 << n) - 1
+  }
+
+  private cancelEdit(): void {
+    if (!this.editPiece) return
+    this.exitEditMode()
+    getAudio().uiClick()
+  }
+
+  private exitEditMode(): void {
+    this.editPiece = null
+    this.editHover = -1
+    if (this.editGhost) {
+      this.mapScene.remove(this.editGhost)
+      disposeTree(this.editGhost)
+      this.editGhost = null
+    }
+    this.editMats = []
+    useBr.getState().set({ editing: false })
+  }
+
+  /** F otra vez / confirmar: aplica la máscara y reconstruye la pieza */
+  private applyEdit(): void {
+    const piece = this.editPiece
+    if (!piece) return
+    const full = this.editFullMask(piece.kind)
+    const mask = this.editMask & full
+    piece.quads = mask === full ? null : mask
+    this.rebuildPieceVisual(piece)
+    this.rebuildPieceCols(piece)
+    if (!this.practice && this.matchId) {
+      esNet.brPublishEv({ ty: 'bedit', o: myOid(), id: piece.id, q: piece.quads === null ? -1 : piece.quads })
+    }
+    this.exitEditMode()
+    getAudio().reload('end')   // thunk de madera
+  }
+
+  /** LMB en edición: alterna la celda bajo la retícula */
+  private toggleEditQuad(): void {
+    if (this.editHover < 0 || !this.editPiece) return
+    this.editMask ^= 1 << this.editHover
+    getAudio().uiClick()
+  }
+
+  /** malla de celdas translúcida sobre la pieza (posicionada igual que la pieza) */
+  private rebuildEditGhost(): void {
+    if (this.editGhost) {
+      this.mapScene.remove(this.editGhost)
+      disposeTree(this.editGhost)
+    }
+    this.editMats = []
+    const piece = this.editPiece!
+    const n = BattleRoyaleGame.EDIT_QUADS[piece.kind]
+    const g = new THREE.Group()
+    for (let i = 0; i < n; i++) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0x4fd2ff, transparent: true, opacity: 0.28, depthWrite: false })
+      this.editMats.push(mat)
+      const local = this.quadLocalBox(piece, i)
+      const box = new THREE.Mesh(new THREE.BoxGeometry(local.w, local.h, local.d), mat)
+      box.position.set(local.x, local.y, local.z)
+      g.add(box)
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(box.geometry),
+        new THREE.LineBasicMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.9 }),
+      )
+      edges.position.copy(box.position)
+      g.add(edges)
+    }
+    // coloca el grupo IGUAL que la pieza (centro de celda + yaw).
+    // v13.6: los PISOS editados van SIN rotación — su malla 4×4 es
+    // simétrica y así las celdas locales coinciden 1:1 con las mundiales
+    const cx = piece.cx * GRID - MAP + GRID / 2
+    const cz = piece.cz * GRID - MAP + GRID / 2
+    g.position.set(cx, piece.baseY, cz)
+    g.rotation.y = piece.kind === 'floor' ? 0 : this.pieceYaw({ kind: piece.kind, edge: piece.edge })
+    this.editGhost = g
+    this.mapScene.add(g)
+  }
+
+  /** por frame: celda bajo la retícula + colores del panel */
+  private updateEdit(): void {
+    if (!this.editPiece || this.paused) return
+    const piece = this.editPiece
+    const origin = this.camera.position.clone()
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+    this.editHover = this.pickEditQuad(piece, origin, dir)
+    for (let i = 0; i < this.editMats.length; i++) {
+      const m = this.editMats[i]
+      const kept = (this.editMask >> i) & 1
+      if (i === this.editHover) { m.color.setHex(0xffffff); m.opacity = 0.55 }
+      else if (kept) { m.color.setHex(0x4fd2ff); m.opacity = 0.30 }
+      else { m.color.setHex(0xff5f52); m.opacity = 0.10 }
+    }
+  }
+
+  /** celda i bajo un rayo (slab contra su AABB mundial) */
+  private pickEditQuad(piece: BuildPiece, o: THREE.Vector3, d: THREE.Vector3): number {
+    const n = BattleRoyaleGame.EDIT_QUADS[piece.kind]
+    let bestT = Infinity
+    let bestI = -1
+    for (let i = 0; i < n; i++) {
+      const box = this.quadWorldBox(piece, i)
+      let tmin = 0, tmax = 300
+      let ok = true
+      for (const [p, dv, mn, mx] of [
+        [o.x, d.x, box.minX, box.maxX], [o.y, d.y, box.y0, box.y1], [o.z, d.z, box.minZ, box.maxZ],
+      ] as const) {
+        if (Math.abs(dv) < 1e-8) {
+          if (p < mn || p > mx) { ok = false; break }
+        } else {
+          let a = (mn - p) / dv, b = (mx - p) / dv
+          if (a > b) { const tmp = a; a = b; b = tmp }
+          tmin = Math.max(tmin, a)
+          tmax = Math.min(tmax, b)
+          if (tmin > tmax) { ok = false; break }
+        }
+      }
+      if (ok && tmin >= 0.15 && tmin < bestT) { bestT = tmin; bestI = i }
+    }
+    return bestI
+  }
+
+  /** caja LOCAL (relativa al centro de la pieza) de la celda i — para la malla */
+  private quadLocalBox(piece: BuildPiece, i: number): { x: number; y: number; z: number; w: number; h: number; d: number } {
+    if (piece.kind === 'floor') {
+      const col = i % 2, row = Math.floor(i / 2)
+      return { x: col ? 1 : -1, y: 0.11, z: row ? 1 : -1, w: 2, h: 0.22, d: 2 }
+    }
+    // muro: local X = ancho (la rotación del grupo orienta N/S vs E/W)
+    const col = i % 2, row = Math.floor(i / 2)
+    return { x: col ? 1 : -1, y: row + 0.5, z: 0, w: 2, h: 1, d: 0.22 }
+  }
+
+  /** caja MUNDIAL de la celda i — para colisión y picking */
+  private quadWorldBox(piece: BuildPiece, i: number): { minX: number; maxX: number; minZ: number; maxZ: number; y0: number; y1: number } {
+    const cx = piece.cx * GRID - MAP + GRID / 2
+    const cz = piece.cz * GRID - MAP + GRID / 2
+    if (piece.kind === 'floor') {
+      const col = i % 2, row = Math.floor(i / 2)
+      return {
+        minX: cx + (col ? 0 : -2), maxX: cx + (col ? 2 : 0),
+        minZ: cz + (row ? 0 : -2), maxZ: cz + (row ? 2 : 0),
+        y0: piece.baseY, y1: piece.baseY + 0.22,
+      }
+    }
+    const col = i % 2, row = Math.floor(i / 2)
+    const y0 = piece.baseY + row
+    // muros N/S (edge 0/2): a lo largo de X; E/W (1/3): a lo largo de Z.
+    // OJO: en E/W el grupo rota π/2 → el +X local apunta al −Z mundial,
+    // por eso la columna lógica se invierte al proyectarla al mundo.
+    const xHalf = piece.edge % 2 === 1 ? 0.16 : 2
+    if (piece.edge % 2 === 1) {
+      return {
+        minX: cx - xHalf, maxX: cx + xHalf,
+        minZ: cz + (col ? -2 : 0), maxZ: cz + (col ? 0 : 2),
+        y0, y1: y0 + 1,
+      }
+    }
+    const zHalf = 0.16
+    return {
+      minX: cx + (col ? 0 : -2), maxX: cx + (col ? 2 : 0),
+      minZ: cz - zHalf, maxZ: cz + zHalf,
+      y0, y1: y0 + 1,
+    }
+  }
+
+  /** reconstruye el MESH de la pieza según quads (null = pieza completa) */
+  private rebuildPieceVisual(piece: BuildPiece): void {
+    // limpia los hijos del grupo (la posición/rotación del grupo se conserva)
+    while (piece.mesh.children.length) {
+      const c = piece.mesh.children.pop()!
+      piece.mesh.remove(c)
+      disposeTree(c)
+    }
+    this.ensureBuildMaterials()
+    const wallMat = this.buildMats.wall!
+    const floorMat = this.buildMats.floor!
+    const frameMat = this.buildMats.frame!
+    const n = BattleRoyaleGame.EDIT_QUADS[piece.kind]
+    if (piece.quads === null) {
+      // pieza completa → geometría original
+      const whole = this.buildPieceMesh({ kind: piece.kind })
+      while (whole.children.length) {
+        const c = whole.children.pop()!
+        piece.mesh.add(c)
+      }
+      return
+    }
+    // v13.6: piso editado sin rotación (malla simétrica → celdas = mundo)
+    if (piece.kind === 'floor') piece.mesh.rotation.y = 0
+    void n
+    for (let i = 0; i < n; i++) {
+      if (!((piece.quads >> i) & 1)) continue
+      const q = this.quadLocalBox(piece, i)
+      const mat = piece.kind === 'floor' ? floorMat : wallMat
+      const box = new THREE.Mesh(new THREE.BoxGeometry(q.w, q.h, q.d), mat)
+      box.position.set(q.x, q.y, q.z)
+      box.castShadow = true
+      box.receiveShadow = true
+      piece.mesh.add(box)
+      // marco perimetral por celda (se lee como obra, no como caja flotante)
+      if (piece.kind === 'wall') {
+        const brace = new THREE.Mesh(new THREE.BoxGeometry(q.w * 0.94, 0.14, 0.3), frameMat)
+        brace.position.set(q.x, q.y, 0)
+        piece.mesh.add(brace)
+      } else {
+        for (const [ex, ez] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+          const beam = new THREE.Mesh(
+            ex !== 0 ? new THREE.BoxGeometry(0.22, 0.26, 2) : new THREE.BoxGeometry(2, 0.26, 0.22),
+            frameMat,
+          )
+          beam.position.set(q.x + ex, 0.05, q.z + ez)
+          piece.mesh.add(beam)
+        }
+      }
+    }
+  }
+
+  /** reconstruye las COLUMNAS de colisión según quads (null = completo) */
+  private rebuildPieceCols(piece: BuildPiece): void {
+    this.buildCols = this.buildCols.filter(c => c.piece !== piece)
+    if (piece.dead) return
+    const cx = piece.cx * GRID - MAP + GRID / 2
+    const cz = piece.cz * GRID - MAP + GRID / 2
+    const mk = (minX: number, maxX: number, minZ: number, maxZ: number, y0: number, y1: number, blocks: boolean): void => {
+      this.buildCols.push({ piece, minX, maxX, minZ, maxZ, y0, y1, blocks })
+    }
+    if (piece.quads === null) {
+      // columnas originales de pieza completa (igual que spawnBuildPiece)
+      if (piece.kind === 'wall') {
+        const xHalf = piece.edge % 2 === 1 ? 0.16 : 2
+        const zHalf = piece.edge % 2 === 1 ? 2 : 0.16
+        mk(cx - xHalf, cx + xHalf, cz - zHalf, cz + zHalf, piece.baseY, piece.baseY + RISE, true)
+      } else if (piece.kind === 'floor') {
+        mk(cx - 2, cx + 2, cz - 2, cz + 2, piece.baseY, piece.baseY + 0.22, false)
+      } else {
+        const lo = -2
+        for (let s = 0; s < 4; s++) {
+          const y0 = piece.baseY + s * 0.75
+          if (piece.edge % 2 === 1) mk(cx + lo + s, cx + lo + s + 1, cz - 2, cz + 2, y0, y0 + 0.75, false)
+          else mk(cx - 2, cx + 2, cz + lo + s, cz + lo + s + 1, y0, y0 + 0.75, false)
+        }
+      }
+      return
+    }
+    const n = BattleRoyaleGame.EDIT_QUADS[piece.kind]
+    for (let i = 0; i < n; i++) {
+      if (!((piece.quads >> i) & 1)) continue
+      const b = this.quadWorldBox(piece, i)
+      mk(b.minX, b.maxX, b.minZ, b.maxZ, b.y0, b.y1, piece.kind === 'wall')
+    }
   }
 
   /** damages a build piece (player bullets, bot fire) */
@@ -4679,6 +5273,13 @@ export class BattleRoyaleGame {
       const cx = b.cx * GRID - MAP + GRID / 2
       const cz = b.cz * GRID - MAP + GRID / 2
       if (Math.abs(x - cx) > 2 || Math.abs(z - cz) > 2) continue
+      // v13.6: piso EDITADO — solo sostienen las celdas que QUEDAN (los
+      // huecos del editor son de verdad: te caes por ellos)
+      if (b.quads !== null && b.kind === 'floor') {
+        const col = x > cx ? 1 : 0
+        const row = z > cz ? 1 : 0
+        if (!((b.quads >> (col + row * 2)) & 1)) continue
+      }
       let surface: number
       if (b.kind === 'floor') {
         surface = b.baseY + 0.22
@@ -5065,12 +5666,15 @@ export class BattleRoyaleGame {
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
     const origin = new THREE.Vector3(this.px, this.py, this.pz)
     // v13.5: 3.ª persona — el rayo nace en el OJO del jugador apuntando
-    // hacia donde mira la cámara (retícula = punto de impacto), y se
-    // ignoran los objetos más cercanos que la propia cámara
+    // hacia donde mira la cámara (retícula = punto de impacto)
+    // v13.6 FIX «las balas atraviesan estructuras»: antes se ignoraban los
+    // impactos más CERCANOS que la cámara (a 3,6 m detrás) → todo muro/rampa/
+    // piso a < 4 m del jugador era atravesado. Los objetos entre la cámara y
+    // el jugador están DETRÁS del origen del rayo (t<0) y nunca se alcanzan
+    // de todos modos: basta un epsilon de seguridad.
     let minHitT = 0
     if (this.cam3rd) {
-      const toCam = this.camera.position.clone().sub(origin)
-      minHitT = toCam.length() + 0.35
+      minHitT = 0.4
       dir.set(0, 0, -1).applyQuaternion(this.camera.quaternion)
       // apunta al punto lejano que ve la retícula
       const aim = this.camera.position.clone().addScaledVector(dir, 300)
@@ -5154,9 +5758,10 @@ export class BattleRoyaleGame {
     }
     if (buildT < bestT) { bestT = buildT; hitBot = null; hitOp = null; buildingT = buildT }
 
-    // terrain (coarse march)
+    // terrain (coarse march) — v13.6: empieza a 0,5 m (antes 2 m: el suelo
+    // cercano tampoco frenaba la bala)
     let terrainT = 220
-    for (let d = Math.max(2, minHitT); d < 220; d += 1.5) {
+    for (let d = Math.max(0.5, minHitT); d < 220; d += 1.5) {
       const p = origin.clone().addScaledVector(dir, d)
       if (p.y <= terrainH(p.x, p.z)) { terrainT = d; break }
     }
@@ -5470,11 +6075,34 @@ export class BattleRoyaleGame {
       b.tx = raw[1]
       b.tz = raw[2]
       b.tyaw = raw[3]
+      if (raw.length > 5) b.ty = Number(raw[5]) || 0
       b.moving = (flags & 4) !== 0
+      // v13.6: caída del avión — bit 8 + y de red
+      if ((flags & 8) !== 0) {
+        if (b.st === 'plane') {
+          b.st = 'fall'
+          this.ensureBotDropMesh(b)
+        }
+        b.netGlide = (flags & 32) !== 0
+      } else {
+        b.netGlide = false
+      }
       if ((flags & 2) !== 0 && !b.landed) {
         b.landed = true
+        b.st = 'down'
         b.y = terrainH(b.x, b.z)
+        this.botCanopy(b, false)
+        if (b.rig) b.rig.body.rotation.x = 0
         this.ensureBotMesh(b)
+      }
+      // v13.6: el líder armó al bot (dejó de saquear) — bit 16
+      if ((flags & 16) !== 0 && b.weapon === 'pico' && b.willWeapon) {
+        b.weapon = b.willWeapon
+        b.lootUntil = 0
+        if (b.rig) {
+          b.rig.weaponId = b.willWeapon
+          this.rebuildRigWeapon(b.rig)
+        }
       }
       if ((flags & 1) === 0 && b.alive) this.killBotVisual(b)
     }
@@ -5583,6 +6211,19 @@ export class BattleRoyaleGame {
     // v12: a build piece was destroyed somewhere
     if (ty === 'bdes') {
       this.destroyBuildById(String(p.o ?? ''), String(p.id ?? ''))
+      return
+    }
+    // v13.6: another operator EDITED a piece → replicate the quads mask
+    if (ty === 'bedit') {
+      const owner = String(p.o ?? '')
+      const id = String(p.id ?? '')
+      const q = Number(p.q)
+      const piece = this.builds.find(b => b.owner === owner && b.id === id)
+      if (piece && !piece.dead && Number.isFinite(q)) {
+        piece.quads = q < 0 ? null : Math.max(0, Math.round(q))
+        this.rebuildPieceVisual(piece)
+        this.rebuildPieceCols(piece)
+      }
       return
     }
     if (ty === 'veh') {
@@ -5868,6 +6509,13 @@ export class BattleRoyaleGame {
     dt = Math.min(dt, 0.1)
     this.clock += dt
 
+    // v13.6: la cámara de sombras del sol VIAJA con el jugador — ahora toda
+    // la isla tiene sombras (antes solo el cuadrado central de ±130 m)
+    if (this.mapSun && this.scene === this.mapScene) {
+      this.mapSun.target.position.set(this.px, this.py, this.pz)
+      this.mapSun.position.set(this.px - 120, this.py + 150, this.pz - 60)
+    }
+
     // progressive map build (one chunk per frame) — v11: HELD until the
     // match seed is known, so every client builds the SAME world
     if (this.buildQueue.length && this.worldSeed !== null) {
@@ -5880,10 +6528,12 @@ export class BattleRoyaleGame {
       if (this.phase === 'queue') this.updateQueue(now, dt)
       this.updatePlane(dt)
       this.updateFreefall(dt)
+      this.updateBotDrops(dt)
       this.updatePlayer(dt)
       // v13.5: FUEGO AUTOMÁTICO como los modos normales — mantener LMB
       // dispara armas auto y golpea con el pico en cadena
-      if (this.mouseHeld && this.locked && this.phase === 'live' && !this.inVehicle && !this.buildMode) {
+      // (v13.6: tampoco dispara mientras se edita una pieza)
+      if (this.mouseHeld && this.locked && this.phase === 'live' && !this.inVehicle && !this.buildMode && !this.editPiece) {
         const wAuto = this.weapon ? WEAPONS[this.weapon] : null
         if (wAuto?.auto || this.weapon === 'pico') this.tryShoot()
       }
@@ -5957,7 +6607,9 @@ export class BattleRoyaleGame {
       rig.root.visible = this.phase === 'live' && !this.inVehicle
       if (rig.root.visible) {
         rig.root.position.set(this.px, this.py - EYE, this.pz)
-        rig.root.rotation.y = this.yaw
+        // v13.6: los modelos miran a +Z; la cámara mira a -Z con este yaw →
+        // +π hace que el jugador dé la ESPALDA a la cámara (antes la miraba)
+        rig.root.rotation.y = this.yaw + Math.PI
         const moving = this.movingFast() && this.onGround
         if (moving) this.playerLegPhase += dt * 9
         this.animateRig(rig, this.playerLegPhase, moving)
@@ -6137,6 +6789,7 @@ export class BattleRoyaleGame {
     disposeTree(this.mapScene)
     // v12: build pieces belong to mapScene but tracked separately — free cleanly
     this.hideGhost()
+    this.exitEditMode()   // v13.6: overlay de edición también fuera
     for (const b of this.builds) {
       this.mapScene.remove(b.mesh)
       disposeTree(b.mesh)

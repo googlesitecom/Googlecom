@@ -55,3 +55,9 @@ server.log
 
 # capturas E2E (pesadas, no al repo)
 scripts/e2e-root/
+
+# v13.6: artefactos locales que NUNCA deben subirse (accidente del commit 065edb9)
+/skills
+/tool-results
+/upload
+/Googlecom

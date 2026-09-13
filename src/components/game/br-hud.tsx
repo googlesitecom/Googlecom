@@ -266,6 +266,7 @@ function LiveHud() {
   const mats = useBr(s => s.mats)
   const buildMode = useBr(s => s.buildMode)
   const buildPlaceable = useBr(s => s.buildPlaceable)
+  const editing = useBr(s => s.editing)
   // v13.5: inventario de 5 + cámara
   const slots = useBr(s => s.slots)
   const cam3rd = useBr(s => s.cam3rd)
@@ -368,7 +369,7 @@ function LiveHud() {
       </div>
 
       {/* v12: build mode piece bar (Q · C · Z) */}
-      {buildMode && phase === 'live' && (
+      {buildMode && phase === 'live' && !editing && (
         <div className="absolute bottom-[15%] left-1/2 -translate-x-1/2">
           <div className="bg-stone-950/85 backdrop-blur-sm border border-sky-700/60 rounded-lg px-4 py-2.5 shadow-2xl tac-corner">
             <div className="flex items-center gap-2">
@@ -390,6 +391,22 @@ function LiveHud() {
               <span className={`font-tac-md text-[10px] tracking-wider ${buildPlaceable ? 'text-emerald-300' : 'text-red-300'}`}>
                 {buildPlaceable ? 'LMB BUILD · 10 MATS' : 'BLOCKED'}
               </span>
+              <span className="w-px h-6 bg-stone-700" />
+              <span className="font-tac-md text-[10px] tracking-wider text-stone-500">[F] EDIT</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* v13.6: EDIT MODE bar (estilo Fortnite) */}
+      {editing && phase === 'live' && (
+        <div className="absolute bottom-[15%] left-1/2 -translate-x-1/2">
+          <div className="bg-stone-950/85 backdrop-blur-sm border border-amber-600/70 rounded-lg px-4 py-2.5 shadow-2xl tac-corner">
+            <div className="flex items-center gap-3">
+              <span className="font-tac text-amber-200 text-[12px] tracking-widest">EDIT MODE</span>
+              <span className="font-tac-md text-[10px] tracking-wider text-stone-300">LMB TOGGLE CELL</span>
+              <span className="font-tac-md text-[10px] tracking-wider text-emerald-300">[F] CONFIRM</span>
+              <span className="font-tac-md text-[10px] tracking-wider text-stone-500">[RMB] CANCEL</span>
             </div>
           </div>
         </div>
@@ -606,9 +623,9 @@ function BrPauseMenu() {
               {/* v12: construcción estilo Fortnite — teclas propias del BR */}
               <div className="bg-stone-950/60 border border-stone-800 rounded-lg p-4">
                 <h4 className="font-tac-md text-amber-200/90 text-[11px] mb-3 flex items-center gap-2">
-                  <Hammer className="w-4 h-4" /> Battle Royale — Fortnite-style building
+                  <Hammer className="w-4 h-4" /> Battle Royale — Fortnite-style building + editing
                 </h4>
-                <div className="grid sm:grid-cols-3 gap-2.5 text-[11px]">
+                <div className="grid sm:grid-cols-4 gap-2.5 text-[11px]">
                   <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
                     <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">Q</span>
                     <span className="text-stone-300">Wall piece</span>
@@ -621,12 +638,20 @@ function BrPauseMenu() {
                     <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">Z</span>
                     <span className="text-stone-300">Floor piece</span>
                   </div>
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">F</span>
+                    <span className="text-stone-300">Edit piece</span>
+                  </div>
                 </div>
                 <p className="text-stone-600 text-[10px] mt-2.5 leading-relaxed">
                   Pick a piece and LEFT-CLICK to place it on the grid (hold for turbo-build).
-                  Each piece costs <b className="text-stone-400">10 materials</b>; destroy enemy
-                  structures by shooting them. Crates and ammo boxes give materials, and every
-                  elimination pays +60. Walls give real cover — even against bot fire.
+                  Each piece costs <b className="text-stone-400">10 materials</b>. <b className="text-stone-400">[F] editing</b>:
+                  point at YOUR wall/floor and a cell grid appears (wall 2×3, floor 2×2) —
+                  LEFT-CLICK toggles cells, <b className="text-stone-400">F confirms</b>, RMB/ESC cancels.
+                  Removed cells are real holes: doors, windows and floor gaps you can fall through.
+                  You land with <b className="text-stone-400">0 materials</b> and EARN them with the
+                  pickaxe (trees +12, walls +7), crates (+80) and eliminations (+60) — like Fortnite.
+                  Structures block bullets and bot fire: real cover.
                 </p>
               </div>
               {/* v13.5: inventario · pico · 3.ª persona */}
