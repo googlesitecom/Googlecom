@@ -27,7 +27,7 @@ import { makeWorldTextures, makeAOBlobTexture, makeNeonTexture, makeSparkTexture
 import { useGame } from './store'
 import { useChat } from './chat'
 import { NetClient } from './net'
-import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, getRoadTex, getGroundTex, onWeaponGLBsReady } from './assets'
+import { preloadAssets, buildGLBWeapon, ensureWeaponGLB, getTreeTemplate, getRepoTextures, onWeaponGLBsReady } from './assets'
 import { StoryDirector, type StorySyncData, type StoryRemoteMsg } from './story'
 import { voiceChat, useVoice, type RemotePos } from './voice'
 
@@ -563,7 +563,9 @@ export class Game {
       antialias: quality !== 'baja',
       powerPreference: 'high-performance',
     })
-    this.renderer.setPixelRatio(quality === 'ultra' || quality === 'alta' ? Math.min(devicePixelRatio, 2) : quality === 'media' ? Math.min(devicePixelRatio, 1.5) : 1)
+    // v13.5: 4K — ULTRA renderiza a resolución NATIVA (hasta 3× DPR);
+    // ALTA sube a 2× (antes ambas quedaban en 2×/1.5×)
+    this.renderer.setPixelRatio(quality === 'ultra' ? Math.min(devicePixelRatio, 3) : quality === 'alta' ? Math.min(devicePixelRatio, 2) : quality === 'media' ? Math.min(devicePixelRatio, 1.5) : 1)
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -1137,8 +1139,8 @@ export class Game {
 
     // 1) RESOLUCIÓN de render: lo que más salta a la vista (y en los FPS).
     //    BAJA renderiza a 0,7× (image pixelada estilo rendimiento) y ULTRA
-    //    hasta 2× con devicePixelRatio
-    const pr = q === 'baja' ? 0.7 : q === 'media' ? 1 : q === 'alta' ? Math.min(devicePixelRatio, 1.5) : Math.min(devicePixelRatio, 2)
+    //    a resolución NATIVA (v13.5: hasta 3× DPR → pantallas 4K enteras)
+    const pr = q === 'baja' ? 0.7 : q === 'media' ? 1 : q === 'alta' ? Math.min(devicePixelRatio, 2) : Math.min(devicePixelRatio, 3)
     this.renderer.setPixelRatio(pr)
     this.renderer.setSize(innerWidth, innerHeight)
 
@@ -1738,9 +1740,8 @@ export class Game {
     // v13: escala de UVs por dimensión — con la Asfalto.jpg/Concreto.jpg
     // del usuario (parcheadas en vivo por applyRepoTextures) cada plano
     // muestra su tamaño real de baldosa con UNA textura compartida
-    // v13.3: baldota GRANDE (asfalto 8 m · aceras 4 m) — menos texels por
-    // metro = menos minificación por píxel en rasante → menos batido
-    // (la variante pre-filtrada de getRoadTex ya elimina el grano fino)
+    // (asfalto: 6 m por repetición · aceras: 3 m) — v13.4: baldosa
+    // original RESTAURADA (textura a resolución plena, sin pre-filtrar)
     const scaleUVs = (geo: THREE.PlaneGeometry, w: number, d: number, tile: number): THREE.PlaneGeometry => {
       const uv = geo.attributes.uv as THREE.BufferAttribute
       for (let i = 0; i < uv.count; i++) {
@@ -1761,7 +1762,7 @@ export class Game {
       [0, 35, 8, 140], [0, -35, 8, 140],    // secundarias E-O
     ]
     for (const [cx, cz, w, d] of planes) {
-      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 8), asphalt)
+      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 6), asphalt)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_ASPHALT, cz)
       m.receiveShadow = true
@@ -1794,7 +1795,7 @@ export class Game {
       [4.6, 35, 1.2, 140], [-4.6, 35, 1.2, 140], [4.6, -35, 1.2, 140], [-4.6, -35, 1.2, 140],
     ]
     for (const [cx, cz, w, d] of walks) {
-      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 4), sidewalk)
+      const m = new THREE.Mesh(scaleUVs(new THREE.PlaneGeometry(w, d), w, d, 3), sidewalk)
       m.rotation.x = -Math.PI / 2
       m.position.set(cx, Y_SIDEWALK, cz)
       m.receiveShadow = true
@@ -2114,19 +2115,20 @@ export class Game {
     // v13: el suelo exterior prefiere la Arena.jpg del usuario (desierto
     // real, 1024 px); si no existiera, mantiene el comportamiento clásico
     // (Piso.jpg con tinte arena)
-    // v13.3: variante pre-filtrada (getGroundTex) contra el batido del
-    // grano fino + UN 10 % MÁS OSCURA (color 0.9) — pedido del usuario
+    // v13.4: textura ORIGINAL a resolución plena (sin pre-filtrar) — el
+    // pre-filtrado v13.3 dejaba la arena blanda y sin grano; se conserva
+    // el 10 % de oscurecido pedido y la anisotropía 16
     if ((arena || piso) && this.groundMesh) {
       const g = this.groundMesh
       const mat = g.material as THREE.MeshStandardMaterial
-      const gtex = arena ? (getGroundTex() ?? arena.clone()) : piso!.clone()
-      gtex.wrapS = gtex.wrapT = THREE.RepeatWrapping
-      // baldota de 7,6 m (antes 6 m): menos texels/m → menos batido
-      gtex.repeat.set(arena ? 34 : 58, arena ? 34 : 58)
+      const tex = (arena ?? piso)!.clone()
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+      // densidad original (baldosa de 6 m — 46 repeticiones en el mapa)
+      tex.repeat.set(arena ? 46 : 58, arena ? 46 : 58)
       // v13.2: 16 (antes 8) — el suelo también se ve en rasante
-      gtex.anisotropy = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
-      gtex.needsUpdate = true
-      mat.map = gtex
+      tex.anisotropy = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
+      tex.needsUpdate = true
+      mat.map = tex
       // arena: 0xe5e5e5 ≈ ×0.9 sRGB → un 10 % más oscura (pedido)
       mat.color.set(arena ? 0xe5e5e5 : 0xb9ad93)
       mat.needsUpdate = true
@@ -2203,27 +2205,25 @@ export class Game {
     // v13: calles de la ciudad — asfalto real + aceras de hormigón
     // (las UVs de los planos ya se escalan por dimensión en buildStreets:
     // UNA textura compartida, densidad constante, cero clonado por malla)
-    // v13.2 ANTI-SHIMMER: el grano finísimo del Asfalto.jpg/Concreto.jpg
-    // hervía fijo en pantalla al caminar (moiré) → variante pre-filtrada
-    // (512 + pasa-bajos suave) + anisotropía 16. Fallback: la base con
-    // la anisotropía elevada.
+    // v13.4: texturas ORIGINALES a resolución plena — el pre-filtrado
+    // v13.2/v13.3 (256 px + doble blur) mataba la calidad del grano real;
+    // se mantiene la anisotropía 16 para la vista en ángulo
     if (asfalto && this.streetMats) {
       const maxAniso = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
       asfalto.wrapS = asfalto.wrapT = THREE.RepeatWrapping
       asfalto.repeat.set(1, 1)
       asfalto.anisotropy = maxAniso
       asfalto.needsUpdate = true
-      const roadTex = getRoadTex('asfalto') ?? asfalto
-      this.streetMats.asphalt.map = roadTex
+      this.streetMats.asphalt.map = asfalto
       this.streetMats.asphalt.color.set(0xffffff)
       this.streetMats.asphalt.needsUpdate = true
     }
     if (concreto && this.streetMats) {
       const maxAniso = Math.min(16, this.renderer.capabilities.getMaxAnisotropy())
-      const swTex = getRoadTex('concreto') ?? concreto.clone()
+      const swTex = concreto.clone()
       swTex.wrapS = swTex.wrapT = THREE.RepeatWrapping
       swTex.repeat.set(1, 1)
-      if (swTex !== concreto) swTex.anisotropy = maxAniso
+      swTex.anisotropy = maxAniso
       swTex.needsUpdate = true
       this.streetMats.sidewalk.map = swTex
       this.streetMats.sidewalk.color.set(0xffffff)

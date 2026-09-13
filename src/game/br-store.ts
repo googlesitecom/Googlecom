@@ -61,6 +61,15 @@ export function rollBrRarity(minTier = 0, rng?: () => number): number {
   return BR_RARITIES.length - 1
 }
 
+/** v13.5: slot del inventario de 5 (para la barra del HUD) */
+export interface BrInvSlotHud {
+  label: string
+  rarity: number          // -1 = pico (sin rareza)
+  kind: 'pico' | 'weapon' | 'empty'
+  active: boolean
+  has: boolean
+}
+
 interface BrState {
   active: boolean
   phase: BrPhase
@@ -93,6 +102,10 @@ interface BrState {
   weaponRarity: number
   mag: number
   reserve: number
+  /** v13.5: inventario de 5 slots (1 = pico · 2-5 = armas) */
+  slots: BrInvSlotHud[]
+  /** v13.5: cámara en 3.ª persona (V para alternar) */
+  cam3rd: boolean
   stormPhase: number
   stormLabel: string
   stormTimer: number
@@ -144,6 +157,9 @@ const initial = {
   weaponRarity: -1,
   mag: 0,
   reserve: 0,
+  // v13.5
+  slots: [] as BrInvSlotHud[],
+  cam3rd: true,
   stormPhase: 0,
   stormLabel: '',
   stormTimer: 0,

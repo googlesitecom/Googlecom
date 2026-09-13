@@ -81,13 +81,124 @@ export function buildWeaponModel(id: WeaponId): { group: THREE.Group; muzzle: TH
       break
     }
     case 'breacher': {
-      g.add(box(0.065, 0.08, 0.5, 0x2e2418, 0, 0.02, -0.16))        // cuerpo madera
-      g.add(cyl(0.022, 0.5, METAL, 0, 0.045, -0.4))                 // tubo cañón
-      g.add(cyl(0.02, 0.44, METAL, 0, 0.0, -0.38))                  // tubo munición
-      g.add(box(0.055, 0.06, 0.16, 0x3a2c1a, 0, -0.01, 0.0))        // bomba
-      g.add(box(0.05, 0.12, 0.09, 0x3a2c1a, 0, -0.05, 0.18))        // culata
-      muzzle.position.set(0, 0.045, -0.66)
-      barrelZ = -0.65
+      // ===== v13.4: ESCOPETA DE BOMBEO TÁCTICA realista (estilo 870 MCS) =====
+      // reconstruida pieza a pieza: receptor parkerizado, cañón pavonado
+      // cónico con corona y nervadura, tubo de cargador, bomba de polímero
+      // estriada con barras de acción, riel picatinny, ghost ring + mira de
+      // latón, guardamanos con porta-cartuchos y culata táctica con tope
+      const std = (c: number, metal: number, rough: number): THREE.MeshStandardMaterial =>
+        new THREE.MeshStandardMaterial({ color: c, metalness: metal, roughness: rough, envMapIntensity: 1.0 })
+      const STEEL = std(0x24262b, 0.68, 0.5)     // receptor parkerizado
+      const STEEL2 = std(0x2e3036, 0.62, 0.46)   // puentes/accesorio acero
+      const BLUED = std(0x15161a, 0.82, 0.36)    // cañón pavonado
+      const HOLE = std(0x0b0c0e, 0.4, 0.6)       // puertos/huecos
+      const POLY = std(0x1e2024, 0.06, 0.9)      // polímero negro
+      const POLY2 = std(0x26282d, 0.06, 0.82)    // polímero claro
+      const RUBB = std(0x121316, 0.0, 0.97)      // goma (tope de culata)
+      const GOLD = std(0xc9a24a, 0.85, 0.3)      // gatillo latonado
+      const SHELL = std(0x9c2622, 0.04, 0.72)    // vaina roja
+      const BRASS = std(0xb08742, 0.88, 0.32)    // base latón
+      const put = (m: THREE.Mesh, x: number, y: number, z: number, rx = 0): void => {
+        m.position.set(x, y, z)
+        if (rx) m.rotation.x = rx
+        g.add(m)
+      }
+      const boxM = (w: number, h: number, d: number, mat: THREE.Material): THREE.Mesh =>
+        new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
+      const cylZ = (r1: number, r2: number, h: number, mat: THREE.Material, seg = 14): THREE.Mesh => {
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), mat)
+        m.rotation.x = Math.PI / 2
+        return m
+      }
+
+      // ---- CAÑÓN: cónico pavonado + corona + nervadura + mira de latón ----
+      put(cylZ(0.0165, 0.0195, 0.38, BLUED, 16), 0, 0.056, -0.51)        // tubo cónico
+      put(cylZ(0.0205, 0.0205, 0.028, BLUED, 16), 0, 0.056, -0.70)      // corona de boca
+      put(boxM(0.008, 0.012, 0.33, BLUED), 0, 0.072, -0.52)             // nervadura sup.
+      put(boxM(0.014, 0.016, 0.028, STEEL2), 0, 0.068, -0.655)          // rampa frontal
+      const bead = cylZ(0.0055, 0.0055, 0.012, GOLD, 8)                  // mira de latón
+      put(bead, 0, 0.081, -0.662)
+      // chimenea de carga del cañón hacia el receptor
+      put(boxM(0.024, 0.03, 0.07, STEEL), 0, 0.052, -0.315)
+
+      // ---- TUBO DEL CARGADOR + tapa con reten ----
+      put(cylZ(0.014, 0.014, 0.42, BLUED, 12), 0, 0.012, -0.46)
+      put(cylZ(0.0175, 0.0175, 0.036, STEEL, 12), 0, 0.012, -0.676)
+      put(cylZ(0.006, 0.006, 0.02, STEEL2, 8), 0, 0.012, -0.695)        // retén del tapón
+
+      // ---- BOMBA (guardamanos deslizante) ----
+      put(boxM(0.06, 0.058, 0.15, POLY), 0, 0.012, -0.49)               // cuerpo polímero
+      for (let i = 0; i < 6; i++) {                                      // estrías antiderrapantes
+        put(boxM(0.063, 0.061, 0.007, HOLE), 0, 0.012, -0.553 + i * 0.026)
+      }
+      put(boxM(0.05, 0.014, 0.05, POLY2), 0, -0.02, -0.49)              // labio inferior
+      // barras de acción (unen la bomba al receptor)
+      put(boxM(0.007, 0.024, 0.3, STEEL2), 0.027, 0.024, -0.34)
+      put(boxM(0.007, 0.024, 0.3, STEEL2), -0.027, 0.024, -0.34)
+
+      // ---- RECEPTOR (caja de mecanismos parkerizada) ----
+      put(boxM(0.058, 0.076, 0.23, STEEL), 0, 0.036, -0.11)             // bloque central
+      put(boxM(0.062, 0.014, 0.23, STEEL2), 0, 0.079, -0.11)            // puente superior
+      put(boxM(0.062, 0.01, 0.23, STEEL2), 0, -0.003, -0.11)            // base inferior
+      // puerto de eyección (lado derecho, hundido)
+      put(boxM(0.004, 0.03, 0.08, HOLE), 0.031, 0.042, -0.145)
+      put(boxM(0.003, 0.036, 0.09, STEEL2), 0.032, 0.042, -0.145)       // marco del puerto
+      // manija del cerrojo a la derecha
+      const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.036, 8), STEEL2)
+      bolt.rotation.z = Math.PI / 2
+      put(bolt, 0.036, 0.036, -0.19)
+      put(boxM(0.012, 0.014, 0.014, STEEL2), 0.048, 0.036, -0.19)       // bola del cerrojo
+      // puerto de carga inferior + empujador
+      put(boxM(0.03, 0.007, 0.075, HOLE), 0, -0.008, -0.075)
+
+      // ---- RIEL PICATINNY sobre el receptor ----
+      put(boxM(0.046, 0.012, 0.19, STEEL2), 0, 0.09, -0.11)             // base del riel
+      for (let i = 0; i < 7; i++) {                                      // ranuras transversales
+        put(boxM(0.05, 0.007, 0.009, STEEL), 0, 0.096, -0.185 + i * 0.026)
+      }
+      // GHOST RING trasero (anillo envolvente)
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.013, 0.0035, 8, 16), STEEL2)
+      ring.position.set(0, 0.081, 0.005)
+      g.add(ring)
+      put(boxM(0.012, 0.014, 0.012, STEEL2), 0, 0.07, 0.005)            // pie del anillo
+
+      // ---- PORTA-CARTUCHOS (side saddle, lado izquierdo, 2×2) ----
+      put(boxM(0.006, 0.078, 0.165, POLY), -0.031, 0.04, -0.1)           // placa portadora
+      const shellSpots: [number, number][] = [[0.021, -0.045], [0.055, -0.045], [0.021, -0.115], [0.055, -0.115]]
+      for (const [sy, sz] of shellSpots) {
+        put(cylZ(0.0105, 0.0105, 0.052, SHELL, 10), -0.038, sy, sz)     // vaina roja
+        put(cylZ(0.0115, 0.0115, 0.012, BRASS, 10), -0.038, sy, sz + 0.032) // base de latón
+        // clips del porta-cartuchos (anclan la vaina a la placa)
+        put(boxM(0.009, 0.007, 0.014, POLY2), -0.037, sy + 0.0125, sz)
+        put(boxM(0.009, 0.007, 0.014, POLY2), -0.037, sy - 0.0125, sz)
+      }
+
+      // ---- GUARDAMANOS Y GATILLO ----
+      put(boxM(0.03, 0.008, 0.075, STEEL2), 0, -0.042, 0.045)           // arco inferior
+      put(boxM(0.03, 0.03, 0.008, STEEL2), 0, -0.026, 0.012)            // arco frontal
+      put(boxM(0.03, 0.03, 0.008, STEEL2), 0, -0.026, 0.078)            // arco trasero
+      const trig = boxM(0.007, 0.024, 0.007, GOLD)                       // gatillo latonado
+      trig.rotation.x = 0.18
+      put(trig, 0, -0.022, 0.04)
+      const safety = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.012, 8), STEEL2)
+      safety.rotation.z = Math.PI / 2
+      put(safety, 0.032, 0.012, -0.02)                                   // seguro trasero
+
+      // ---- CULATA TÁCTICA (polímero + tope de goma) ----
+      const stock = boxM(0.05, 0.088, 0.2, POLY)
+      stock.rotation.x = 0.1                                             // caída clásica de culata
+      put(stock, 0, 0.006, 0.16)
+      put(boxM(0.052, 0.03, 0.15, POLY2), 0, 0.052, 0.15)                // carrillera
+      put(boxM(0.046, 0.07, 0.06, POLY), 0, 0.0, 0.08)                   // unión pistolete
+      put(boxM(0.054, 0.1, 0.032, RUBB), 0, -0.004, 0.272)               // tope antirrebote
+      // anilla de correa
+      const swivel = new THREE.Mesh(new THREE.TorusGeometry(0.011, 0.0025, 8, 12), STEEL2)
+      swivel.rotation.y = Math.PI / 2
+      swivel.position.set(0, -0.045, 0.24)
+      g.add(swivel)
+
+      muzzle.position.set(0, 0.056, -0.715)
+      barrelZ = -0.71
       break
     }
     case 'ar47': {
@@ -141,6 +252,58 @@ export function buildWeaponModel(id: WeaponId): { group: THREE.Group; muzzle: TH
       barrelZ = -0.75
       break
     }
+    case 'pico': {
+      // ===== v13.5: PICO DE RECOLECCIÓN (hacha/pico estilo Fortnite) =====
+      // mango de madera con empuñadura de goma, cabeza de acero forjado
+      // con pico curvo + pala plana, remaches y guarda-mano de acero
+      const STEEL = new THREE.MeshLambertMaterial({ color: 0x8f949c })
+      const STEELD = new THREE.MeshLambertMaterial({ color: 0x5a5f66 })
+      const WOODM = new THREE.MeshLambertMaterial({ color: 0x8a5f34 })
+      const RUB = new THREE.MeshLambertMaterial({ color: 0x1b1d21 })
+      // mango (ligeramente cónico, agarre natural)
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.024, 0.58, 10), WOODM)
+      shaft.rotation.x = Math.PI / 2
+      shaft.position.set(0, -0.02, 0.02)
+      g.add(shaft)
+      // empuñadura de goma + pomo
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.024, 0.14, 10), RUB)
+      grip.rotation.x = Math.PI / 2
+      grip.position.set(0, -0.02, 0.26)
+      g.add(grip)
+      const pommel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.026, 0.03, 10), STEELD)
+      pommel.rotation.x = Math.PI / 2
+      pommel.position.set(0, -0.02, 0.33)
+      g.add(pommel)
+      // guarda-mano de acero (refuerzo del mango)
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.05, 10), STEELD)
+      collar.rotation.x = Math.PI / 2
+      collar.position.set(0, -0.02, -0.1)
+      g.add(collar)
+      // cabeza: bloque central + pico curvo (adelante) + pala (atrás)
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.075, 0.09), STEEL)
+      head.position.set(0, 0.045, -0.14)
+      g.add(head)
+      // pico: cuña curvada hacia abajo (perfora/golpea)
+      const pickTip = new THREE.Mesh(new THREE.ConeGeometry(0.026, 0.3, 8), STEEL)
+      pickTip.rotation.x = -Math.PI / 2 - 0.5
+      pickTip.position.set(0, 0.052, -0.32)
+      g.add(pickTip)
+      // pala trasera plana (excava)
+      const spade = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.055, 0.16), STEEL)
+      spade.rotation.x = 0.35
+      spade.position.set(0, 0.038, 0.02)
+      g.add(spade)
+      // remaches visibles en la cabeza
+      for (const rx of [-0.028, 0.028]) {
+        const rivet = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.012, 6), STEELD)
+        rivet.rotation.z = Math.PI / 2
+        rivet.position.set(rx, 0.045, -0.14)
+        g.add(rivet)
+      }
+      muzzle.position.set(0, 0.05, -0.45)
+      barrelZ = -0.44
+      break
+    }
   }
 
   muzzle.position.set(0, muzzle.position.y, barrelZ)
@@ -174,8 +337,9 @@ export function weaponPose(id: WeaponId): { hip: THREE.Vector3; ads: THREE.Vecto
       hipRot: new THREE.Euler(0.04, 0.05, 0),
     }
     case 'breacher': return {
-      hip: new THREE.Vector3(0.15, -0.19, -0.3),
-      ads: new THREE.Vector3(0, -0.062, -0.24),
+      hip: new THREE.Vector3(0.15, -0.19, -0.32),
+      // v13.4: y alineado a la línea de mira nueva (latón 0.081 + ghost ring)
+      ads: new THREE.Vector3(0, -0.081, -0.24),
       hipRot: new THREE.Euler(0.03, 0.04, 0),
     }
     case 'ar47': return {
@@ -192,6 +356,12 @@ export function weaponPose(id: WeaponId): { hip: THREE.Vector3; ads: THREE.Vecto
       hip: new THREE.Vector3(0.2, -0.2, -0.32),
       ads: new THREE.Vector3(0, -0.02, -0.24),
       hipRot: new THREE.Euler(0.03, 0.04, 0),
+    }
+    // v13.5: pico — se lleva en alto y cruzado, listo para golpear
+    case 'pico': return {
+      hip: new THREE.Vector3(0.2, -0.16, -0.3),
+      ads: new THREE.Vector3(0.2, -0.16, -0.3),
+      hipRot: new THREE.Euler(0.22, 0.5, 0.12),
     }
   }
 }

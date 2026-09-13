@@ -37,7 +37,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
-import { GAME, WEAPONS, ASSET_BASE, type WeaponId } from './shared'
+import { GAME, WEAPONS, ASSET_BASE, BOT_SKILL, type WeaponId, type BotDifficulty } from './shared'
 import { useBr, BR_RARITIES, rollBrRarity, type BrQueuePlayer } from './br-store'
 import { useGame } from './store'
 import { useAuth, recordBr, myOid } from './auth'
@@ -45,7 +45,7 @@ import { useChat, startAmbientChat, pushNetChatLine } from './chat'
 import { esNet, useBrNet, type BrQueueOp } from './esnet'
 import { getAudio } from './audio'
 import {
-  getRepoTextures, getTreeTemplate, preloadAssets, getRoadTex,
+  getRepoTextures, getTreeTemplate, preloadAssets,
   buildGLBWeapon, ensureWeaponGLB, onWeaponGLBsReady,
   type TreeTemplate,
 } from './assets'
@@ -121,7 +121,8 @@ const TINTABLE_MATS = new Set([
   'Topmat', 'Hatmat', 'Bottommat',
   'PackedMaterial1mat', 'PackedMaterial2mat',
 ])
-/** FFA: cada operador lleva un uniforme militar distinto */
+/** FFA: cada operador lleva un uniforme militar distinto.
+ *  v13.5: el índice 7 (ámbar dorado) es EXCLUSIVO del jugador local */
 const BR_TINTS = [
   0xc79a4a, // tan
   0x5a9a6a, // verde
@@ -130,6 +131,7 @@ const BR_TINTS = [
   0x6a7a5a, // oliva
   0x7a5a4a, // tierra rojiza
   0x5a5a6a, // gris
+  0xd9a03c, // dorado — JUGADOR (visible en 3.ª persona)
 ]
 
 const Z_AXIS = new THREE.Vector3(0, 0, 1)
@@ -280,7 +282,22 @@ function terrainH(x: number, z: number): number {
   return h
 }
 
-interface AABB { minX: number; maxX: number; minZ: number; maxZ: number; h: number }
+// v13.5: y0 = base de la caja; cuando está definida, la colisión solo
+// bloquea si el CUERPO se solapa verticalmente con [y0, h] (muros con
+// hueco de puerta, forjados…). Sin y0 → comportamiento clásico (bloquea
+// a cualquier altura, edificios macizos).
+interface AABB { minX: number; maxX: number; minZ: number; maxZ: number; h: number; y0?: number }
+
+// v13.5: superficies transitables de los edificios CON INTERIOR
+// (forjado de 2.ª planta, azotea) — el groundAt() las considera como suelo
+interface WalkSlab { minX: number; maxX: number; minZ: number; maxZ: number; y: number }
+/** rampa recta (escalera interior): sube de y0 a y1 a lo largo de axis */
+interface WalkRamp {
+  minX: number; maxX: number; minZ: number; maxZ: number
+  y0: number; y1: number
+  axis: 'x' | 'z'
+  dir: 1 | -1
+}
 
 // ------------------------------------------------------------
 // v12 — FORTNITE-STYLE BUILDING (BR)
@@ -298,6 +315,13 @@ const MATS_PER_KILL = 60      // materials per elimination
 const MATS_CRATE = 80         // supply crate bonus
 const MATS_AMMO = 40          // ammo box bonus
 const MATS_PALLET = 60        // material pallet pickup
+// v13.5: economía del PICO — cosechar árboles y muros de edificios
+const MATS_TREE = 12          // materials per pickaxe hit on a tree
+const TREE_HITS = 6           // pickaxe hits before a tree is depleted
+const MATS_WALLHIT = 7        // materials per pickaxe hit on a building wall
+const WALL_HITS = 8           // hits before a wall stops paying (agotado)
+const PICKAXE_RANGE = 3.1     // pickaxe reach (m)
+const PICKAXE_MELEE = 24      // pickaxe damage vs operators
 const BUILD_HP: Record<BuildKind, number> = { wall: 260, ramp: 200, floor: 200 }
 type BuildKind = 'wall' | 'ramp' | 'floor'
 const BUILD_KEYS: Record<string, BuildKind> = { KeyQ: 'wall', KeyC: 'ramp', KeyZ: 'floor' }
@@ -324,7 +348,9 @@ interface BuildCol {
   y0: number; y1: number
   blocks: boolean
 }
-interface TreeCol { x: number; z: number; r: number }
+// v13.5: hp = golpes de pico que quedan (cada golpe da MATS_TREE);
+// dead → sin colisión y sin más materiales (árbol agotado)
+interface TreeCol { x: number; z: number; r: number; hp: number; dead: boolean }
 interface LootSpot {
   x: number; z: number
   kind: 'weapon' | 'ammo' | 'med' | 'crate' | 'mats'
@@ -335,6 +361,8 @@ interface LootSpot {
   mesh: THREE.Group | null
   /** v9.1: objeto flotante (para reemplazarlo por el arma GLB real) */
   item: THREE.Group | null
+  /** v13.5: altura del suelo del loot (interiores de edificios); sin definir → terreno */
+  y?: number
 }
 interface BrVehicle {
   x: number; z: number; yaw: number
@@ -355,6 +383,10 @@ interface BrBot {
   thinkAt: number
   nextShotAt: number
   accuracy: number
+  /** v13.5: habilidad mapeada de BOT_SKILL (misma dificultad que los demás modos) */
+  seeDist: number
+  shotGap: [number, number]
+  dmgMult: number
   targetBot: number
   targetPlayer: boolean
   mesh: THREE.Group | null
@@ -459,6 +491,28 @@ export class BattleRoyaleGame {
   private hurtFlash = 0
 
   // ------------------------------------------------------------
+  // v13.5 — INVENTARIO DE 5 SLOTS (estilo Fortnite):
+  // slot 0 = PICO (fijo, recolector de materiales)
+  // slots 1-4 = armas del suelo con su rareza y munición
+  // ------------------------------------------------------------
+  private inv: { weapon: WeaponId | null; rarity: number; mag: number; reserve: number }[] =
+    [{ weapon: 'pico', rarity: -1, mag: 0, reserve: 0 }, { weapon: null, rarity: 0, mag: 0, reserve: 0 }, { weapon: null, rarity: 0, mag: 0, reserve: 0 }, { weapon: null, rarity: 0, mag: 0, reserve: 0 }, { weapon: null, rarity: 0, mag: 0, reserve: 0 }]
+  private curSlot = 0
+  private pickaxeSwingT = 0      // animación de golpe (s en curso)
+  private pickaxeHitAt = 0       // momento del impacto dentro del swing
+  private treeHitSfx = 0         // limita sonidos por segundo
+
+  // ------------------------------------------------------------
+  // v13.5 — 3.ª PERSONA: cuerpo del jugador (soldier1.glb con tinte
+  // propio) + cámara sobre el hombro con pull-in contra muros
+  // ------------------------------------------------------------
+  private cam3rd = true
+  private camDist = 3.6         // distancia actual de la cámara (suavizada)
+  private playerRig: BodyRig | null = null
+  private playerLegPhase = 0
+  private playerDeadAt = 0
+
+  // ------------------------------------------------------------
   // v11.2 — SAME aiming/controls as the normal modes (ADS, spread,
   // sprint FOV, spray, pause menu with settings)
   // ------------------------------------------------------------
@@ -493,6 +547,11 @@ export class BattleRoyaleGame {
 
   // world data
   private aabbs: AABB[] = []
+  // v13.5: suelos/escaleras transitables de edificios con interior
+  private walkSlabs: WalkSlab[] = []
+  private walkRamps: WalkRamp[] = []
+  private wallMatsPool = new Map<AABB, number>()   // golpes de pico restantes por muro
+  private enterableCount = 0
   private trees: TreeCol[] = []
   private loot: LootSpot[] = []
   private vehicles: BrVehicle[] = []
@@ -605,17 +664,21 @@ export class BattleRoyaleGame {
     const q = useGame.getState().settings.quality
     this.effQuality = q
     brSet({
-      qualityNote: q === 'alta' || q === 'ultra'
-        ? `Graphics profile ${q === 'ultra' ? 'ULTRA' : 'HIGH'} active — Battle Royale looks its best`
-        : '',
+      qualityNote: q === 'ultra'
+        ? 'ULTRA 4K active — native resolution + 4096px shadows'
+        : q === 'alta'
+          ? 'Graphics profile HIGH active — Battle Royale looks its best'
+          : '',
     })
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: q !== 'baja' })
+    // v13.5: 4K — ULTRA renderiza a la resolución NATIVA del dispositivo
+    // (hasta 3× DPR: una pantalla 4K se usa entera) + sombras 4096
     this.renderer.setPixelRatio(
       q === 'baja' ? 0.75
         : q === 'media' ? Math.min(devicePixelRatio, 1)
-          : q === 'alta' ? Math.min(devicePixelRatio, 1.5)
-            : Math.min(devicePixelRatio, 2),
+          : q === 'alta' ? Math.min(devicePixelRatio, 2)
+            : Math.min(devicePixelRatio, 3),
     )
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -701,16 +764,35 @@ export class BattleRoyaleGame {
   // ----------------------------------------------------------
   // INPUT
   // ----------------------------------------------------------
+  /** v13.5: misma junta de teclas configurable que los modos normales
+   *  (los controles de BR ahora respetan los remapeos de AJUSTES) */
+  private kb(action: 'fwd' | 'back' | 'left' | 'right' | 'sprint' | 'crouch' | 'jump' | 'reload' | 'zipline'): string {
+    return useGame.getState().settings.keybinds[action] || ''
+  }
+  private keyDown(action: 'fwd' | 'back' | 'left' | 'right' | 'sprint' | 'crouch' | 'jump' | 'reload' | 'zipline'): boolean {
+    const code = this.kb(action)
+    return code !== '' && this.keys.has(code)
+  }
   private onKeyDown = (e: KeyboardEvent): void => {
     // v10: mientras el chat está abierto, las teclas son del input
     if (useChat.getState().open) return
     this.keys.add(e.code)
-    if (e.code === 'Space') {
+    if (e.code === 'Space' || e.code === this.kb('jump')) {
       e.preventDefault()
       if (this.phase === 'plane') this.jumpFromPlane()
     }
-    if (e.code === 'KeyR' && this.phase === 'live') this.startReload()
-    if (e.code === 'KeyE') this.wantJump = true   // interaction flag
+    if (e.code === this.kb('reload') && this.phase === 'live') this.startReload()
+    if (e.code === this.kb('zipline') || e.code === 'KeyE') this.wantJump = true   // interaction flag
+    // v13.5: INVENTARIO — teclas 1-5 (1 = pico) como en el modo normal
+    if (this.phase === 'live' && !this.inVehicle && /^Digit[1-5]$/.test(e.code)) {
+      this.equipSlot(Number(e.code.slice(5)) - 1)
+    }
+    // v13.5: 3.ª/1.ª persona — [V]
+    if (e.code === 'KeyV' && (this.phase === 'live' || this.phase === 'freefall')) {
+      this.cam3rd = !this.cam3rd
+      useBr.getState().set({ cam3rd: this.cam3rd })
+      getAudio().uiClick()
+    }
     // v12: construcción estilo Fortnite — Q wall · C ramp · Z floor
     // (la misma tecla de la pieza activa sale del modo construcción)
     if (this.phase === 'live' && !this.inVehicle && BUILD_KEYS[e.code]) {
@@ -728,12 +810,23 @@ export class BattleRoyaleGame {
     }
   }
   private onKeyUp = (e: KeyboardEvent): void => { this.keys.delete(e.code) }
+  /** v13.5: rueda del ratón — cicla el inventario (como el modo normal) */
+  private onWheel = (e: WheelEvent): void => {
+    if (!this.locked || this.paused || this.phase !== 'live' || this.inVehicle) return
+    e.preventDefault()
+    const dir = e.deltaY > 0 ? 1 : -1
+    let i = this.curSlot
+    for (let step = 0; step < 5; step++) {
+      i = (i + dir + 5) % 5
+      if (this.inv[i].weapon) { this.equipSlot(i); break }
+    }
+  }
   private onMouseMove = (e: MouseEvent): void => {
     if (!this.locked || this.paused) return
     const s = useGame.getState().settings
     // v11.2: identical feel to the normal modes (ADS zoom scaling + sprint)
     const zoomFactor = this.adsAmt > 0.05 ? Math.max(0.28, this.camera.fov / 74) * (s.adsSens ?? 0.75) : 1
-    const sprinting = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && this.movingFast()
+    const sprinting = (this.keyDown('sprint') || this.keys.has('ShiftRight')) && this.movingFast()
     const sens = 0.0022 * s.sens * (this.ads ? zoomFactor : 1) * (sprinting ? 1.12 : 1)
     this.yaw -= e.movementX * sens
     this.pitch = clamp(this.pitch - e.movementY * sens, -1.35, 1.35)
@@ -781,6 +874,8 @@ export class BattleRoyaleGame {
     window.addEventListener('keyup', this.onKeyUp)
     window.addEventListener('mousemove', this.onMouseMove)
     window.addEventListener('resize', this.onResize)
+    // v13.5: rueda = cambio de arma (mismo gesto que el modo normal)
+    window.addEventListener('wheel', this.onWheel, { passive: false })
     document.addEventListener('pointerlockchange', this.onLockChange)
     this.canvas.addEventListener('mousedown', this.onMouseDown)
     this.canvas.addEventListener('mouseup', this.onMouseUp)
@@ -1742,15 +1837,15 @@ export class BattleRoyaleGame {
   private applyRepoTexToBr(): boolean {
     const repo = getRepoTextures()
     if (!repo.pared || !repo.piso) return false
-    // v13.2: asfalto/concreto de SUELO (carreteras/aceras) van por la
-    // variante anti-shimmer (el grano fino hervía en rasante)
+    // v13.4: texturas ORIGINALES a resolución plena (el pre-filtrado
+    // anti-shimmer v13.2/v13.3 mataba la calidad del grano real)
     const src = (kind: string): THREE.Texture | null =>
       kind === 'wall' ? repo.pared
       : kind === 'roof' ? repo.piso
       : kind === 'pasto' ? repo.pasto
       : kind === 'arena' ? repo.arena
-      : kind === 'asfalto' ? (getRoadTex('asfalto') ?? repo.asfalto)
-      : kind === 'concreto' ? (getRoadTex('concreto') ?? repo.concreto)
+      : kind === 'asfalto' ? repo.asfalto
+      : kind === 'concreto' ? repo.concreto
       : kind === 'roca' ? repo.roca
       : kind === 'contenedor' ? repo.contenedor
       : kind === 'madera' ? repo.madera
@@ -1818,12 +1913,11 @@ export class BattleRoyaleGame {
     // Si la textura aún no llegó: canvas clásico y parche force al llegar.
     const roadMat = new THREE.MeshStandardMaterial({ roughness: 0.94 })
     const repoAsphalt = getRepoTextures().asfalto
-    // v13.2: variante anti-shimmer para las carreteras rasantes
-    const roadTex = getRoadTex('asfalto') ?? repoAsphalt
-    if (roadTex) {
-      roadTex.wrapS = roadTex.wrapT = THREE.RepeatWrapping
-      if (roadTex === repoAsphalt) roadTex.repeat.set(1, 1)
-      roadMat.map = roadTex
+    // v13.4: textura ORIGINAL (sin pre-filtrar) — calidad plena
+    if (repoAsphalt) {
+      repoAsphalt.wrapS = repoAsphalt.wrapT = THREE.RepeatWrapping
+      repoAsphalt.repeat.set(1, 1)
+      roadMat.map = repoAsphalt
       roadMat.color.set(0xffffff)
       roadMat.userData.sharedMap = true
     } else {
@@ -1950,6 +2044,16 @@ export class BattleRoyaleGame {
       awningMat: THREE.MeshStandardMaterial
     },
   ): void {
+    // v13.5 — EDIFICIOS CON INTERIOR: una buena parte de los edificios
+    // bajos (≤ 2 plantas) se construye HUECA: muros con HUECO DE PUERTA,
+    // interior con forjado de madera, escalera real (peldaños andables),
+    // loot DENTRO y azotea transitable (sube con rampas de construcción).
+    if (h <= 11 && w >= 6.5 && d >= 6.5 && wrnd() < 0.7) {
+      // la altura se acota a 9,2 m para que el interior siempre sea de
+      // 1-2 plantas andables (2.ª planta con escalera si h ≥ 7,6)
+      this.buildEnterableBuilding(x, z, w, d, Math.min(h, 9.2), gy, seed, mats)
+      return
+    }
     const shop = wrnd() < 0.34
     const floors = Math.max(1, Math.floor(h / 4.2))
     const floorH = h / floors
@@ -2066,6 +2170,229 @@ export class BattleRoyaleGame {
     mergeAdd(propGeos, mats.roofPropMat, true)
 
     this.aabbs.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, h: gy + h })
+  }
+
+  // ------------------------------------------------------------
+  // v13.5 — EDIFICIO CON INTERIOR (hueco)
+  // 4 muros (el frontal con HUECO DE PUERTA), forjado de madera con
+  // hueco de escalera, peldaños ANDABLES (walkSlabs por peldaño),
+  // loot en el interior, luz cálida y azotea transitable.
+  // La colisión son los muros (AABB con y0) — el interior es libre.
+  // ------------------------------------------------------------
+  private buildEnterableBuilding(
+    x: number, z: number, w: number, d: number, h: number, gy: number, seed: number,
+    mats: {
+      winGlass: THREE.MeshStandardMaterial
+      winFrame: THREE.MeshStandardMaterial
+      concrete: THREE.MeshStandardMaterial
+      roofPropMat: THREE.MeshStandardMaterial
+      doorMat: THREE.MeshStandardMaterial
+      awningMat: THREE.MeshStandardMaterial
+    },
+  ): void {
+    const T = 0.45                  // grosor de muro
+    const DOOR_W = 1.9
+    const DOOR_H = 2.55
+    const twoFloors = h >= 7.6
+    const slabY = twoFloors ? gy + h / 2 : 0      // forjado interior (2.ª planta)
+    // la puerta mira hacia el centro de la ciudad (misma regla que el
+    // edificio macizo clásico)
+    const frontSign = z >= CITIES[0].z ? 1 : -1
+    // material de muro por segmento (Pared con repeat propio)
+    const wallMatOf = (sw: number, sh: number): THREE.MeshStandardMaterial => {
+      const m = this.cityWallMat(Math.max(2, sw), Math.max(2.5, sh), seed)
+      return m
+    }
+    // interior: madera del usuario
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0xb59468, roughness: 0.85 })
+    this.texMats.push({ mat: woodMat, kind: 'madera', rx: 2.2, ry: 2.2 })
+
+    // ---- MUROS: frontal (con puerta) + trasero + laterales ----
+    const addWall = (
+      cx: number, cz: number, sw: number, sh: number, y0: number, alongX: boolean,
+    ): void => {
+      const geo = alongX ? new THREE.BoxGeometry(sw, sh, T) : new THREE.BoxGeometry(T, sh, sw)
+      const mesh = new THREE.Mesh(geo, wallMatOf(sw, sh))
+      mesh.position.set(cx, y0 + sh / 2, cz)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      this.mapScene.add(mesh)
+      this.aabbs.push({
+        minX: cx - (alongX ? sw / 2 : T / 2), maxX: cx + (alongX ? sw / 2 : T / 2),
+        minZ: cz - (alongX ? T / 2 : sw / 2), maxZ: cz + (alongX ? T / 2 : sw / 2),
+        h: y0 + sh, y0,
+      })
+    }
+    const fz = z + frontSign * (d / 2 - T / 2)
+    const bz = z - frontSign * (d / 2 - T / 2)
+    // frontal: dos segmentos + dintel sobre la puerta
+    const segW = (w - DOOR_W) / 2
+    addWall(x - (DOOR_W / 2 + segW / 2), fz, segW, h, gy, true)
+    addWall(x + (DOOR_W / 2 + segW / 2), fz, segW, h, gy, true)
+    addWall(x, fz, DOOR_W, h - DOOR_H, gy + DOOR_H, true)   // dintel (no bloquea al pasar)
+    // trasero + laterales (enteros)
+    addWall(x, bz, w, h, gy, true)
+    addWall(x - (w / 2 - T / 2), z, d, h, gy, false)
+    addWall(x + (w / 2 - T / 2), z, d, h, gy, false)
+
+    // ---- marco de puerta + escalón exterior ----
+    const frameGeos: THREE.BufferGeometry[] = []
+    for (const sx of [-DOOR_W / 2, DOOR_W / 2]) {
+      const f = new THREE.BoxGeometry(0.22, DOOR_H + 0.18, T + 0.12)
+      f.translate(x + sx, gy + (DOOR_H + 0.18) / 2, fz)
+      frameGeos.push(f)
+    }
+    const lintel = new THREE.BoxGeometry(DOOR_W + 0.44, 0.24, T + 0.12)
+    lintel.translate(x, gy + DOOR_H + 0.12, fz)
+    frameGeos.push(lintel)
+    const stoop = new THREE.BoxGeometry(2.4, 0.16, 1.2)
+    stoop.translate(x, gy + 0.08, z + frontSign * (d / 2 + 0.6))
+    frameGeos.push(stoop)
+    const mergeAdd = (geos: THREE.BufferGeometry[], mat: THREE.Material, shadow: boolean): void => {
+      if (!geos.length) return
+      const merged = mergeGeometries(geos, false)
+      for (const g of geos) g.dispose()
+      if (!merged) return
+      const m = new THREE.Mesh(merged, mat)
+      m.castShadow = shadow
+      this.receiveShadowSafe(m)
+      this.mapScene.add(m)
+    }
+    mergeAdd(frameGeos, mats.winFrame, true)
+
+    // ---- ventanas (laterales + trasera; cristal emisivo de atardecer) ----
+    const glassGeos: THREE.BufferGeometry[] = []
+    const winRows = twoFloors ? [1.8, 1.8 + h / 2] : [1.8]
+    for (const wy of winRows) {
+      for (const s of [-1, 1]) {
+        // laterales (a media altura del muro)
+        const g = new THREE.BoxGeometry(0.2, 1.1, Math.min(d * 0.5, 3.2))
+        g.translate(x + s * (w / 2 - 0.02), gy + wy, z)
+        glassGeos.push(g)
+        // trasera
+        const g2 = new THREE.BoxGeometry(Math.min(w * 0.55, 4.2), 1.1, 0.2)
+        g2.translate(x, gy + wy, bz + frontSign * 0.02)
+        glassGeos.push(g2)
+      }
+    }
+    mergeAdd(glassGeos, mats.winGlass, false)
+
+    // ---- 2.ª PLANTA: forjado de madera con hueco de escalera ----
+    if (twoFloors) {
+      const stairRun = 4.6
+      const stairW = 1.2
+      // la escalera pega a la pared OPUESTA a la puerta y sube hacia el este;
+      // el hueco del forjado la cubre completa y se sale al este
+      const sz = z - frontSign * (d / 2 - T / 2 - stairW / 2 - 0.05)
+      const sx0 = x - w / 2 + 0.55
+      const steps = 11
+      const stepH = slabY / steps
+      const stepD = stairRun / steps
+      // interior del edificio y hueco de escalera
+      const ix0 = x - w / 2 + T / 2, ix1 = x + w / 2 - T / 2
+      const iz0 = z - d / 2 + T / 2, iz1 = z + d / 2 - T / 2
+      const hx0 = Math.max(ix0, sx0 - 0.2)
+      const hx1 = Math.min(ix1, sx0 + stairRun + 0.3)
+      const hz0 = Math.max(iz0, sz - stairW / 2 - 0.1)
+      const hz1 = Math.min(iz1, sz + stairW / 2 + 0.1)
+      // forjado = interior MENOS el hueco (4 bandas clásicas)
+      const slabPieces: [number, number, number, number][] = []
+      if (hx0 > ix0 + 0.05) slabPieces.push([ix0, hx0, iz0, iz1])                 // banda oeste
+      if (hx1 < ix1 - 0.05) slabPieces.push([hx1, ix1, iz0, iz1])                 // banda este (salida)
+      if (hz0 > iz0 + 0.05) slabPieces.push([hx0, hx1, iz0, hz0])                 // franja junto a la escalera
+      if (hz1 < iz1 - 0.05) slabPieces.push([hx0, hx1, hz1, iz1])                 // franja opuesta
+      for (const [x0, x1, z0, z1] of slabPieces) {
+        if (x1 - x0 < 0.3 || z1 - z0 < 0.3) continue
+        const sw = x1 - x0, sd = z1 - z0
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.22, sd), woodMat)
+        slab.position.set((x0 + x1) / 2, slabY - 0.11, (z0 + z1) / 2)
+        this.receiveShadowSafe(slab)
+        this.mapScene.add(slab)
+        // walkable (y = cara superior del forjado)
+        this.walkSlabs.push({ minX: x0, maxX: x1, minZ: z0, maxZ: z1, y: slabY })
+        // el forjado también frena balas: AABB fino
+        this.aabbs.push({ minX: x0, maxX: x1, minZ: z0, maxZ: z1, h: slabY, y0: slabY - 0.22 })
+      }
+      // ---- ESCALERA: peldaños andables (cada uno = walkSlab exacto) ----
+      const stepGeos: THREE.BufferGeometry[] = []
+      for (let i = 0; i < steps; i++) {
+        const treadY = gy + stepH * (i + 1)
+        const cx = sx0 + stepD * (i + 0.5)
+        const g = new THREE.BoxGeometry(stepD * 1.02, stepH, stairW)
+        g.translate(cx, gy + (treadY - gy) / 2, sz)
+        stepGeos.push(g)
+        this.walkSlabs.push({ minX: cx - stepD / 2, maxX: cx + stepD / 2, minZ: sz - stairW / 2, maxZ: sz + stairW / 2, y: treadY })
+      }
+      // zanca lateral (estética)
+      const zanca = new THREE.BoxGeometry(stairRun, 0.26, 0.14)
+      zanca.translate(sx0 + stairRun / 2, gy + slabY / 2, sz - frontSign * (stairW / 2 + 0.07))
+      stepGeos.push(zanca)
+      mergeAdd(stepGeos, woodMat, true)
+      // barandilla del hueco (no caes al 2º piso por accidente) — del lado
+      // del hueco que da a la sala (el opuesto a la pared de la escalera)
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(stairRun + 0.4, 1.0, 0.12), mats.winFrame)
+      const railZ = frontSign === 1 ? hz1 + 0.06 : hz0 - 0.06
+      rail.position.set((hx0 + hx1) / 2, slabY + 0.5, railZ)
+      this.mapScene.add(rail)
+      // loot en la 2.ª planta
+      this.loot.push({
+        x: x + w / 4, z: z + frontSign * (d / 4), kind: wrnd() < 0.5 ? 'weapon' : 'ammo', weapon: WEAPON_POOL[Math.floor(wrand(0, WEAPON_POOL.length))],
+        rarity: rollBrRarity(0, wrnd), taken: false, mesh: null, item: null, y: slabY,
+      })
+    }
+
+    // ---- AZOTEA: losa transitable + pretiles ----
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(w, 0.32, d), this.cityRoofMat(w, d))
+    roof.position.set(x, gy + h + 0.16, z)
+    roof.castShadow = true
+    this.receiveShadowSafe(roof)
+    this.mapScene.add(roof)
+    this.walkSlabs.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, y: gy + h + 0.32 })
+    const parGeos: THREE.BufferGeometry[] = []
+    for (const [ox, oz, sw, sd] of [
+      [0, d / 2, w, 0.35], [0, -d / 2, w, 0.35], [w / 2, 0, 0.35, d], [-w / 2, 0, 0.35, d],
+    ] as const) {
+      const g = new THREE.BoxGeometry(sw, 0.8, sd)
+      g.translate(x + ox, gy + h + 0.72, z + oz)
+      parGeos.push(g)
+    }
+    mergeAdd(parGeos, mats.concrete, false)
+    // depósito en la azotea (se lee desde el planeo)
+    const tank = new THREE.CylinderGeometry(0.7, 0.7, 1.3, 10)
+    tank.translate(x + w * 0.26, gy + h + 1.5, z + d * 0.24)
+    mergeAdd([tank], mats.roofPropMat, true)
+
+    // ---- LUZ interior cálida (media+) ----
+    if (this.effQuality !== 'baja') {
+      const lamp = new THREE.PointLight(0xffc98a, 5.5, Math.max(w, d) * 1.1, 1.6)
+      lamp.position.set(x, gy + (twoFloors ? h / 2 - 0.5 : h - 0.6), z)
+      this.mapScene.add(lamp)
+      // panel emisivo en el techo (se ve desde dentro)
+      const panel = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6, 0.06, 0.5),
+        new THREE.MeshStandardMaterial({ color: 0xffe9c8, emissive: 0xffc98a, emissiveIntensity: 1.6 }),
+      )
+      panel.position.set(x, gy + (twoFloors ? h / 2 - 0.28 : h - 0.3), z)
+      this.mapScene.add(panel)
+    }
+
+    // ---- LOOT interior (planta baja) ----
+    const innerLoot = wrnd() < 0.75
+    if (innerLoot) {
+      const kinds: LootSpot['kind'][] = ['weapon', 'ammo', 'mats', 'med']
+      const kind = kinds[Math.floor(wrand(0, kinds.length))]
+      this.loot.push({
+        x: x + wrand(-w / 4, w / 4), z: z + wrand(-d / 4, d / 4),
+        kind, weapon: WEAPON_POOL[Math.floor(wrand(0, WEAPON_POOL.length))],
+        rarity: rollBrRarity(0, wrnd), taken: false, mesh: null, item: null, y: gy,
+      })
+    }
+    this.enterableCount++
+  }
+
+  /** v13.5: receiveShadow sin romper en materiales básicos */
+  private receiveShadowSafe(m: THREE.Mesh): void {
+    m.receiveShadow = true
   }
 
   private buildPois(): void {
@@ -2257,7 +2584,8 @@ export class BattleRoyaleGame {
       if (CITIES.some(c => Math.hypot(x - c.x, z - c.z) < c.r + 4)) continue
       if (POIS.some(p => Math.hypot(x - p.x, z - p.z) < p.r)) continue
       if (spots.some(s => Math.hypot(s.x - x, s.z - z) < 3.2)) continue
-      spots.push({ x, z, r: 0.55 })
+      // v13.5: cada árbol trae su reserva de golpes de pico (materiales)
+      spots.push({ x, z, r: 0.55, hp: TREE_HITS, dead: false })
     }
     return spots
   }
@@ -2510,7 +2838,8 @@ export class BattleRoyaleGame {
 
   private buildLootMesh(s: LootSpot): THREE.Group {
     const group = new THREE.Group()
-    const gy = terrainH(s.x, s.z)
+    // v13.5: y definido = loot de interior (forjado/azotea); si no, terreno
+    const gy = s.y !== undefined ? s.y : terrainH(s.x, s.z)
     // v12: MATERIAL pallet — wooden slats + straps, reads as build supplies
     if (s.kind === 'mats') {
       const wood = new THREE.MeshStandardMaterial({ color: 0xb08a54, roughness: 0.85 })
@@ -2746,12 +3075,19 @@ export class BattleRoyaleGame {
         destZ: anchor.z + brand(-8, 8),
         thinkAt: 0,
         nextShotAt: 0,
-        accuracy: brand(0.32, 0.6),
+        // v13.5: MISMA DIFICULTAD que los demás modos — el perfil global
+        // (AJUSTES → dificultad) alimenta los bots del BR vía BOT_SKILL:
+        // reacción, cadencia, alcance de visión, puntería y daño
+        accuracy: clamp(this.botSkill().hitBase * brand(0.85, 1.15), 0.03, 0.85),
+        seeDist: this.botSkill().seeDist,
+        shotGap: [this.botSkill().burstPause[0], this.botSkill().burstPause[1]],
+        dmgMult: this.botSkill().dmg,
         targetBot: -1,
         targetPlayer: false,
         mesh: null,
         rig: null,
-        tint: i,
+        // v13.5: los bots NUNCA usan el tinte dorado (índice 7 = jugador)
+        tint: i % (BR_TINTS.length - 1),
         legPhase: brand(0, 10),
         deadAt: 0,
         dropAt: brand(1, 4),
@@ -2767,6 +3103,14 @@ export class BattleRoyaleGame {
       }
       this.bots.push(b)
     }
+  }
+
+  /** v13.5: perfil de habilidad de los bots del BR — es EL MISMO que usan
+   *  los modos normales con la dificultad elegida en AJUSTES (fácil/normal/
+   *  difícil/experto). El default del juego es 'normal'. */
+  private botSkill(): (typeof BOT_SKILL)[BotDifficulty] {
+    const d = useGame.getState().botDifficulty ?? 'normal'
+    return BOT_SKILL[d] ?? BOT_SKILL.normal
   }
 
 
@@ -2927,7 +3271,8 @@ export class BattleRoyaleGame {
 
   /** arma real (GLB del usuario) en el soporte; fallback procedural */
   private attachRigWeapon(holder: THREE.Group, weapon: WeaponId): void {
-    const built = buildGLBWeapon(weapon) ?? buildWeaponModel(weapon)
+    // v13.5: el pico no tiene GLB — siempre procedural
+    const built = weapon === 'pico' ? buildWeaponModel('pico') : (buildGLBWeapon(weapon) ?? buildWeaponModel(weapon))
     const group = built.group
     group.scale.setScalar(0.95)
     group.rotation.y = Math.PI
@@ -2943,6 +3288,45 @@ export class BattleRoyaleGame {
       disposeTree(child)
     }
     this.attachRigWeapon(rig.weaponHolder, rig.weaponId)
+  }
+
+  // ------------------------------------------------------------
+  // v13.5 — CUERPO DEL JUGADOR EN 3.ª PERSONA
+  // mismo soldier1.glb que los bots, tinte DORADO exclusivo y el
+  // arma/herramienta actual en las manos (IK a dos manos)
+  // ------------------------------------------------------------
+  private spawnPlayerBody(): void {
+    this.disposePlayerBody()
+    this.playerRig = this.buildBotBody(BR_TINTS.length - 1, this.weapon ?? 'pico')
+    this.playerRig.root.position.set(this.px, this.py - EYE, this.pz)
+    this.mapScene.add(this.playerRig.root)
+  }
+
+  private disposePlayerBody(): void {
+    if (!this.playerRig) return
+    this.mapScene.remove(this.playerRig.root)
+    disposeTree(this.playerRig.root)
+    this.playerRig = null
+  }
+
+  /** punto sólido (para el pull-in de la cámara en 3.ª persona) */
+  private pointSolid(x: number, y: number, z: number): boolean {
+    for (const b of this.aabbs) {
+      if (x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ) {
+        const y0 = b.y0 ?? -Infinity
+        if (y > y0 && y < b.h) return true
+      }
+    }
+    for (const c of this.buildCols) {
+      if (!c.blocks || c.piece.dead) continue
+      if (x > c.minX && x < c.maxX && z > c.minZ && z < c.maxZ && y > c.y0 && y < c.y1) return true
+    }
+    for (const t of this.trees) {
+      if (t.dead) continue
+      const dx = x - t.x, dz = z - t.z
+      if (dx * dx + dz * dz < t.r * t.r) return true
+    }
+    return false
   }
 
   /** animación de caminar/caída del cuerpo (huesos del soldado o fallback) */
@@ -2974,6 +3358,8 @@ export class BattleRoyaleGame {
   private swapAllToSoldier(): void {
     const botsPend = this.bots.filter(b => b.rig && !b.rig.usingSoldier)
     const walkersPend = this.lobbyWalkers.filter(w => !w.rig.usingSoldier)
+    // v13.5: el CUERPO DEL JUGADOR también se cambia al soldado real
+    const playerPend = this.playerRig && !this.playerRig.usingSoldier ? [this.playerRig] : []
     const step = (): void => {
       if (this.disposed || !this.soldierTemplate) return
       const b = botsPend.shift()
@@ -3001,7 +3387,18 @@ export class BattleRoyaleGame {
         w.rig.root.rotation.y = yaw
         this.lobbyScene.add(w.rig.root)
       }
-      if (botsPend.length || walkersPend.length) setTimeout(step, 40)
+      const pr = playerPend.shift()
+      if (pr && this.playerRig === pr && !pr.usingSoldier) {
+        const pos = pr.root.position.clone()
+        const yaw = pr.root.rotation.y
+        this.mapScene.remove(pr.root)
+        disposeTree(pr.root)
+        this.playerRig = this.buildBotBody(BR_TINTS.length - 1, pr.weaponId)
+        this.playerRig.root.position.copy(pos)
+        this.playerRig.root.rotation.y = yaw
+        this.mapScene.add(this.playerRig.root)
+      }
+      if (botsPend.length || walkersPend.length || playerPend.length) setTimeout(step, 40)
     }
     step()
   }
@@ -3010,12 +3407,14 @@ export class BattleRoyaleGame {
   private refreshWeaponModels(): void {
     if (this.disposed) return
     // viewmodel del jugador (si aún era procedural)
-    if (this.vmIsProcedural && this.weapon) this.attachViewmodel(this.weapon)
+    if (this.vmIsProcedural && this.weapon && this.weapon !== 'pico') this.attachViewmodel(this.weapon)
     // manos de bots y caminantes
     for (const b of this.bots) {
       if (b.rig) this.rebuildRigWeapon(b.rig)
     }
     for (const w of this.lobbyWalkers) this.rebuildRigWeapon(w.rig)
+    // v13.5: el arma en las manos del jugador (3.ª persona)
+    if (this.playerRig) this.rebuildRigWeapon(this.playerRig)
     // loot de armas flotando
     for (const s of this.loot) {
       if (!s.taken && s.kind === 'weapon' && s.mesh) this.rebuildLootWeaponItem(s)
@@ -3103,10 +3502,12 @@ export class BattleRoyaleGame {
       }
       // --- think ---
       if (t > b.thinkAt) {
-        b.thinkAt = t + rand(700, 1600)
+        // v13.5: cadencia de reacción = BOT_SKILL.react (misma que modos normales)
+        b.thinkAt = t + rand(this.botSkill().react[0], this.botSkill().react[1])
         // find target: player, a REAL operator or the nearest bot within 62 m
         let best = -1
-        let bestD = 62
+        // v13.5: alcance de visión = BOT_SKILL.seeDist (fácil = 38 m)
+        let bestD = b.seeDist || this.botSkill().seeDist
         let targetPlayer = false
         b.targetOp = null
         if (this.phase === 'live') {
@@ -3143,14 +3544,16 @@ export class BattleRoyaleGame {
       }
       // --- shoot ---
       if ((b.targetBot >= 0 || b.targetPlayer || b.targetOp) && t > b.nextShotAt) {
-        b.nextShotAt = t + rand(260, 620)
+        // v13.5: cadencia de disparo = BOT_SKILL.burstPause (fácil = 750-1400 ms)
+        b.nextShotAt = t + rand(b.shotGap[0], b.shotGap[1])
         const target = b.targetPlayer ? { x: this.px, z: this.pz }
           : b.targetOp ? this.remoteOps.get(b.targetOp)
             : this.bots.find(o => o.id === b.targetBot)
         const tx = target?.x ?? b.x
         const tz = target?.z ?? b.z
         const d = Math.hypot(tx - b.x, tz - b.z)
-        if (d < 64 && target) {
+        // v13.5: alcance de tiro sigue el perfil de habilidad (seeDist)
+        if (d < Math.max(b.seeDist, 30) && target) {
           // tracer toward the target + shot sound (distance-based)
           const from = new THREE.Vector3(b.x, b.y + 1.4, b.z)
           const to = new THREE.Vector3(tx, terrainH(tx, tz) + 1.2, tz)
@@ -3163,7 +3566,8 @@ export class BattleRoyaleGame {
             if (Math.random() < hitChance) {
               // v10: el daño del bot escala con la rareza de SU arma
               const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
-              const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult
+              // v13.5: daño escalado por BOT_SKILL.dmg (fácil = ×0.38)
+              const dmg = rand(7, 13) * (WEAPONS[b.weapon].damage / 34) * rarMult * b.dmgMult
               if (b.targetPlayer) {
                 // v12: player-built WALLS soak bot fire — building is real cover
                 const wall = this.wallOnSegment(b.x, b.z, b.y + 1.4, this.px, this.pz, this.py - 0.35)
@@ -3184,7 +3588,7 @@ export class BattleRoyaleGame {
               const hitChance = b.accuracy * (1 - d / 78)
               if (Math.random() < hitChance) {
                 const rarMult = BR_RARITIES[b.rarity]?.dmgMult ?? 1
-                victim.hp -= rand(9, 16) * rarMult
+                victim.hp -= rand(9, 16) * rarMult * b.dmgMult
                 if (victim.hp <= 0) this.killBot(victim, b.name)
               }
             }
@@ -3465,6 +3869,10 @@ export class BattleRoyaleGame {
     if (this.worldSeed !== null) return
     this.practice = true
     this.botLeader = true
+    // v13.4: salir de la cola online (si se entró con FIND MATCH) —
+    // el jugador pasa a offline y deja de aparecer en el lobby ajeno
+    esNet.brLeaveQueue()
+    useBr.getState().set({ netStatus: 'offline' })
     this.applyMatchSeed((Math.random() * 0x7fffffff) | 0, 'practice')
     useBr.getState().addFeed('PRACTICE MATCH — 19 bots · online queue needs 4 real operators', false)
   }
@@ -3619,9 +4027,9 @@ export class BattleRoyaleGame {
     }
     const maxFall = this.glide ? 6.5 : 42
     this.vy = Math.max(this.vy - 26 * dt, -maxFall)
-    // steer with WASD
-    const fwd = this.keys.has('KeyW') ? 1 : this.keys.has('KeyS') ? -1 : 0
-    const strafe = this.keys.has('KeyA') ? 1 : this.keys.has('KeyD') ? -1 : 0
+    // steer with WASD (v13.5: mismos binds configurables)
+    const fwd = (this.keyDown('fwd') ? 1 : 0) - (this.keyDown('back') ? 1 : 0)
+    const strafe = (this.keyDown('left') ? 1 : 0) - (this.keyDown('right') ? 1 : 0)
     const spd = this.glide ? 12 : 9
     if (fwd || strafe) {
       const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw)
@@ -3644,8 +4052,26 @@ export class BattleRoyaleGame {
       this.buildCols = []
       useBr.getState().set({ mats: this.mats, buildMode: null })
       this.buildMode = null
+      // v13.5: INVENTARIO fresco — slot 1 = PICO equipado por defecto
+      this.inv = [
+        { weapon: 'pico', rarity: -1, mag: 0, reserve: 0 },
+        { weapon: null, rarity: 0, mag: 0, reserve: 0 },
+        { weapon: null, rarity: 0, mag: 0, reserve: 0 },
+        { weapon: null, rarity: 0, mag: 0, reserve: 0 },
+        { weapon: null, rarity: 0, mag: 0, reserve: 0 },
+      ]
+      this.curSlot = 0
+      this.weapon = 'pico'
+      this.weaponRarity = -1
+      this.mag = 0
+      this.reserve = 0
+      this.reloading = false
+      this.attachViewmodel('pico')
+      this.spawnPlayerBody()
+      useBr.getState().set({ cam3rd: this.cam3rd })
       useBr.getState().addFeed('BOOTS ON THE GROUND — loot fast, the storm comes', false)
       useBr.getState().addFeed('BUILD MODE: [Q] WALL · [C] RAMP · [Z] FLOOR — materials ready', false)
+      useBr.getState().addFeed('[1] PICKAXE — hit trees and walls for materials · [1-5] inventory · [V] camera', false)
     }
   }
 
@@ -3653,7 +4079,9 @@ export class BattleRoyaleGame {
   // PLAYER MOVEMENT (live)
   // ----------------------------------------------------------
   private movingFast(): boolean {
-    return this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD')
+    // v13.5: respeta los remapeos de teclas de AJUSTES
+    return this.keyDown('fwd') || this.keyDown('back') || this.keyDown('left') || this.keyDown('right')
+      || this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD')
   }
 
   private updatePlayer(dt: number): void {
@@ -3665,14 +4093,15 @@ export class BattleRoyaleGame {
       return
     }
 
-    const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
-    const crouch = this.keys.has('ControlLeft')
+    // v13.5: mismos binds configurables que el resto del juego
+    const sprint = this.keyDown('sprint') || this.keys.has('ShiftRight')
+    const crouch = this.keyDown('crouch')
     let speed = sprint ? 7.4 : 5.0
     if (crouch) speed = 2.4
     if (this.weapon && WEAPONS[this.weapon]) speed *= WEAPONS[this.weapon].moveMult
     if (this.adsAmt > 0.3) speed *= 0.65   // v11.2: aiming slows you (normal-mode rule)
-    const fwd = (this.keys.has('KeyW') ? 1 : 0) - (this.keys.has('KeyS') ? 1 : 0)
-    const strafe = (this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('KeyA') ? 1 : 0)
+    const fwd = (this.keyDown('fwd') ? 1 : 0) - (this.keyDown('back') ? 1 : 0)
+    const strafe = (this.keyDown('right') ? 1 : 0) - (this.keyDown('left') ? 1 : 0)
     if (fwd || strafe) {
       const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw)
       const len = Math.hypot(fwd, strafe)
@@ -3694,7 +4123,7 @@ export class BattleRoyaleGame {
     // jump + gravity on the terrain (v12: + build floors/ramps via groundAt)
     const feet = this.py - EYE
     const groundY = this.groundAt(this.px, this.pz, feet) + EYE
-    if (this.onGround && this.keys.has('Space')) {
+    if (this.onGround && (this.keys.has('Space') || this.keyDown('jump'))) {
       this.vy = 6.4
       this.onGround = false
       getAudio().jump()
@@ -3723,12 +4152,18 @@ export class BattleRoyaleGame {
     this.updateBuild(performance.now())
   }
 
-  /** circle collision vs buildings + trees + v12 build walls (with vertical overlap) */
+  /** circle collision vs buildings + trees + v12 build walls (with vertical overlap)
+   *  v13.5: AABBs con y0 (muros de edificios con interior) solo bloquean si
+   *  el cuerpo se solapa verticalmente; árboles agotados (pico) dejan de bloquear */
   private blocked(x: number, z: number, r: number): boolean {
-    for (const b of this.aabbs) {
-      if (x > b.minX - r && x < b.maxX + r && z > b.minZ - r && z < b.maxZ + r) return true
-    }
     const feet = this.py - EYE
+    for (const b of this.aabbs) {
+      if (x > b.minX - r && x < b.maxX + r && z > b.minZ - r && z < b.maxZ + r) {
+        if (b.y0 === undefined) return true
+        // solape vertical del cuerpo [feet, feet+1.8] con el muro [y0, h]
+        if (feet + 1.8 > b.y0 + 0.06 && feet < b.h - 0.35) return true
+      }
+    }
     for (const c of this.buildCols) {
       if (!c.blocks || c.piece.dead) continue
       // vertical overlap: blocked only if the body intersects the wall span
@@ -3736,6 +4171,7 @@ export class BattleRoyaleGame {
       if (x > c.minX - r && x < c.maxX + r && z > c.minZ - r && z < c.maxZ + r) return true
     }
     for (const t of this.trees) {
+      if (t.dead) continue
       const dx = x - t.x, dz = z - t.z
       if (dx * dx + dz * dz < (t.r + r) * (t.r + r)) return true
     }
@@ -3751,7 +4187,12 @@ export class BattleRoyaleGame {
     for (const s of this.loot) {
       if (s.taken) continue
       const d = Math.hypot(s.x - this.px, s.z - this.pz)
-      if (d < bestD) { bestD = d; bestLoot = s }
+      if (d < bestD) {
+        // v13.5: loot de interior — solo si estás a su altura (2.ª planta)
+        if (s.y !== undefined && Math.abs(this.py - EYE - s.y) > 2.4) continue
+        bestD = d
+        bestLoot = s
+      }
     }
     if (bestLoot) {
       const label = bestLoot.kind === 'weapon'
@@ -3796,13 +4237,24 @@ export class BattleRoyaleGame {
       getAudio().buy()
       useBr.getState().addFeed(`+${MATS_PALLET} MATERIALS — build with [Q] [C] [Z]`, true)
     } else if (s.kind === 'weapon' || s.kind === 'crate') {
+      // v13.5: el arma entra al INVENTARIO de 5 slots (pico + 4 armas);
+      // si están llenos, la vieja del slot activo cae al suelo
       const wid = s.weapon
+      const slotIdx = this.stashWeapon(wid, s.rarity, WEAPONS[wid].mag, WEAPONS[wid].mag * 2)
+      // equipa el slot donde cayó (comportamiento natural al recoger)
+      if (slotIdx !== this.curSlot) {
+        this.curSlot = slotIdx
+      }
       this.weapon = wid
       this.weaponRarity = s.rarity
       this.mag = WEAPONS[wid].mag
       this.reserve = WEAPONS[wid].mag * 2
       this.reloading = false
       this.attachViewmodel(wid)
+      if (this.playerRig) {
+        this.playerRig.weaponId = wid
+        this.rebuildRigWeapon(this.playerRig)
+      }
       getAudio().draw()
       if (s.kind === 'crate') {
         // crates also patch you up (+ materials for building)
@@ -3818,8 +4270,12 @@ export class BattleRoyaleGame {
       this.hp = Math.min(100, this.hp + 55)
       getAudio().pickup(false)
     } else {
-      // ammo: refill current weapon reserves (+ a few materials)
-      if (this.weapon) this.reserve += WEAPONS[this.weapon].mag * 2
+      // ammo: refill reserves of ALL carried weapons (+ a few materials)
+      // v13.5: la caja repone la reserva de todo el inventario
+      for (const slot of this.inv) {
+        if (slot.weapon && slot.weapon !== 'pico') slot.reserve = Math.min(999, slot.reserve + WEAPONS[slot.weapon].mag * 2)
+      }
+      if (this.weapon && this.weapon !== 'pico') this.reserve = this.inv[this.curSlot].reserve
       addMats(MATS_AMMO)
       getAudio().pickup(true)
     }
@@ -4201,6 +4657,22 @@ export class BattleRoyaleGame {
   /** walkable ground under (x,z): terrain + build floors/ramps */
   private groundAt(x: number, z: number, feetY: number): number {
     let ground = terrainH(x, z)
+    // v13.5: forjados y azoteas de edificios con interior (plano)
+    for (const s of this.walkSlabs) {
+      if (x < s.minX || x > s.maxX || z < s.minZ || z > s.maxZ) continue
+      // solo cuenta si está a la altura de un paso de nuestros pies
+      if (s.y <= feetY + 0.62 && s.y > ground) ground = s.y
+    }
+    // v13.5: escaleras interiores (rampa recta a lo largo de un eje)
+    for (const r of this.walkRamps) {
+      if (x < r.minX || x > r.maxX || z < r.minZ || z > r.maxZ) continue
+      const u = r.axis === 'x'
+        ? (x - r.minX) / Math.max(0.001, r.maxX - r.minX)
+        : (z - r.minZ) / Math.max(0.001, r.maxZ - r.minZ)
+      const k = r.dir === 1 ? u : 1 - u
+      const y = r.y0 + (r.y1 - r.y0) * clamp(k, 0, 1)
+      if (y <= feetY + 0.62 && y > ground) ground = y
+    }
     for (const b of this.builds) {
       if (b.dead) continue
       if (b.kind === 'wall') continue
@@ -4303,8 +4775,8 @@ export class BattleRoyaleGame {
       this.exitVehicle()
       return
     }
-    const gas = (this.keys.has('KeyW') ? 1 : 0) - (this.keys.has('KeyS') ? 1 : 0)
-    const steer = (this.keys.has('KeyA') ? 1 : 0) - (this.keys.has('KeyD') ? 1 : 0)
+    const gas = (this.keyDown('fwd') ? 1 : 0) - (this.keyDown('back') ? 1 : 0)
+    const steer = (this.keyDown('left') ? 1 : 0) - (this.keyDown('right') ? 1 : 0)
     const maxSpeed = 24
     if (gas > 0) v.speed = Math.min(maxSpeed, v.speed + 11 * dt)
     else if (gas < 0) v.speed = Math.max(-9, v.speed - 14 * dt)
@@ -4355,7 +4827,8 @@ export class BattleRoyaleGame {
     }
     // v9.1: arma real del usuario (GLB) con la misma convención de pose que
     // el juego principal — el fallback procedural solo si el GLB no llegó
-    const glb = buildGLBWeapon(wid)
+    // v13.5: el pico siempre es procedural (no hay GLB del usuario)
+    const glb = wid === 'pico' ? null : buildGLBWeapon(wid)
     const built = glb ?? buildWeaponModel(wid)
     this.vmIsProcedural = !glb
     const model = built.group
@@ -4371,8 +4844,76 @@ export class BattleRoyaleGame {
     if (!this.camera.parent) this.scene.add(this.camera)
   }
 
+  // ------------------------------------------------------------
+  // v13.5 — INVENTARIO DE 5 SLOTS (1 = pico · 2-5 = armas)
+  // ------------------------------------------------------------
+  /** equipa el slot i (0-4); sincroniza arma/rareza/munición + modelos */
+  equipSlot(i: number): void {
+    if (i < 0 || i > 4 || i === this.curSlot) return
+    const slot = this.inv[i]
+    if (!slot.weapon) return
+    // guarda el estado del arma actual en SU slot
+    const cur = this.inv[this.curSlot]
+    if (cur.weapon) { cur.mag = this.mag; cur.reserve = this.reserve }
+    this.curSlot = i
+    this.weapon = slot.weapon
+    this.weaponRarity = slot.rarity
+    this.mag = slot.mag
+    this.reserve = slot.reserve
+    this.reloading = false
+    this.sprayIdx = 0
+    this.buildMode = null
+    useBr.getState().set({ buildMode: null })
+    this.attachViewmodel(slot.weapon)
+    // 3.ª persona: el cuerpo cambia de herramienta
+    if (this.playerRig) {
+      this.playerRig.weaponId = slot.weapon
+      this.rebuildRigWeapon(this.playerRig)
+    }
+    getAudio().draw()
+  }
+
+  /** mete un arma recogida en el inventario; devuelve el índice usado */
+  private stashWeapon(wid: WeaponId, rarity: number, mag: number, reserve: number): number {
+    // primer hueco libre (2-5)
+    for (let i = 1; i <= 4; i++) {
+      if (!this.inv[i].weapon) {
+        this.inv[i] = { weapon: wid, rarity, mag, reserve }
+        return i
+      }
+    }
+    // inventario lleno → reemplaza el slot ACTUAL (si el pico está en la
+    // mano, reemplaza el slot 2); el arma vieja cae al suelo como loot
+    const dropSlot = this.curSlot >= 1 ? this.curSlot : 1
+    const old = this.inv[dropSlot]
+    if (old.weapon && old.weapon !== 'pico') {
+      this.dropWeaponAsLoot(old.weapon, old.rarity)
+    }
+    this.inv[dropSlot] = { weapon: wid, rarity, mag, reserve }
+    return dropSlot
+  }
+
+  /** suelta un arma como punto de loot en los pies del jugador */
+  private dropWeaponAsLoot(wid: WeaponId, rarity: number): void {
+    if (wid === 'pico') return
+    const spot: LootSpot = {
+      x: this.px, z: this.pz, kind: 'weapon', weapon: wid, rarity,
+      taken: false, mesh: null, item: null,
+      y: Math.max(terrainH(this.px, this.pz), this.groundAt(this.px, this.pz, this.py - EYE - 0.1)),
+    }
+    this.loot.push(spot)
+    if (this.mapReady && this.scene === this.mapScene) {
+      const mesh = this.buildLootMesh(spot)
+      spot.mesh = mesh
+      this.mapScene.add(mesh)
+    }
+    const rar = BR_RARITIES[rarity]
+    useBr.getState().addFeed(`DROPPED [${rar?.label ?? 'COMMON'}] ${WEAPONS[wid].name.toUpperCase()}`, false)
+  }
+
   private startReload(): void {
     if (!this.weapon || this.reloading) return
+    if (this.weapon === 'pico') return
     const w = WEAPONS[this.weapon]
     if (w.mag <= 0) return
     if (this.mag >= w.mag || this.reserve <= 0) return
@@ -4381,10 +4922,126 @@ export class BattleRoyaleGame {
     getAudio().reload('mag')
   }
 
+  // ------------------------------------------------------------
+  // v13.5 — PICO: golpe melee + cosecha de materiales
+  // (animación de swing en el loop; el impacto se resuelve al 45 % del
+  // recorrido para que el golpe se LEA antes del resultado)
+  // ------------------------------------------------------------
+  private swingPickaxe(): void {
+    this.nextShotAt = performance.now() + 60000 / WEAPONS.pico.rpm
+    this.pickaxeSwingT = 0.001
+    this.pickaxeHitAt = 0
+  }
+
+  /** suma materiales con tope + HUD */
+  private grantMats(n: number, label: string): void {
+    this.mats = Math.min(999, this.mats + n)
+    useBr.getState().set({ mats: this.mats })
+    useBr.getState().addFeed(`+${n} MATERIALS — ${label}`, true)
+  }
+
+  /** impacto del pico: operadores > estructuras > árboles > muros */
+  private resolvePickaxeHit(): void {
+    // el pico vive en las MANOS del jugador → el rayo parte del cuerpo
+    // (px,py,pz) en 1.ª y 3.ª persona por igual
+    const origin = new THREE.Vector3(this.px, this.py, this.pz)
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+    let bestT = PICKAXE_RANGE
+    let hitBot: BrBot | null = null
+    let hitOp: RemoteOp | null = null
+    // operadores (bot + reales)
+    for (const b of this.bots) {
+      if (!b.alive || !b.landed) continue
+      const t = this.raySphere(origin, dir, new THREE.Vector3(b.x, b.y + 1.05, b.z), 0.72)
+      if (t >= 0 && t < bestT) { bestT = t; hitBot = b; hitOp = null }
+    }
+    for (const op of this.remoteOps.values()) {
+      if (!op.alive || op.st !== 'live') continue
+      const t = this.raySphere(origin, dir, new THREE.Vector3(op.x, op.y + 1.05, op.z), 0.72)
+      if (t >= 0 && t < bestT) { bestT = t; hitOp = op; hitBot = null }
+    }
+    if (hitBot || hitOp) {
+      const dmg = PICKAXE_MELEE
+      if (hitOp) {
+        esNet.brPublishEv({ ty: 'hit', o: myOid(), tgt: hitOp.u, by: myOid(), byN: useAuth.getState().user ?? 'Operator', dmg: Math.round(dmg), hs: 0, w: 'pico' })
+        useBr.getState().set({ hitAt: performance.now(), hitHead: false })
+      } else if (hitBot) {
+        hitBot.hp -= dmg
+        if (hitBot.hp <= 0) this.killBot(hitBot, useAuth.getState().user ?? 'Operator')
+        useBr.getState().set({ hitAt: performance.now(), hitHead: false })
+      }
+      getAudio().fleshHit(3)
+      return
+    }
+    // estructuras construidas (reciben daño, no dan materiales)
+    for (const c of this.buildCols) {
+      if (c.piece.dead) continue
+      const t = this.rayBuildCol(origin, dir, c)
+      if (t >= 0 && t < bestT) {
+        this.damageBuild(c.piece, 45, true)
+        getAudio().impact(2)
+        useBr.getState().set({ hitAt: performance.now(), hitHead: false })
+        return
+      }
+    }
+    // árboles (+materiales; agotado → sin más pago)
+    let bestTree: TreeCol | null = null
+    let bestTreeT = bestT
+    for (const tr of this.trees) {
+      if (tr.dead) continue
+      // rayo 2D contra el círculo del tronco
+      const ox = origin.x - tr.x, oz = origin.z - tr.z
+      const a = dir.x * dir.x + dir.z * dir.z
+      if (a < 1e-6) continue
+      const b = 2 * (ox * dir.x + oz * dir.z)
+      const cc = ox * ox + oz * oz - (tr.r + 0.18) * (tr.r + 0.18)
+      const disc = b * b - 4 * a * cc
+      if (disc < 0) continue
+      const t = (-b - Math.sqrt(disc)) / (2 * a)
+      if (t < 0.2 || t > bestTreeT) continue
+      const hy = origin.y + dir.y * t
+      const ground = terrainH(origin.x + dir.x * t, origin.z + dir.z * t)
+      if (hy < ground - 0.5 || hy > ground + 7.5) continue
+      bestTreeT = t
+      bestTree = tr
+    }
+    if (bestTree) {
+      bestTree.hp--
+      this.grantMats(MATS_TREE, 'tree')
+      getAudio().impact(1.5)
+      useBr.getState().set({ hitAt: performance.now(), hitHead: false })
+      if (bestTree.hp <= 0) {
+        bestTree.dead = true
+        useBr.getState().addFeed('TREE DEPLETED — find another harvesting spot', false)
+      }
+      return
+    }
+    // muros de edificios (macizos: pagan materiales hasta agotarse)
+    for (const a of this.aabbs) {
+      const t = this.rayAABB(origin, dir, a)
+      if (t >= 0 && t < bestT) {
+        const pool = this.wallMatsPool.get(a) ?? WALL_HITS
+        if (pool > 0) {
+          this.wallMatsPool.set(a, pool - 1)
+          this.grantMats(MATS_WALLHIT, 'wall')
+        } else {
+          useBr.getState().addFeed('WALL DEPLETED — no more materials here', false)
+        }
+        getAudio().impact(1.8)
+        useBr.getState().set({ hitAt: performance.now(), hitHead: false })
+        return
+      }
+    }
+    // aire: silbido del swing
+    getAudio().knifeSwing()
+  }
+
   private tryShoot(): void {
     if (this.phase !== 'live' || this.inVehicle) return
     const now = performance.now()
     if (!this.weapon || this.reloading || now < this.nextShotAt) return
+    // v13.5: el pico golpea/cosecha en lugar de disparar
+    if (this.weapon === 'pico') { this.swingPickaxe(); return }
     const w = WEAPONS[this.weapon]
     if (w.mag > 0) {
       if (this.mag <= 0) {
@@ -4404,21 +5061,38 @@ export class BattleRoyaleGame {
     this.sprayIdx = Math.min(14, this.sprayIdx + 1)
     this.lastShotTime = now
 
+    // raycast: bots (head/body spheres) + buildings + terrain
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+    const origin = new THREE.Vector3(this.px, this.py, this.pz)
+    // v13.5: 3.ª persona — el rayo nace en el OJO del jugador apuntando
+    // hacia donde mira la cámara (retícula = punto de impacto), y se
+    // ignoran los objetos más cercanos que la propia cámara
+    let minHitT = 0
+    if (this.cam3rd) {
+      const toCam = this.camera.position.clone().sub(origin)
+      minHitT = toCam.length() + 0.35
+      dir.set(0, 0, -1).applyQuaternion(this.camera.quaternion)
+      // apunta al punto lejano que ve la retícula
+      const aim = this.camera.position.clone().addScaledVector(dir, 300)
+      dir.copy(aim.sub(origin).normalize())
+    }
+
     // muzzle light
     if (this.muzzle) {
-      this.muzzle.position.copy(this.camera.position)
+      // v13.5: en 3.ª persona el fogonazo nace del arma del cuerpo
+      this.muzzle.position.set(
+        this.px + dir.x * 0.8,
+        this.py + 0.15 + dir.y * 0.8,
+        this.pz + dir.z * 0.8,
+      )
       this.muzzle.intensity = 30
       this.muzzleUntil = now + 60
     }
-
-    // raycast: bots (head/body spheres) + buildings + terrain
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
-    const origin = this.camera.position.clone()
     // v11.2: the SAME spread model as the normal modes — base + movement +
     // air + crouch + ADS + spray bloom (cone via right/up camera basis)
     {
-      const sprintKey = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
-      const crouchKey = this.keys.has('ControlLeft')
+      const sprintKey = this.keyDown('sprint') || this.keys.has('ShiftRight')
+      const crouchKey = this.keyDown('crouch')
       const hSpeed = this.movingFast() ? (sprintKey ? 7.4 : crouchKey ? 2.4 : 5.0) : 0
       let spread = w.spreadBase
       spread += w.spreadMove * Math.min(1, hSpeed / 6)
@@ -4449,8 +5123,8 @@ export class BattleRoyaleGame {
       const headC = new THREE.Vector3(b.x, b.y + 1.68, b.z)
       const tB = this.raySphere(origin, dir, center, 0.62)
       const tH = this.raySphere(origin, dir, headC, 0.3)
-      if (tH >= 0 && tH < bestT) { bestT = tH; hitBot = b; headshot = true; hitOp = null }
-      if (tB >= 0 && tB < bestT) { bestT = tB; hitBot = b; headshot = false; hitOp = null }
+      if (tH >= minHitT && tH < bestT) { bestT = tH; hitBot = b; headshot = true; hitOp = null }
+      if (tB >= minHitT && tB < bestT) { bestT = tB; hitBot = b; headshot = false; hitOp = null }
     }
     // v11: REAL operators are targets too (spheres at their poses)
     for (const op of this.remoteOps.values()) {
@@ -4459,14 +5133,14 @@ export class BattleRoyaleGame {
       const headC = new THREE.Vector3(op.x, op.y + 1.68, op.z)
       const tB = this.raySphere(origin, dir, center, 0.62)
       const tH = this.raySphere(origin, dir, headC, 0.3)
-      if (tH >= 0 && tH < bestT) { bestT = tH; hitOp = op; hitBot = null; headshot = true }
-      if (tB >= 0 && tB < bestT) { bestT = tB; hitOp = op; hitBot = null; headshot = false }
+      if (tH >= minHitT && tH < bestT) { bestT = tH; hitOp = op; hitBot = null; headshot = true }
+      if (tB >= minHitT && tB < bestT) { bestT = tB; hitOp = op; hitBot = null; headshot = false }
     }
     // buildings (ray vs AABB, slab method)
     let buildingT = 220
     for (const a of this.aabbs) {
       const t = this.rayAABB(origin, dir, a)
-      if (t >= 0 && t < buildingT) buildingT = t
+      if (t >= minHitT && t < buildingT) buildingT = t
     }
     if (buildingT < bestT) { bestT = buildingT; hitBot = null; hitOp = null }
 
@@ -4476,20 +5150,24 @@ export class BattleRoyaleGame {
     for (const c of this.buildCols) {
       if (c.piece.dead) continue
       const t = this.rayBuildCol(origin, dir, c)
-      if (t >= 0 && t < buildT) { buildT = t; buildCol = c }
+      if (t >= minHitT && t < buildT) { buildT = t; buildCol = c }
     }
     if (buildT < bestT) { bestT = buildT; hitBot = null; hitOp = null; buildingT = buildT }
 
     // terrain (coarse march)
     let terrainT = 220
-    for (let d = 2; d < 220; d += 1.5) {
+    for (let d = Math.max(2, minHitT); d < 220; d += 1.5) {
       const p = origin.clone().addScaledVector(dir, d)
       if (p.y <= terrainH(p.x, p.z)) { terrainT = d; break }
     }
     if (terrainT < bestT) { bestT = terrainT; hitBot = null; hitOp = null; buildCol = null }
 
     hitPoint = origin.clone().addScaledVector(dir, Math.min(bestT, 220))
-    this.spawnTracer(origin.clone().addScaledVector(dir, 1.2), hitPoint)
+    // v13.5: la trazadora sale del arma (3.ª persona) o de la cámara
+    const tracerFrom = this.cam3rd
+      ? new THREE.Vector3(this.px, this.py - 0.1, this.pz).addScaledVector(dir, 0.9)
+      : origin.clone().addScaledVector(dir, 1.2)
+    this.spawnTracer(tracerFrom, hitPoint)
 
     // shared damage math (weapon stats + falloff + rarity multiplier)
     const w2 = WEAPONS[this.weapon]
@@ -4566,7 +5244,9 @@ export class BattleRoyaleGame {
   }
 
   private rayAABB(o: THREE.Vector3, d: THREE.Vector3, a: AABB): number {
-    const min = new THREE.Vector3(a.minX, -20, a.minZ)
+    // v13.5: y0 respetado — dinteles y forjados solo frenan balas dentro de
+    // su rango real (antes la caja llegaba hasta -20 y bloqueaba de abajo)
+    const min = new THREE.Vector3(a.minX, a.y0 ?? -20, a.minZ)
     const max = new THREE.Vector3(a.maxX, a.h, a.maxZ)
     let tmin = 0, tmax = 300
     for (const axis of ['x', 'y', 'z'] as const) {
@@ -4969,6 +5649,7 @@ export class BattleRoyaleGame {
   private playerDeath(source: string): void {
     if (this.inVehicle) this.exitVehicle()
     this.phase = 'dead'
+    this.playerDeadAt = this.clock   // v13.5: caída del cuerpo en 3.ª persona
     const placement = this.aliveCount() + 1   // survivors + you
     this.endTime = performance.now()
     getAudio().deathSound()
@@ -5122,9 +5803,11 @@ export class BattleRoyaleGame {
   /** v11.2: current spread in degrees — feeds the dynamic crosshair */
   private crosshairSpread(): number {
     if (!this.weapon) return 1.2
+    // v13.5: el pico apunta a corta distancia — retícula ancha fija
+    if (this.weapon === 'pico') return 3.4
     const w = WEAPONS[this.weapon]
-    const sprintKey = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
-    const crouchKey = this.keys.has('ControlLeft')
+    const sprintKey = this.keyDown('sprint') || this.keys.has('ShiftRight')
+    const crouchKey = this.keyDown('crouch')
     const hSpeed = this.movingFast() ? (sprintKey ? 7.4 : crouchKey ? 2.4 : 5.0) : 0
     let spread = w.spreadBase
     spread += w.spreadMove * Math.min(1, hSpeed / 6)
@@ -5142,10 +5825,20 @@ export class BattleRoyaleGame {
     const brSet = useBr.getState().set
     const w = this.weapon ? WEAPONS[this.weapon] : null
     const ph = STORM_PHASES[Math.min(this.stormIdx, STORM_PHASES.length - 1)]
+    // v13.5: inventario de 5 slots para la barra del HUD
+    const slots = this.inv.map((s, i) => ({
+      label: s.weapon === 'pico' ? 'PICO' : s.weapon ? WEAPONS[s.weapon].name.toUpperCase().split(' ')[0] : '',
+      rarity: s.weapon === 'pico' ? -1 : s.rarity,
+      kind: s.weapon === 'pico' ? 'pico' as const : s.weapon ? 'weapon' as const : 'empty' as const,
+      active: i === this.curSlot,
+      has: !!s.weapon,
+    }))
     brSet({
       hp: Math.max(0, Math.round(this.hp)),
       weapon: this.weapon ?? '',
-      weaponLabel: w ? w.name.toUpperCase() : 'UNARMED — LOOT A WEAPON',
+      weaponLabel: this.weapon === 'pico'
+        ? 'PICKAXE — LMB HIT TREES/WALLS FOR MATERIALS'
+        : w ? w.name.toUpperCase() : 'UNARMED — LOOT A WEAPON',
       weaponRarity: this.weaponRarity,
       mag: this.mag,
       reserve: this.reserve,
@@ -5157,6 +5850,9 @@ export class BattleRoyaleGame {
       // v11.2: dynamic crosshair (same spread inputs) + sniper scope
       spread: this.crosshairSpread(),
       scope: !!this.weapon && !!WEAPONS[this.weapon].sniper && this.adsAmt > 0.7,
+      // v13.5
+      slots,
+      cam3rd: this.cam3rd,
     })
   }
 
@@ -5185,6 +5881,12 @@ export class BattleRoyaleGame {
       this.updatePlane(dt)
       this.updateFreefall(dt)
       this.updatePlayer(dt)
+      // v13.5: FUEGO AUTOMÁTICO como los modos normales — mantener LMB
+      // dispara armas auto y golpea con el pico en cadena
+      if (this.mouseHeld && this.locked && this.phase === 'live' && !this.inVehicle && !this.buildMode) {
+        const wAuto = this.weapon ? WEAPONS[this.weapon] : null
+        if (wAuto?.auto || this.weapon === 'pico') this.tryShoot()
+      }
       this.updateBots(dt, now)
       this.updateRemoteOps(dt)
       this.updateStorm(dt)
@@ -5219,11 +5921,81 @@ export class BattleRoyaleGame {
       // camera from player state
       this.camera.rotation.order = 'YXZ'
       this.camera.rotation.set(this.pitch, this.yaw, 0)
-      this.camera.position.set(this.px, this.py, this.pz)
+      // v13.5 — 3.ª PERSONA (cámara sobre el hombro con pull-in):
+      // el pivote es el ojo desplazado al hombro; la cámara mira SIEMPRE
+      // en la dirección yaw/pitch → la retícula queda alineada con el rayo
+      if (this.cam3rd && this.phase === 'live' && !this.inVehicle) {
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion)
+        const over = 0.5 * (1 - this.adsAmt * 0.5)   // ADS acerca el hombro
+        const pivot = new THREE.Vector3(this.px, this.py + 0.12, this.pz).addScaledVector(right, over)
+        // distancia deseada (ADS acerca la cámara)
+        const wantDist = 3.6 - this.adsAmt * 1.9
+        // pull-in: retrocede desde el pivote hasta chocar con geometría
+        let dist = wantDist
+        for (let step = 0.3; step <= wantDist; step += 0.3) {
+          const px2 = pivot.x - fwd.x * step
+          const py2 = pivot.y - fwd.y * step
+          const pz2 = pivot.z - fwd.z * step
+          if (this.pointSolid(px2, py2, pz2) || py2 < terrainH(px2, pz2) + 0.25) {
+            dist = Math.max(0.8, step - 0.35)
+            break
+          }
+        }
+        this.camDist += (dist - this.camDist) * Math.min(1, dt * 22)
+        this.camera.position.copy(pivot).addScaledVector(fwd, -this.camDist)
+      } else {
+        this.camera.position.set(this.px, this.py, this.pz)
+      }
+    }
+
+    // v13.5 — CUERPO DEL JUGADOR (3.ª persona): sigue al jugador, camina
+    // con las piernas y cae con desaceleración al morir (como los bots)
+    if (this.playerRig) {
+      const rig = this.playerRig
+      const dead = this.phase === 'dead'
+      rig.root.visible = this.phase === 'live' && !this.inVehicle
+      if (rig.root.visible) {
+        rig.root.position.set(this.px, this.py - EYE, this.pz)
+        rig.root.rotation.y = this.yaw
+        const moving = this.movingFast() && this.onGround
+        if (moving) this.playerLegPhase += dt * 9
+        this.animateRig(rig, this.playerLegPhase, moving)
+        // swing del pico: el arma rota en la mano (golpe legible)
+        if (this.pickaxeSwingT > 0 && this.weapon === 'pico') {
+          const k = Math.min(1, this.pickaxeSwingT / 0.55)
+          const swingA = Math.sin(k * Math.PI) * 1.5
+          rig.weaponHolder.rotation.x = -swingA * 0.8
+          rig.arms[1].rotation.x = (this.weapon === 'pico' ? 1.45 : 1.28) - swingA * 0.55
+        } else if (this.weapon === 'pico') {
+          rig.weaponHolder.rotation.x = 0
+        }
+      } else if (dead && this.clock - this.playerDeadAt < 0.7 && rig.usingSoldier) {
+        const dt2 = this.clock - this.playerDeadAt
+        const ease = 1 - Math.pow(1 - Math.min(1, dt2 / 0.6), 3)
+        rig.root.visible = true
+        rig.root.position.set(this.px, terrainH(this.px, this.pz), this.pz)
+        rig.body.rotation.x = (Math.PI / 2) * ease
+        rig.body.rotation.z = 0.14 * ease
+        rig.body.position.y = -0.64 * ease
+      }
+    }
+
+    // v13.5 — avance del swing del pico (animación + impacto al 45 %)
+    if (this.pickaxeSwingT > 0 && !this.paused) {
+      this.pickaxeSwingT += dt
+      if (this.pickaxeHitAt === 0 && this.pickaxeSwingT >= 0.25) {
+        this.pickaxeHitAt = 1
+        this.resolvePickaxeHit()
+      }
+      if (this.pickaxeSwingT > 0.55) this.pickaxeSwingT = 0
     }
 
     // viewmodel kick recovery + reload finish
     if (this.vmGroup) {
+      // v13.5: en 3.ª persona el arma vive en las manos del cuerpo
+      this.vmGroup.visible = !(this.cam3rd && this.phase === 'live' && !this.inVehicle)
+        && !(WEAPONS[this.weapon ?? 'pico']?.sniper && this.adsAmt > 0.7)
       this.vmKick *= Math.max(0, 1 - dt * 9)
       // v11.2: hip → ADS pose (the SAME weaponPose data as the normal modes)
       const a = this.adsAmt
@@ -5245,6 +6017,15 @@ export class BattleRoyaleGame {
         this.vmBaseRot.y * (1 - a),
         this.vmBaseRot.z * (1 - a * 0.8),
       )
+      // v13.5: swing del pico en 1.ª persona — el pico golpea hacia delante
+      if (this.weapon === 'pico' && this.pickaxeSwingT > 0) {
+        const k = Math.min(1, this.pickaxeSwingT / 0.55)
+        const swing = Math.sin(k * Math.PI)
+        this.vmGroup.rotation.x += -swing * 1.25
+        this.vmGroup.rotation.z += swing * 0.35
+        this.vmGroup.position.y += -swing * 0.05
+        this.vmGroup.position.z += -swing * 0.1
+      }
     }
     // v9.1: el loot flota y gira — se lee como recogible
     for (const s of this.loot) {
@@ -5318,11 +6099,17 @@ export class BattleRoyaleGame {
     esNet.brLeaveQueue()
     esNet.brMatchLeave()
     this.remoteOps.clear()
+    // v13.5: cuerpo del jugador + contadores del mundo
+    this.disposePlayerBody()
+    this.wallMatsPool.clear()
+    this.walkSlabs.length = 0
+    this.walkRamps.length = 0
     cancelAnimationFrame(this.raf)
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
     window.removeEventListener('mousemove', this.onMouseMove)
     window.removeEventListener('resize', this.onResize)
+    window.removeEventListener('wheel', this.onWheel)
     document.removeEventListener('pointerlockchange', this.onLockChange)
     this.canvas.removeEventListener('mousedown', this.onMouseDown)
     this.canvas.removeEventListener('mouseup', this.onMouseUp)

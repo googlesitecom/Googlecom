@@ -15,7 +15,7 @@ import { KeybindsPanel, SettingsPanel, InfoPanel, ProfileContent } from './menus
 import { useAuth } from '@/game/auth'
 import {
   Users, Skull, Wind, Rocket, Plane, Heart, LogOut, Crown,
-  Timer, Gauge, Loader2, Eye, Car, Keyboard, Settings, Info, Play, User, Hammer,
+  Timer, Gauge, Loader2, Eye, Car, Keyboard, Settings, Info, Play, User, Hammer, Bot,
 } from 'lucide-react'
 
 export function BrHud() {
@@ -149,22 +149,32 @@ function QueueOverlay({ locked }: { locked: boolean }) {
           </p>
         </div>
       ) : (
-        <div className="bg-stone-950/85 border border-stone-700/70 rounded-xl px-8 py-4 flex items-center gap-4 shadow-xl">
-          {netStatus === 'connecting' || netStatus === 'offline' ? (
-            <Loader2 className="w-6 h-6 text-amber-300 animate-spin" />
-          ) : (
-            <Users className="w-6 h-6 text-emerald-400" />
-          )}
-          <div>
-            <p className="font-tac text-white text-lg tracking-widest">
-              {practice ? 'PRACTICE MATCH' : 'WAITING FOR REAL OPERATORS'}
-            </p>
-            <p className="font-tac-md text-stone-400 text-[11px] mt-0.5">
-              {practice
-                ? 'Deploying in a moment — gliding into the island'
-                : `${real}/4 REAL OPERATORS — the 60-second countdown starts at 4 (bots never count)`}
-            </p>
+        <div className="bg-stone-950/85 border border-stone-700/70 rounded-xl px-8 py-4 flex flex-col gap-3 shadow-xl">
+          <div className="flex items-center gap-4">
+            {netStatus === 'connecting' || netStatus === 'offline' ? (
+              <Loader2 className="w-6 h-6 text-amber-300 animate-spin" />
+            ) : (
+              <Users className="w-6 h-6 text-emerald-400" />
+            )}
+            <div>
+              <p className="font-tac text-white text-lg tracking-widest">
+                {practice ? 'PRACTICE MATCH' : 'WAITING FOR REAL OPERATORS'}
+              </p>
+              <p className="font-tac-md text-stone-400 text-[11px] mt-0.5">
+                {practice
+                  ? 'Deploying in a moment — gliding into the island'
+                  : `${real}/4 REAL OPERATORS — the 60-second countdown starts at 4 (bots never count)`}
+              </p>
+            </div>
           </div>
+          {/* v13.4: offline option from INSIDE the matchmaking wait — the
+              player never gets stuck waiting for real operators */}
+          <Button
+            onClick={() => getBrGame()?.beginPractice()}
+            className="h-10 px-6 font-tac-md text-[11px] bg-stone-900 border border-amber-500/60 text-amber-200 hover:bg-amber-950/40 hover:border-amber-400"
+          >
+            <Bot className="w-4 h-4 mr-2" /> PLAY OFFLINE NOW — VS 19 BOTS
+          </Button>
         </div>
       )}
 
@@ -256,6 +266,9 @@ function LiveHud() {
   const mats = useBr(s => s.mats)
   const buildMode = useBr(s => s.buildMode)
   const buildPlaceable = useBr(s => s.buildPlaceable)
+  // v13.5: inventario de 5 + cámara
+  const slots = useBr(s => s.slots)
+  const cam3rd = useBr(s => s.cam3rd)
   const showCrosshair = phase === 'live' && !inVehicle && !buildMode
   // v10: rareza estilo Fortnite del arma equipada
   const rar = weaponRarity >= 0 && weaponRarity < BR_RARITIES.length ? BR_RARITIES[weaponRarity] : null
@@ -382,25 +395,70 @@ function LiveHud() {
         </div>
       )}
 
-      {/* bottom right: weapon */}
+      {/* bottom right: inventory (5 slots) + weapon + camera */}
       <div className="absolute bottom-6 right-6">
+        {/* v13.5: barra de inventario 1-5 (1 = PICO) */}
+        {phase === 'live' && !inVehicle && slots.length > 0 && (
+          <div className="flex justify-end gap-1.5 mb-2">
+            {slots.map((s, i) => {
+              const r = s.rarity >= 0 && s.rarity < BR_RARITIES.length ? BR_RARITIES[s.rarity] : null
+              return (
+                <div
+                  key={i}
+                  className={`w-[64px] h-[52px] rounded-md border flex flex-col items-center justify-center shadow-lg tac-corner relative ${
+                    s.active
+                      ? 'bg-stone-800/95 border-amber-400/90 scale-[1.06]'
+                      : s.has ? 'bg-stone-950/85 border-stone-700/70' : 'bg-stone-950/50 border-stone-800/60'
+                  }`}
+                  style={r && s.kind === 'weapon' ? { borderColor: `${r.css}cc` } : undefined}
+                >
+                  <span className={`absolute top-0.5 left-1 font-tac-md text-[8px] ${s.active ? 'text-amber-300' : 'text-stone-500'}`}>
+                    {i + 1}
+                  </span>
+                  {s.kind === 'pico' ? (
+                    <Hammer className={`w-4.5 h-4.5 ${s.active ? 'text-amber-300' : 'text-stone-400'}`} style={{ width: 20, height: 20 }} />
+                  ) : s.has ? (
+                    <span
+                      className="font-tac text-[10px] leading-none px-1 text-center"
+                      style={{ color: r ? r.css : '#e7e5e4' }}
+                    >
+                      {s.label}
+                    </span>
+                  ) : (
+                    <span className="text-stone-600 text-[10px] leading-none">·</span>
+                  )}
+                  {s.kind === 'weapon' && s.active && (
+                    <span className="font-tac-md text-[8px] text-stone-500 leading-none mt-0.5 tabular-nums">{mag}</span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2 mb-2">
+          {/* v13.5: modo de cámara */}
+          <div className="bg-stone-950/85 backdrop-blur-sm border border-stone-700/70 rounded px-2.5 py-1 flex items-center gap-1.5 shadow-xl">
+            <Eye className="w-3.5 h-3.5 text-stone-400" />
+            <span className="font-tac-md text-[9px] text-stone-300">{cam3rd ? '3RD · [V]' : '1ST · [V]'}</span>
+          </div>
+        </div>
         <div
           className="bg-stone-950/85 backdrop-blur-sm border rounded-md px-5 py-3 text-right shadow-xl tac-corner"
           style={rar ? { borderColor: `${rar.css}99` } : undefined}
         >
-          <p className="font-tac-md text-stone-400 text-[10px] mb-1">WEAPON</p>
-          {rar && (
+          <p className="font-tac-md text-stone-400 text-[10px] mb-1">{weaponLabel.includes('PICKAXE') ? 'TOOL' : 'WEAPON'}</p>
+          {rar && !weaponLabel.includes('PICKAXE') && (
             <p className="font-tac-md text-[10px] tracking-[0.18em] mb-0.5" style={{ color: rar.css }}>
               {rar.label} · {Math.round(rar.dmgMult * 100)}% DMG
             </p>
           )}
           <p
-            className={`font-tac text-base ${weaponLabel.includes('UNARMED') ? 'text-red-300 animate-pulse' : 'text-amber-200'}`}
-            style={rar ? { color: rar.css } : undefined}
+            className={`font-tac text-sm ${weaponLabel.includes('UNARMED') ? 'text-red-300 animate-pulse' : weaponLabel.includes('PICKAXE') ? 'text-amber-200' : 'text-amber-200'}`}
+            style={rar && !weaponLabel.includes('PICKAXE') ? { color: rar.css } : undefined}
           >
             {weaponLabel}
           </p>
-          {mag !== 0 || reserve !== 0 ? (
+          {!weaponLabel.includes('PICKAXE') && (mag !== 0 || reserve !== 0) ? (
             <p className="font-tac text-xl text-stone-100 tabular-nums mt-0.5">
               {mag} <span className="text-stone-500 text-sm">/ {reserve}</span>
             </p>
@@ -569,6 +627,33 @@ function BrPauseMenu() {
                   Each piece costs <b className="text-stone-400">10 materials</b>; destroy enemy
                   structures by shooting them. Crates and ammo boxes give materials, and every
                   elimination pays +60. Walls give real cover — even against bot fire.
+                </p>
+              </div>
+              {/* v13.5: inventario · pico · 3.ª persona */}
+              <div className="bg-stone-950/60 border border-stone-800 rounded-lg p-4">
+                <h4 className="font-tac-md text-amber-200/90 text-[11px] mb-3 flex items-center gap-2">
+                  <Eye className="w-4 h-4" /> Battle Royale — inventory · pickaxe · camera
+                </h4>
+                <div className="grid sm:grid-cols-3 gap-2.5 text-[11px]">
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">1-5</span>
+                    <span className="text-stone-300">Inventory slots (1 = pickaxe)</span>
+                  </div>
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">V</span>
+                    <span className="text-stone-300">3rd / 1st person camera</span>
+                  </div>
+                  <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2 flex items-center gap-2.5">
+                    <span className="font-tac text-amber-200 text-sm px-1.5 py-0.5 rounded bg-stone-800 border border-stone-700">Wheel</span>
+                    <span className="text-stone-300">Cycle weapons</span>
+                  </div>
+                </div>
+                <p className="text-stone-600 text-[10px] mt-2.5 leading-relaxed">
+                  The <b className="text-stone-400">pickaxe (slot 1)</b> harvests materials: LEFT-CLICK
+                  on trees and building walls (+12 / +7 per hit, up to the source depletion).
+                  Looted weapons fill slots 2-5 — picking up with a full inventory swaps the active
+                  weapon and drops the old one on the floor. Enterable buildings have interiors with
+                  stairs, second floors and rooftop loot.
                 </p>
               </div>
             </div>

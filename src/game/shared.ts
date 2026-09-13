@@ -126,7 +126,7 @@ export const DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
 
 export type Team = 'A' | 'B'
 export type WeaponId =
-  | 'knife' | 'p9' | 'aguila' | 'mp9' | 'breacher' | 'ar47' | 'cr4' | 'awp338'
+  | 'knife' | 'p9' | 'aguila' | 'mp9' | 'breacher' | 'ar47' | 'cr4' | 'awp338' | 'pico'
 export type BodyPart = 'head' | 'body' | 'legs'
 export type HitPart = BodyPart
 
@@ -242,6 +242,18 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     recoilV: 2.8, recoilH: 0.6, recoilRecover: 0.75, sprayInacc: 0,
     zoomFov: 9, sniper: true, moveMult: 0.85,
     falloffStart: 200, falloffEnd: 300, falloffMin: 1, sound: 'sniper',
+  },
+  // v13.5 — PICO DE RECOLECCIÓN (exclusivo del Battle Royale): herramienta
+  // melee de cosecha de materiales (árboles/edificios). NO aparece en la
+  // tienda ni en el pool de loot: es el objeto fijo del slot 1 del inventario.
+  pico: {
+    id: 'pico', name: 'Harvest Pickaxe', slot: 'melee', price: 0,
+    damage: 24, headMult: 1.5, legMult: 1.0,
+    rpm: 92, auto: false, pellets: 1, mag: 0, reserve: 0, reloadTime: 0,
+    spreadBase: 0, spreadMove: 0, spreadAir: 0,
+    recoilV: 0.4, recoilH: 0.1, recoilRecover: 0.95, sprayInacc: 0,
+    zoomFov: 0, sniper: false, moveMult: 1.08,
+    falloffStart: 100, falloffEnd: 100, falloffMin: 1, sound: 'pistol',
   },
 }
 
