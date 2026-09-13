@@ -1,0 +1,10 @@
+{
+  "model": "glm-4.5v",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "image_url", "image_url": {"url": "PLACEHOLDER"}},
+      {"type": "text", "text": "This is a first-person view of a tactical FPS game. Describe the shotgun weapon model visible in the lower right of the screen. Is it a detailed tactical pump-action shotgun with: receiver, barrel, magazine tube, pump handle, stock, sights, picatinny rail, red shells on the side? Does it look realistic? Any visual glitches, floating parts, or misaligned geometry? Be specific and concise."}
+    ]
+  }]
+}
