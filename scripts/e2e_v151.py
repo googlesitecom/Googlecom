@@ -9,10 +9,11 @@
 #   C) QUICK MATCH dead room: guest falls back to HOSTING a fresh
 #      room and the solo auto-deploy starts a match with bots
 # ============================================================
-import sys, time, subprocess
+import sys, time, subprocess, os
 from playwright.sync_api import sync_playwright
 
-BASE = 'http://localhost:4173/Googlecom/'
+BASE = os.environ.get('E2E_BASE', 'http://localhost:4173/Googlecom/')
+REMOTE = bool(os.environ.get('E2E_BASE'))
 SHOT = '/home/z/my-project/scripts/v151-'
 
 import os
@@ -50,9 +51,11 @@ def wait_online(page, timeout=30000):
 def st(page, expr):
     return page.evaluate(f"() => {{ const n = window.__esNet; return {expr} }}")
 
-server = subprocess.Popen(['bun', 'scripts/serve-static.mjs'],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(1.5)
+server = None
+if not REMOTE:
+    server = subprocess.Popen(['bun', 'scripts/serve-static.mjs'],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1.5)
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(args=[
@@ -259,7 +262,7 @@ try:
 
         browser.close()
 finally:
-    server.terminate()
+    if server: server.terminate()
 
 print(f'\n=== v15.1 E2E: {len(ok)} PASS / {len(fail)} FAIL ===')
 if fail:

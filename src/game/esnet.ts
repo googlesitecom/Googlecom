@@ -319,6 +319,10 @@ type Handler = (payload: Rec, topic: string) => void
 
 class EsNet {
   status: NetStatus = 'offline'
+  /** v15.1 E2E diagnostics (?netdebug): party protocol taps */
+  pcodePubCount = 0
+  pcodeRxCount = 0
+  partyRxLog: { ty: string; t: number; u?: string; code?: string; mine?: boolean }[] = []
   private ws: WebSocket | null = null
   // v11.1: everyone tries the PRIMARY broker first — clients on different
   // brokers can't see each other, so the order must be deterministic
@@ -339,6 +343,11 @@ class EsNet {
   private partyJoinedAt = 0
   /** v15.1: last time a message from the CURRENT leader was seen */
   private leaderLastSeen = 0
+  /** v15.1.1: when the squad's auto-deploy countdown started — the leader
+   *  is BUSY opening the room (game init can freeze their heartbeat for
+   *  tens of seconds on slow machines); members must NOT elect a new
+   *  leader mid-deploy */
+  private lastLaunchT = 0
   private outgoing = new Map<string, { name: string; t: number }>()
   private incoming = new Map<string, { name: string; t: number }>()
   private dirWaiters = new Map<string, (oid: string | null) => void>()
@@ -830,17 +839,19 @@ class EsNet {
     st.setMembers(members)
     // v15.1: LEADER-ELECTION FIX — the leader is only "gone" when we KNOW
     // one (retained meta / heartbeats) and nothing from them arrived for
-    // >12s, with a 15s grace window after joining. Before this guard, every
-    // fresh joiner's own join echo triggered a self-promotion that STOLE
-    // leadership and flipped host/member roles. A party with NO known
-    // leader NEVER elects one blindly — createParty always publishes a
-    // retained meta, so the real leader is always revealed within seconds.
+    // >45s (game init on slow machines can freeze the leader's heartbeat
+    // for tens of seconds — 12s was way too aggressive), with a 15s grace
+    // window after joining and NO elections mid-deploy (the leader is
+    // busy opening the room). Before these guards, a fresh joiner's own
+    // join echo — or the leader's deploy freeze — triggered a
+    // self-promotion that STOLE leadership and flipped host/member roles.
     const leaderHere = members.some(m => m.leader)
     if (!leaderHere && members.length > 0) {
       const known = st.leaderOid
-      const leaderSeenRecently = !!known && t - this.leaderLastSeen < 12000
+      const leaderSeenRecently = !!known && t - this.leaderLastSeen < 45000
       const joinedRecently = t - this.partyJoinedAt < 15000
-      if (known && !leaderSeenRecently && !joinedRecently) {
+      const midDeploy = this.lastLaunchT > 0 && t - this.lastLaunchT < 45000
+      if (known && !leaderSeenRecently && !joinedRecently && !midDeploy) {
         const lowest = [...members].sort((a, b) => a.u.localeCompare(b.u))[0]
         if (lowest && lowest.u === oid) {
           st.setParty({ leaderOid: oid, leaderName: myOperatorName() })
@@ -859,6 +870,8 @@ class EsNet {
   private onPartyMsg = (p: Rec): void => {
     const oid = myOid()
     const ty = str(p.ty)
+    this.partyRxLog.push({ ty, t: now(), u: str(p.u) || undefined, code: str(p.code) || undefined, mine: str(p.u) === oid })
+    if (this.partyRxLog.length > 40) this.partyRxLog.shift()
     if (ty === 'hb' || ty === 'join') {
       const u = str(p.u)
       if (!u) return
@@ -899,11 +912,13 @@ class EsNet {
     }
     if (ty === 'launch') {
       // v15: todo el escuadrón listo — despliegue automático con cuenta atrás
+      this.lastLaunchT = now()   // v15.1.1: mid-deploy — no leader elections
       useParty.getState().setLaunchAt(now() + Math.max(1, num(p.d, 5)) * 1000)
       return
     }
     if (ty === 'launchx') {
       // v15: someone un-readied → countdown cancelled
+      this.lastLaunchT = 0
       useParty.getState().setLaunchAt(0)
       return
     }
@@ -913,6 +928,12 @@ class EsNet {
       // channel, so members NEVER received the code and hung at the
       // deploy countdown forever ("it never starts when you hit ready",
       // "the non-host never connects"). Now members auto-join the room.
+      // v15.1.1: MQTT echoes your own publishes — the leader must ignore
+      // its own pcode or it would auto-join its own (dead) room when it
+      // returns to the lobby after the match.
+      this.pcodeRxCount++
+      const from = str(p.u)
+      if (from && from === oid) return   // own echo — leaders host, never join
       const code = str(p.code)
       const kind = str(p.kind, '2v2')
       if (code && useParty.getState().active) {
@@ -989,9 +1010,11 @@ class EsNet {
     const st = useParty.getState()
     if (!st.active) return
     if (dn > 0) {
+      this.lastLaunchT = now()   // v15.1.1: mid-deploy — no leader elections
       st.setLaunchAt(now() + dn * 1000)
       if (this.partyGid) this.pub(T.party(this.partyGid), { ty: 'launch', d: dn, t: now() })
     } else {
+      this.lastLaunchT = 0
       st.setLaunchAt(0)
       if (this.partyGid) this.pub(T.party(this.partyGid), { ty: 'launchx', t: now() })
     }
@@ -1014,7 +1037,9 @@ class EsNet {
   /** leader opened an online room → members auto-join with the code */
   shareRoomCode(code: string, kind: string): void {
     if (!this.partyGid) return
-    this.pub(T.party(this.partyGid), { ty: 'pcode', code, kind, t: now() })
+    this.pcodePubCount++
+    // v15.1.1: carry the sender — receivers ignore their own echo
+    this.pub(T.party(this.partyGid), { ty: 'pcode', u: myOid(), code, kind, t: now() })
   }
 
   leaveParty(): void {

@@ -1144,6 +1144,9 @@ export function MainMenu() {
   // for QoS-0 self-healing — a late echo must not re-join a dead room)
   useEffect(() => {
     if (!squadRoomCode || phase !== 'menu') return
+    // v15.1.1: leaders HOST the room — they never auto-join a code (their
+    // own pcode echo must not dump them into their own dead room later)
+    if (useParty.getState().leaderOid === myOid()) { useParty.getState().clearRoom(); return }
     if (lastJoinedRef.current === squadRoomCode) { useParty.getState().clearRoom(); return }
     lastJoinedRef.current = squadRoomCode
     useParty.getState().clearRoom()

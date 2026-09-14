@@ -124,6 +124,10 @@ export class NetClient {
 
   constructor(game: Game) {
     this.game = game
+    // v15.1 E2E (?netdebug=1): expose the net client for live diagnostics
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('netdebug') === '1') {
+      ;(window as unknown as Record<string, unknown>).__net = this
+    }
   }
 
   connect(name: string, opts: ConnectOpts): void {
