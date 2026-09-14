@@ -27,7 +27,7 @@ import {
   Keyboard, Info, RotateCcw, Home, TreePine, Video, Wind, Flag, Target, Radio,
   Map, Clock, ChevronRight, Copy, Check, Music2, Footprints, Package,
   User, UserPlus, UserMinus, Trash2, Skull, Medal, Crown, Activity, Rocket, X, Wifi, WifiOff, Mic,
-  ChevronUp,
+  ChevronUp, Lock,
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
@@ -840,8 +840,8 @@ function SquadSection(): React.ReactElement | null {
             </div>
             <p className="text-stone-600 text-[10px] leading-relaxed">
               {isLeader
-                ? 'Create a room in the DEPLOY tab — your squad auto-joins with the code. Battle Royale is ALWAYS solos.'
-                : 'Waiting for the leader to deploy… Battle Royale is ALWAYS solos.'}
+                ? 'Pick the mode — it syncs live to your squad. Everyone hits READY and the match deploys automatically.'
+                : 'The leader picks the mode — hit READY in the lobby and the squad deploys together.'}
             </p>
           </>
         )}
@@ -1076,11 +1076,24 @@ type MenuOverlay = 'controls' | 'settings' | 'info'
 type PlaySource = 'bots' | 'room' | 'join' | 'quick'
 
 // ============================================================
+// v15 — FORTNITE-STYLE SQUAD DEPLOY: smallest room format that fits
+// the whole squad on the leader's AMBER team (squad of 3 → 3v3)
+// ============================================================
+function kindForSquad(k: RoomKind, squad: number): RoomKind {
+  if (k === 'coop') return 'coop'
+  const n = Math.max(1, Number(k[0]) || 1)
+  const need = Math.min(5, Math.max(n, squad || 1))
+  return (['1v1', '2v2', '3v3', '4v4', '5v5'] as RoomKind[])[need - 1]
+}
+
+// ============================================================
 // v14 — FORTNITE-STYLE LOBBY
 // Your operator in 3D with the username above, the squad standing
 // beside you, a mode picker that drops UP from the bottom bar with
 // every mode in the game, and one big PLAY / READY button that
 // adapts to the squad (leader launches, members ready up).
+// v15: online squads deploy like Fortnite — the LEADER picks the
+// mode (synced live), EVERYONE readies up, the match auto-deploys.
 // ============================================================
 export function MainMenu() {
   const phase = useGame(s => s.phase)
@@ -1092,7 +1105,10 @@ export function MainMenu() {
   const partyName = useParty(s => s.name)
   const partyMembers = useParty(s => s.members)
   const partyLeaderOid = useParty(s => s.leaderOid)
+  const partyLeaderName = useParty(s => s.leaderName)
   const partyReady = useParty(s => s.ready)
+  const partyMode = useParty(s => s.partyMode)
+  const partyLaunchAt = useParty(s => s.launchAt)
   const squadRoomCode = useParty(s => s.roomCode)
   const squadRoomKind = useParty(s => s.roomKind)
   const netStatus = useNet(s => s.status)
@@ -1114,11 +1130,18 @@ export function MainMenu() {
   const [source, setSource] = useState<PlaySource>('bots')
   const [quickState, setQuickState] = useState<'' | 'scanning' | 'joining'>('')
   const quickIv = useRef<ReturnType<typeof setInterval> | null>(null)
+  // v15: squad auto-deploy countdown (seconds left) + deploy-once guard
+  const [left, setLeft] = useState(0)
+  const launchedRef = useRef(false)
+  const seededRef = useRef(false)   // v15 E2E party seeding (once)
 
   // v11: the squad leader opened a room → auto-join with the shared code
+  // v15: the guest launches with the LEADER'S synced mode (not a default)
   useEffect(() => {
     if (!squadRoomCode || phase !== 'menu') return
     useParty.getState().clearRoom()
+    useParty.getState().setLaunchAt(0)
+    esNet.setPartyReady(false)   // back to NOT ready for the next deploy
     const n = (name.trim() || authUser || 'Operator').slice(0, 16)
     setPlayerName(n)
     setHud({
@@ -1126,7 +1149,7 @@ export function MainMenu() {
       roomCode: squadRoomCode,
       botDifficulty: 'normal',
       fillBots: 0,
-      gameMode: 'escaramuza',
+      gameMode: (partyMode?.mode as GameMode) ?? 'escaramuza',
       roomKind: (squadRoomKind as RoomKind) || '2v2',
       fillEmptyWithBots: true,
       lobby: null,
@@ -1161,13 +1184,55 @@ export function MainMenu() {
     return () => window.removeEventListener('keydown', onKey)
   }, [phase, modeOpen, overlay])
 
-  if (phase !== 'menu') return null
+  // v15 E2E (?partytest=leader|member): seed a fake ONLINE squad so the
+  // Fortnite deploy flow is verifiable without a second human browser
+  // (timeout wrapper → no setState directly in the effect body)
+  useEffect(() => {
+    if (phase !== 'menu' || seededRef.current) return
+    const role = new URLSearchParams(window.location.search).get('partytest')
+    if (!role) return
+    seededRef.current = true
+    const t = setTimeout(() => {
+      const oid = myOid() || 'E2EOID'
+      const name = useAuth.getState().user || 'E2E'
+      const isLeader = role === 'leader'
+      const st = useParty.getState()
+      st.setParty({
+        active: true, gid: 'ptest', name: 'E2E SQUAD',
+        leaderOid: isLeader ? oid : 'MATE01',
+        leaderName: isLeader ? name : 'Ironside',
+        members: isLeader
+          ? [{ u: oid, n: name, leader: true }, { u: 'MATE01', n: 'Ironside', leader: false }, { u: 'MATE02', n: 'Vex', leader: false }]
+          : [{ u: oid, n: name, leader: false }, { u: 'MATE01', n: 'Ironside', leader: true }],
+      })
+      if (isLeader) {
+        // mates already READY → the leader's READY triggers the auto-deploy
+        st.setReady('MATE01', true)
+        st.setReady('MATE02', true)
+      } else {
+        st.setPartyMode({ mode: 'bandera', source: 'room', kind: '3v3' })
+      }
+      useNet.getState().setStatus('online')
+      ;(window as unknown as Record<string, unknown>).__partyTest = { role, oid }
+    }, 700)
+    return () => clearTimeout(t)
+  }, [phase])
 
+  // ---- v15: FORTNITE-STYLE SQUAD DEPLOY (derived BEFORE the hooks) ----
   const oid = myOid()
   const effectiveName = name.trim() || authUser || ''
   const amLeader = !partyActive || (partyActive && partyLeaderOid === oid)
   const readyCount = partyMembers.filter(m => partyReady[m.u]).length
   const iAmReady = !!partyReady[oid]
+  // online + squad with mates → the LEADER picks the mode (synced live to
+  // everyone), the WHOLE squad readies up and the match auto-deploys
+  const inSquad = partyActive && netStatus === 'online' && partyMembers.length > 1
+  const amMember = inSquad && !amLeader
+  const effMode = (amMember && partyMode ? partyMode.mode : gameMode) as GameMode
+  const effKind = kindForSquad(
+    (amMember && partyMode ? (partyMode.kind as RoomKind) : roomKind),
+    inSquad ? partyMembers.length : 1,
+  )
 
   const launch = (m: 'solo' | 'host' | 'guest', roomCode = '', forceMode?: GameMode, forceKind?: RoomKind) => {
     const n = effectiveName.trim() || 'Operator'
@@ -1199,8 +1264,60 @@ export function MainMenu() {
         stats: { time: 0, kills: 0 },
       },
     })
+    // v15: back to NOT ready once deployed — so the squad doesn't instantly
+    // re-launch the countdown when everyone returns to the lobby
+    if (inSquad) esNet.setPartyReady(false)
     useGame.getState().setPhase('connecting')
   }
+
+  // v15: the LEADER's pick is THE pick — publish it to the squad live
+  useEffect(() => {
+    if (!inSquad || !amLeader || phase !== 'menu') return
+    esNet.setPartyModeSel({
+      mode: gameMode,
+      source: gameMode === 'historia' ? 'coop' : 'room',
+      kind: gameMode === 'historia' ? 'coop' : kindForSquad(roomKind, partyMembers.length),
+    })
+  }, [inSquad, amLeader, phase, gameMode, roomKind, partyMembers.length])
+
+  // v15: countdown to the auto-deploy (both roles see the same overlay)
+  // (ticks run inside interval callbacks — no setState in the effect body)
+  useEffect(() => {
+    if (phase !== 'menu' || !partyLaunchAt) return
+    const tick = (): void => { setLeft(Math.max(0, Math.ceil((partyLaunchAt - Date.now()) / 1000))) }
+    tick()
+    const iv = setInterval(tick, 200)
+    return () => clearInterval(iv)
+  }, [partyLaunchAt, phase])
+
+  // v15: LEADER — the whole squad ready? start the countdown; someone
+  // un-readied? cancel it (exactly like the Fortnite lobby)
+  useEffect(() => {
+    if (!inSquad || !amLeader || phase !== 'menu') return
+    const all = partyMembers.length > 1 && partyMembers.every(m => partyReady[m.u])
+    if (all && !partyLaunchAt) esNet.partyLaunchCountdown(5)
+    else if (!all && partyLaunchAt) esNet.partyLaunchCountdown(0)
+  }, [inSquad, amLeader, phase, partyMembers, partyReady, partyLaunchAt])
+
+  // v15: LEADER — countdown reached zero → deploy the squad exactly once
+  // (deferred through a timeout so no setState runs in the effect body)
+  useEffect(() => {
+    if (!inSquad || !amLeader || phase !== 'menu' || !partyLaunchAt) return
+    if (Date.now() < partyLaunchAt - 400) return   // countdown still running
+    if (launchedRef.current) return
+    launchedRef.current = true
+    const t = setTimeout(() => {
+      if (useGame.getState().phase !== 'menu') return   // left the lobby meanwhile
+      if (effMode === 'historia') launch('host', '', 'historia', 'coop')
+      else launch('host', '', effMode, effKind)
+    }, 0)
+    return () => clearTimeout(t)
+  }, [left, partyLaunchAt, inSquad, amLeader, phase, effMode, effKind])
+
+  // v15: countdown cleared → re-arm the deploy guard
+  useEffect(() => { if (!partyLaunchAt) launchedRef.current = false }, [partyLaunchAt])
+
+  if (phase !== 'menu') return null
 
   // v14: QUICK PLAY — scan the public rooms for a few seconds; join the
   // first one playing your selected mode, otherwise host a fresh room.
@@ -1212,7 +1329,10 @@ export function MainMenu() {
     if (quickIv.current) clearInterval(quickIv.current)
     quickIv.current = setInterval(() => {
       if (useGame.getState().phase !== 'menu') { clearInterval(quickIv.current!); quickIv.current = null; return }
-      const live = useRooms.getState().rooms.filter(r => r.players < r.cap && r.mode === gameMode)
+      // v15: a SQUAD never splits — quick match with mates always HOSTS a
+      // public room for the squad (joining someone else's room is solo-only)
+      const canJoin = !inSquad
+      const live = canJoin ? useRooms.getState().rooms.filter(r => r.players < r.cap && r.mode === gameMode) : []
       if (live.length) {
         clearInterval(quickIv.current!); quickIv.current = null
         setQuickState('joining')
@@ -1227,8 +1347,9 @@ export function MainMenu() {
 
   const onPlay = (): void => {
     getAudio().uiClick()
-    // squad member → READY toggle (the leader launches for everyone)
-    if (partyActive && !amLeader) { esNet.setPartyReady(!iAmReady); return }
+    // v15 Fortnite-style: in a squad EVERYONE (leader included) readies up —
+    // when the whole squad is ready the match auto-deploys for all of them
+    if (inSquad) { esNet.setPartyReady(!iAmReady); return }
     if (gameMode === 'historia') {
       if (coop) launch('host', '', 'historia', 'coop')
       else launch('solo', '', 'historia')
@@ -1239,15 +1360,19 @@ export function MainMenu() {
   }
 
   // ---- labels for the mode card / play button ----
-  const modeInfo = MODES[gameMode]
-  const sourceLabel = gameMode === 'historia'
-    ? (coop ? 'CO-OP · ONLINE' : 'SOLO MISSION')
-    : source === 'bots' ? 'OFFLINE · VS BOTS'
-      : source === 'room' ? `ONLINE · ${roomKind.toUpperCase()}`
-        : source === 'join' ? 'JOIN BY CODE'
-          : 'QUICK MATCH · ONLINE'
-  const playLabel = partyActive && !amLeader
-    ? (iAmReady ? 'READY ✓' : 'READY')
+  const modeInfo = MODES[effMode] ?? MODES.escaramuza
+  const sourceLabel = inSquad
+    ? (effMode === 'historia' ? 'SQUAD · CO-OP CAMPAIGN' : `SQUAD · ${effKind.toUpperCase()} ROOM · ONLINE`)
+    : gameMode === 'historia'
+      ? (coop ? 'CO-OP · ONLINE' : 'SOLO MISSION')
+      : source === 'bots' ? 'OFFLINE · VS BOTS'
+        : source === 'room' ? `ONLINE · ${roomKind.toUpperCase()}`
+          : source === 'join' ? 'JOIN BY CODE'
+            : 'QUICK MATCH · ONLINE'
+  const playLabel = inSquad
+    ? (amLeader && partyLaunchAt
+        ? 'CANCEL'
+        : iAmReady ? 'READY ✓' : 'READY')
     : quickState === 'scanning'
       ? 'SEARCHING…'
       : quickState === 'joining'
@@ -1341,7 +1466,7 @@ export function MainMenu() {
                       {m.u === oid && <span className="text-amber-300/80 text-[8px] ml-1">(YOU)</span>}
                     </div>
                     <div className="font-tac-md text-[8px] text-stone-600 tracking-widest">
-                      {m.leader ? 'LEADER' : 'OPERATOR'} · {MODES[gameMode].short}
+                      {m.leader ? 'LEADER' : 'OPERATOR'} · {(MODES[effMode] ?? MODES.escaramuza).short}
                     </div>
                   </div>
                   {partyReady[m.u] && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
@@ -1428,22 +1553,33 @@ export function MainMenu() {
             <div className="font-tac-md text-[9px] text-amber-300/70 tracking-widest mt-0.5 truncate">
               {sourceLabel}
             </div>
+            {amMember && (
+              <div className="font-tac-md text-[8px] text-stone-500 tracking-[0.18em] mt-1 flex items-center gap-1.5">
+                <Lock className="w-2.5 h-2.5 shrink-0" /> PICKED BY {(partyLeaderName || 'LEADER').toUpperCase().slice(0, 14)}
+              </div>
+            )}
           </button>
 
           {/* the big play / ready button */}
           <button
             onClick={onPlay}
-            disabled={(source === 'join' && code.length < 4) || quickState !== ''}
+            disabled={(!inSquad && source === 'join' && code.length < 4) || (!inSquad && quickState !== '')}
             className={`group h-[64px] w-[min(220px,38vw)] rounded-lg font-tac text-[17px] tracking-[0.24em] uppercase transition-all active:scale-[0.99]
               flex items-center justify-center gap-3 shadow-2xl border-b-4
-              ${partyActive && !amLeader
+              ${inSquad
                 ? iAmReady
                   ? 'bg-emerald-400 text-stone-950 border-emerald-600 hover:bg-emerald-300'
-                  : 'bg-stone-200 text-stone-900 border-stone-400 hover:bg-white'
+                  : partyLaunchAt
+                    ? 'bg-amber-400 text-stone-950 border-amber-600 hover:bg-amber-300 animate-pulse'
+                    : 'bg-stone-200 text-stone-900 border-stone-400 hover:bg-white'
                 : 'bg-amber-400 text-stone-950 border-amber-600 hover:bg-amber-300'}
               disabled:opacity-40 disabled:cursor-not-allowed`}
           >
-            {quickState === 'scanning' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+            {inSquad
+              ? (iAmReady
+                  ? <Check className="w-5 h-5" />
+                  : partyLaunchAt ? <Rocket className="w-5 h-5" /> : <Play className="w-5 h-5" />)
+              : quickState === 'scanning' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
             {playLabel}
           </button>
         </div>
@@ -1451,14 +1587,18 @@ export function MainMenu() {
         {/* sub-line under the play bar */}
         <div className="max-w-6xl mx-auto mt-2 flex items-center justify-between gap-3">
           <p className="font-tac-md text-[9px] text-stone-600 tracking-[0.2em] hidden sm:block">
-            EMERGENCY STRIKE v14 · THREE.JS · WEBRTC P2P · MQTT PRESENCE
+            EMERGENCY STRIKE v15 · THREE.JS · WEBRTC P2P · MQTT PRESENCE
           </p>
           <p className="font-tac-md text-[9px] text-stone-500 tracking-widest truncate">
-            {partyActive && !amLeader
-              ? 'THE LEADER LAUNCHES THE MATCH FOR THE WHOLE SQUAD'
-              : partyActive && amLeader && partyMembers.length > 1
-                ? `${readyCount}/${partyMembers.length - 1} SQUADMATES READY — LAUNCH WHEN YOU WANT`
-                : 'PICK A MODE ↑ · INVITE FRIENDS FROM THE SQUAD PANEL'}
+            {inSquad
+              ? amLeader
+                ? partyLaunchAt
+                  ? 'ALL READY — DEPLOYING THE SQUAD…'
+                  : `${readyCount}/${partyMembers.length} READY — EVERYONE READY = AUTO DEPLOY`
+                : partyLaunchAt
+                  ? 'DEPLOYING WITH THE SQUAD…'
+                  : 'THE LEADER PICKS THE MODE — HIT READY TO DEPLOY'
+              : 'PICK A MODE ↑ · INVITE FRIENDS FROM THE SQUAD PANEL'}
           </p>
         </div>
       </div>
@@ -1467,7 +1607,11 @@ export function MainMenu() {
       {modeOpen && (
         <ModeSelectPanel
           onClose={() => { getAudio().uiClick(); setModeOpen(false) }}
-          gameMode={gameMode}
+          gameMode={effMode}
+          canPick={!inSquad || amLeader}
+          inSquad={inSquad}
+          squadCount={partyMembers.length}
+          leaderName={partyLeaderName}
           setGameMode={setGameMode}
           source={source}
           setSource={setSource}
@@ -1495,6 +1639,30 @@ export function MainMenu() {
           partyActive={partyActive}
           amLeader={amLeader}
         />
+      )}
+
+      {/* ============ v15: SQUAD AUTO-DEPLOY COUNTDOWN (Fortnite-style) ============ */}
+      {partyLaunchAt > 0 && inSquad && (
+        <div className="absolute inset-0 z-[65] flex flex-col items-center justify-center gap-3 pointer-events-none">
+          <div className="absolute inset-0 bg-gradient-to-b from-[#050709]/75 via-[#050709]/30 to-[#050709]/85" />
+          <p className="relative font-tac-md text-amber-300 text-[12px] tracking-[0.4em] uppercase">
+            squad ready — deploying
+          </p>
+          <div
+            className="relative font-tac text-stone-100 leading-none tabular-nums"
+            style={{ fontSize: 'min(26vw,132px)', textShadow: '0 8px 70px rgba(217,160,91,0.5), 0 2px 18px rgba(0,0,0,0.85)' }}
+          >
+            {left > 0 ? left : 'GO'}
+          </div>
+          <p className="relative font-tac-md text-stone-400 text-[11px] tracking-[0.24em] uppercase">
+            {modeInfo.name} {effMode === 'historia' ? '· CO-OP' : `· ${effKind.toUpperCase()}`}
+          </p>
+          {amLeader && (
+            <p className="relative font-tac-md text-stone-600 text-[9px] tracking-[0.2em] uppercase">
+              hit cancel to abort the deploy
+            </p>
+          )}
+        </div>
       )}
 
       {/* ============ modals ============ */}
@@ -1533,6 +1701,12 @@ export function MainMenu() {
 function ModeSelectPanel(p: {
   onClose: () => void
   gameMode: GameMode
+  /** v15: false for squad members — only the leader picks the mode */
+  canPick: boolean
+  /** v15: deploying as an online squad (Fortnite-style flow) */
+  inSquad: boolean
+  squadCount: number
+  leaderName: string
   setGameMode: (m: GameMode) => void
   source: PlaySource
   setSource: (s: PlaySource) => void
@@ -1582,6 +1756,28 @@ function ModeSelectPanel(p: {
           </button>
         </div>
 
+        {/* ---- v15: squad banner — WHO picks the mode (Fortnite-style) ---- */}
+        {p.inSquad && (
+          <div className="mx-5 sm:mx-7 mt-4 rounded-lg border border-amber-500/40 bg-amber-500/[0.06] px-4 py-2.5 flex items-start gap-3 tac-corner">
+            <Crown className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-stone-300 leading-relaxed">
+              {p.canPick ? (
+                <>
+                  You lead this squad — your pick syncs live to{' '}
+                  <b className="text-amber-200">{p.squadCount - 1} operator{p.squadCount - 1 === 1 ? '' : 's'}</b>.
+                  Everyone hits READY and the match deploys automatically.
+                </>
+              ) : (
+                <>
+                  <b className="text-amber-200">{p.leaderName || 'The leader'}</b> picks the mode —
+                  current pick: <b className="text-amber-200">{(MODES[p.gameMode] ?? MODES.escaramuza).name}</b>.
+                  Hit READY and the squad deploys together.
+                </>
+              )}
+            </p>
+          </div>
+        )}
+
         {/* ---- the modes ---- */}
         <div className="p-5 sm:p-7 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
           {modeIds.map(id => {
@@ -1590,10 +1786,12 @@ function ModeSelectPanel(p: {
             const active = p.gameMode === id
             return (
               <button key={id}
-                onClick={() => { getAudio().uiClick(); p.setGameMode(id) }}
+                onClick={() => { getAudio().uiClick(); if (p.canPick) p.setGameMode(id) }}
+                disabled={!p.canPick}
+                title={p.canPick ? undefined : 'The squad leader picks the mode'}
                 className={`rounded-lg border p-3 text-left transition-colors tac-corner ${
                   active ? 'border-amber-500/70 bg-amber-500/[0.07]' : 'border-stone-700/60 bg-stone-950/50 hover:border-stone-500'
-                }`}>
+                } ${!p.canPick ? 'cursor-not-allowed opacity-60 hover:border-stone-700/60' : ''}`}>
                 <Icon className={`w-5 h-5 mb-1.5 ${active ? 'text-amber-300' : 'text-stone-500'}`} />
                 <div className={`font-tac-md text-[11px] ${active ? 'text-white' : 'text-stone-300'}`}>{m.name}</div>
                 <div className="text-[9px] text-stone-500 leading-snug mt-0.5">
@@ -1622,27 +1820,39 @@ function ModeSelectPanel(p: {
                 Six chapters with cinematic flyovers, radio dialogue, live battle fronts, a rescue,
                 a boss duel and a timed helicopter extraction. Falling restarts the chapter with your inventory.
               </p>
-              <div className="grid grid-cols-2 gap-2">
-                <Chip active={!p.coop} onClick={() => p.setCoop(false)}>SOLO MISSION</Chip>
-                <Chip active={p.coop} onClick={() => p.setCoop(true)}>CO-OP · ONLINE</Chip>
-              </div>
-              {p.coop && (
-                <div className="flex gap-2 pt-1">
-                  <Input
-                    value={p.code}
-                    onChange={e => p.setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
-                    onKeyDown={e => { if (e.key === 'Enter' && p.code.length >= 4) p.onLaunchCoopJoin() }}
-                    placeholder="SQUAD CODE"
-                    className="bg-stone-950/80 border-stone-600 text-white text-lg h-11 font-bold tracking-[0.25em] text-center"
-                  />
-                  <button
-                    onClick={p.onLaunchCoopJoin}
-                    disabled={p.code.length < 4}
-                    className="px-5 rounded-md font-tac text-xs tracking-[0.2em] uppercase bg-stone-100 text-stone-900 hover:bg-emerald-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    Join
-                  </button>
+              {p.inSquad ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/[0.05] px-3.5 py-2.5 flex items-center gap-2.5">
+                  <Users className="w-4 h-4 text-amber-300 shrink-0" />
+                  <p className="text-[11px] text-stone-300 leading-relaxed">
+                    The whole squad deploys into the campaign together — everyone readies up
+                    in the lobby and the co-op operation starts automatically.
+                  </p>
                 </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Chip active={!p.coop} onClick={() => p.setCoop(false)}>SOLO MISSION</Chip>
+                    <Chip active={p.coop} onClick={() => p.setCoop(true)}>CO-OP · ONLINE</Chip>
+                  </div>
+                  {p.coop && (
+                    <div className="flex gap-2 pt-1">
+                      <Input
+                        value={p.code}
+                        onChange={e => p.setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))}
+                        onKeyDown={e => { if (e.key === 'Enter' && p.code.length >= 4) p.onLaunchCoopJoin() }}
+                        placeholder="SQUAD CODE"
+                        className="bg-stone-950/80 border-stone-600 text-white text-lg h-11 font-bold tracking-[0.25em] text-center"
+                      />
+                      <button
+                        onClick={p.onLaunchCoopJoin}
+                        disabled={p.code.length < 4}
+                        className="px-5 rounded-md font-tac text-xs tracking-[0.2em] uppercase bg-stone-100 text-stone-900 hover:bg-emerald-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Join
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
               <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="MISSION DIFFICULTY" />
             </div>
@@ -1671,7 +1881,19 @@ function ModeSelectPanel(p: {
         {/* ---- PvP deploy config ---- */}
         {!isCampaign && (
           <div className="px-5 sm:px-7 pb-5 space-y-5">
-            <div>
+            {p.inSquad && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 tac-corner">
+                <p className="font-tac-md text-stone-200 text-[11px] flex items-center gap-2 mb-1">
+                  <Users className="w-3.5 h-3.5 text-amber-300" /> SQUAD DEPLOY · ONLINE
+                </p>
+                <p className="text-stone-500 text-[11px] leading-relaxed">
+                  The whole squad deploys together in one online room — friends land on your
+                  AMBER team and bots cover the empty slots. Everyone readies up in the lobby
+                  and the match starts on its own when the squad is complete.
+                </p>
+              </div>
+            )}
+            <div className={p.inSquad ? 'hidden' : ''}>
               <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
                 <Gauge className="w-3.5 h-3.5" /> How do you want to play
               </p>
@@ -1698,25 +1920,45 @@ function ModeSelectPanel(p: {
               </div>
             </div>
 
-            {p.source === 'bots' && (
+            {!p.inSquad && p.source === 'bots' && (
               <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="AI DIFFICULTY" />
             )}
 
-            {p.source === 'room' && (
+            {(p.inSquad || p.source === 'room') && (
+              p.inSquad && !p.canPick ? (
+                <div className="rounded-lg border border-stone-800 bg-stone-950/60 p-4 tac-corner">
+                  <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
+                    <Users className="w-3.5 h-3.5" /> Room — configured by the leader
+                  </p>
+                  <p className="text-stone-500 text-[11px] leading-relaxed">
+                    Format, bot fill and difficulty are the leader&apos;s call. Your job: hit READY
+                    and wait for the auto-deploy.
+                  </p>
+                </div>
+              ) : (
               <div className="space-y-4">
                 <div>
                   <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
-                    <Users className="w-3.5 h-3.5" /> Room format
+                    <Users className="w-3.5 h-3.5" /> Room format{p.inSquad ? ` — squad of ${p.squadCount}` : ''}
                   </p>
                   <div className="grid grid-cols-5 gap-2">
-                    {(['1v1', '2v2', '3v3', '4v4', '5v5'] as const).map(k => (
-                      <Chip key={k} active={p.roomKind === k} onClick={() => p.setRoomKind(k)}>
-                        {k.toUpperCase()}
-                      </Chip>
-                    ))}
+                    {(['1v1', '2v2', '3v3', '4v4', '5v5'] as const).map(k => {
+                      const tooSmall = p.inSquad && (Number(k[0]) || 1) < p.squadCount
+                      return (
+                        <Chip key={k} active={p.roomKind === k} onClick={() => { if (!tooSmall) p.setRoomKind(k) }}>
+                          {tooSmall ? <span className="opacity-40">{k.toUpperCase()}</span> : k.toUpperCase()}
+                        </Chip>
+                      )
+                    })}
                   </div>
+                  {p.inSquad && (
+                    <p className="text-stone-600 text-[9px] mt-2 leading-relaxed">
+                      Your squad of {p.squadCount} auto-sizes the room — formats smaller than
+                      {p.squadCount}v{p.squadCount} would split the squad across teams.
+                    </p>
+                  )}
                 </div>
-                {p.roomKind === '1v1' ? (
+                {!p.inSquad && p.roomKind === '1v1' ? (
                   <div>
                     <p className="font-tac-md text-stone-400 text-[11px] mb-2">FILLER BOTS (PER TEAM)</p>
                     <div className="grid grid-cols-4 gap-2">
@@ -1750,9 +1992,10 @@ function ModeSelectPanel(p: {
                 )}
                 <DifficultyPicker difficulty={p.difficulty} setDifficulty={p.setDifficulty} label="BOT DIFFICULTY" />
               </div>
+              )
             )}
 
-            {p.source === 'join' && (
+            {!p.inSquad && p.source === 'join' && (
               <div className="space-y-3">
                 <div>
                   <label className="font-tac-md text-stone-400 text-[11px] mb-2 block">Room code</label>
@@ -1771,7 +2014,7 @@ function ModeSelectPanel(p: {
               </div>
             )}
 
-            {p.source === 'quick' && (
+            {!p.inSquad && p.source === 'quick' && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.04] p-4 flex items-center gap-3.5 tac-corner">
                 <Zap className="w-5 h-5 text-amber-300 shrink-0" />
                 <p className="text-stone-400 text-xs leading-relaxed">
@@ -1941,6 +2184,10 @@ export function ConnectingScreen() {
   const slotTeam = (id: string): 'A' | 'B' => {
     if (isCoop) return 'A'
     if (id === 'p1') return 'A'
+    // v15: squad members deploy on the host's AMBER team — trust the team
+    // the host actually assigned (fallback to the default layout pre-join)
+    const known = roomPlayers.find(x => x.id === id)
+    if (known) return known.team
     return teamSlotsFor(lobbyKind).find(s => s.id === id)?.team ?? 'B'
   }
   const slotFor = (id: string) => {
@@ -2083,7 +2330,7 @@ export function ConnectingScreen() {
               </p>
             </div>
           )}
-          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v13</div>
+          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v15</div>
         </div>
       )}
     </div>

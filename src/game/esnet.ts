@@ -186,6 +186,12 @@ export interface PartyMemberUI {
   n: string
   leader: boolean
 }
+/** v15: the leader's mode pick, synced live to the whole squad (Fortnite-style) */
+export interface PartyModeUI {
+  mode: string    // GameMode
+  source: string  // deploy source ('room' | 'quick' | 'bots'…)
+  kind: string    // RoomKind
+}
 interface PartyState {
   active: boolean
   gid: string
@@ -195,12 +201,18 @@ interface PartyState {
   members: PartyMemberUI[]
   /** v14: who pressed READY (lobby, estilo Fortnite) */
   ready: Record<string, boolean>
+  /** v15: the leader's current mode pick (null until the first sync) */
+  partyMode: PartyModeUI | null
+  /** v15: epoch-ms when the squad match auto-deploys (0 = idle) */
+  launchAt: number
   /** room code auto-received from the leader to deploy together */
   roomCode: string
   roomKind: string
-  setParty: (p: Partial<Omit<PartyState, 'setParty' | 'clear' | 'setRoom' | 'clearRoom' | 'setReady'>>) => void
+  setParty: (p: Partial<Omit<PartyState, 'setParty' | 'clear' | 'setRoom' | 'clearRoom' | 'setReady' | 'setPartyMode' | 'setLaunchAt'>>) => void
   setMembers: (m: PartyMemberUI[]) => void
   setReady: (u: string, v: boolean) => void
+  setPartyMode: (m: PartyModeUI | null) => void
+  setLaunchAt: (t: number) => void
   setRoom: (code: string, kind: string) => void
   clearRoom: () => void
   clear: () => void
@@ -213,14 +225,24 @@ export const useParty = create<PartyState>((set) => ({
   leaderName: '',
   members: [],
   ready: {},
+  partyMode: null,
+  launchAt: 0,
   roomCode: '',
   roomKind: '',
   setParty: (p) => set(p),
-  setMembers: (members) => set({ members }),
+  setMembers: (members) => set((s) => {
+    // v15: ready flags of operators who left the squad don't linger
+    const ids = new Set(members.map(m => m.u))
+    const ready: Record<string, boolean> = {}
+    for (const [k, v] of Object.entries(s.ready)) if (ids.has(k)) ready[k] = v
+    return { members, ready }
+  }),
   setReady: (u, v) => set((s) => ({ ready: { ...s.ready, [u]: v } })),
+  setPartyMode: (partyMode) => set({ partyMode }),
+  setLaunchAt: (launchAt) => set({ launchAt }),
   setRoom: (roomCode, roomKind) => set({ roomCode, roomKind }),
   clearRoom: () => set({ roomCode: '', roomKind: '' }),
-  clear: () => set({ active: false, gid: '', name: '', leaderOid: '', leaderName: '', members: [], ready: {}, roomCode: '', roomKind: '' }),
+  clear: () => set({ active: false, gid: '', name: '', leaderOid: '', leaderName: '', members: [], ready: {}, partyMode: null, launchAt: 0, roomCode: '', roomKind: '' }),
 }))
 
 // ------------------------------------------------------------
@@ -767,7 +789,14 @@ class EsNet {
     const oid = myOid()
     this.partyHb = setInterval(() => {
       if (!this.partyGid) return
-      this.pub(T.party(this.partyGid), { ty: 'hb', u: oid, n: myOperatorName(), ldr: leader ? 1 : 0, t: now() })
+      // v15: the leader's heartbeat carries the current mode pick so
+      // newcomers (and anyone who lost a packet) converge within 3s
+      const beat: Rec = { ty: 'hb', u: oid, n: myOperatorName(), ldr: leader ? 1 : 0, t: now() }
+      if (leader) {
+        const pm = useParty.getState().partyMode
+        if (pm) { beat.m = pm.mode; beat.s = pm.source; beat.k = pm.kind }
+      }
+      this.pub(T.party(this.partyGid), beat)
       this.pruneParty()
     }, 3000)
   }
@@ -789,6 +818,11 @@ class EsNet {
       const lowest = [...members].sort((a, b) => a.u.localeCompare(b.u))[0]
       if (lowest && lowest.u === oid) {
         useParty.getState().setParty({ leaderOid: oid, leaderName: myOperatorName() })
+        // v15: the promoted leader takes over the protocol — restart the
+        // heartbeat as leader (it now carries the mode pick) and re-publish
+        // the squad meta so everyone learns who leads now
+        this.startPartyHb(true)
+        this.pub(T.party(this.partyGid!), { ty: 'meta', gid: this.partyGid, name: useParty.getState().name, leader: oid, leaderName: myOperatorName(), t: now() }, true)
       }
     }
   }
@@ -802,9 +836,18 @@ class EsNet {
       if (!u) return
       const isFirst = ty === 'join' && !this.partyRoster.has(u) && u !== oid
       this.partyRoster.set(u, { n: str(p.n, 'Operator'), t: now(), leader: p.ldr === 1 })
+      // v15: a (re)joining operator starts NOT ready
+      if (ty === 'join') useParty.getState().setReady(u, false)
       if (isFirst) {
         getAudio().uiClick()
         toast({ kind: 'info', title: 'SQUAD', body: `${str(p.n)} joined the squad` })
+      }
+      // v15: the leader's heartbeat carries the live mode pick
+      if (p.ldr === 1 && p.m !== undefined) {
+        const st = useParty.getState()
+        if (!st.leaderOid || st.leaderOid === u) {
+          st.setPartyMode({ mode: str(p.m, 'escaramuza'), source: str(p.s, 'room'), kind: str(p.k, '2v2') })
+        }
       }
       this.pruneParty()
       return
@@ -813,6 +856,25 @@ class EsNet {
       // v14: estado LISTO de un miembro del escuadrón (lobby estilo Fortnite)
       const u = str(p.u)
       if (u) useParty.getState().setReady(u, p.v === 1)
+      return
+    }
+    if (ty === 'mode') {
+      // v15: el líder cambió el modo — la selección es SUYA y se sincroniza
+      const u = str(p.u)
+      const st = useParty.getState()
+      if (u && (!st.leaderOid || st.leaderOid === u)) {
+        st.setPartyMode({ mode: str(p.m, 'escaramuza'), source: str(p.s, 'room'), kind: str(p.k, '2v2') })
+      }
+      return
+    }
+    if (ty === 'launch') {
+      // v15: todo el escuadrón listo — despliegue automático con cuenta atrás
+      useParty.getState().setLaunchAt(now() + Math.max(1, num(p.d, 5)) * 1000)
+      return
+    }
+    if (ty === 'launchx') {
+      // v15: someone un-readied → countdown cancelled
+      useParty.getState().setLaunchAt(0)
       return
     }
     if (ty === 'meta') {
@@ -847,12 +909,47 @@ class EsNet {
     this.startPartyHb(useParty.getState().leaderOid === myOid())
   }
 
-  /** v14: marca tu estado LISTO en el lobby (miembros del escuadrón) */
+  /** v14: marca tu estado LISTO en el lobby (miembros del escuadrón).
+   *  v15: el estado local SIEMPRE se actualiza (aunque el transporte no
+   *  esté suscrito aún) — el broadcast es best-effort */
   setPartyReady(v: boolean): void {
     const oid = myOid()
-    if (!oid || !this.partyGid) return
-    useParty.getState().setReady(oid, v)
-    this.pub(T.party(this.partyGid), { ty: 'ready', u: oid, v: v ? 1 : 0, t: now() })
+    const st = useParty.getState()
+    if (!oid || !st.active) return
+    st.setReady(oid, v)
+    if (this.partyGid) this.pub(T.party(this.partyGid), { ty: 'ready', u: oid, v: v ? 1 : 0, t: now() })
+  }
+
+  /** v15: LEADER — publish the mode pick to the whole squad (Fortnite-style:
+   *  the host picks the mode, everyone else sees it live and readies up) */
+  setPartyModeSel(m: PartyModeUI): void {
+    const oid = myOid()
+    const st = useParty.getState()
+    if (!oid || !st.active || st.leaderOid !== oid) return
+    st.setPartyMode(m)
+    if (this.partyGid) this.pub(T.party(this.partyGid), { ty: 'mode', u: oid, m: m.mode, s: m.source, k: m.kind, t: now() })
+  }
+
+  /** v15: LEADER — start (dn>0 seconds) or cancel (dn=0) the auto-deploy
+   *  countdown that fires when the WHOLE squad is ready */
+  partyLaunchCountdown(dn: number): void {
+    const st = useParty.getState()
+    if (!st.active) return
+    if (dn > 0) {
+      st.setLaunchAt(now() + dn * 1000)
+      if (this.partyGid) this.pub(T.party(this.partyGid), { ty: 'launch', d: dn, t: now() })
+    } else {
+      st.setLaunchAt(0)
+      if (this.partyGid) this.pub(T.party(this.partyGid), { ty: 'launchx', t: now() })
+    }
+  }
+
+  /** v15: humans deploying together (leader's party size, 1 if solo) —
+   *  used by the room host to keep the squad on the AMBER team */
+  squadDeploySize(): number {
+    const st = useParty.getState()
+    if (!st.active || st.leaderOid !== myOid()) return 1
+    return Math.max(1, Math.min(5, st.members.length))
   }
 
   inviteToParty(oid: string, pname: string): void {

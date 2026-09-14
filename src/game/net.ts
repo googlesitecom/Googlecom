@@ -26,17 +26,22 @@ export type NetMode = 'solo' | 'host' | 'guest'
 export type RoomKind = '1v1' | '2v2' | '3v3' | '4v4' | '5v5' | 'coop'
 
 /** v9: huecos de invitado por formato — el anfitrión ya ocupa A.
- *  Intercalado A,B,A,B… con los B extra al final (2v2 = A,B,B como v6.2) */
-export function teamSlotsFor(kind: RoomKind): { id: string; team: Team }[] {
+ *  Intercalado A,B,A,B… con los B extra al final (2v2 = A,B,B como v6.2)
+ *  v15: squadSize — cuando el anfitrión despliega con su ESCUADRÓN, los
+ *  primeros (squadSize-1) huecos se reservan en el equipo ÁMBAR del
+ *  anfitrión para que los amigos caigan JUNTOS (estilo Fortnite) */
+export function teamSlotsFor(kind: RoomKind, squadSize = 1): { id: string; team: Team }[] {
   if (kind === 'coop') {
     // campaña cooperativa: hasta 5 operadores, TODOS en el equipo ÁMBAR
     return ['p2', 'p3', 'p4', 'p5'].map(id => ({ id, team: 'A' as Team }))
   }
   const n = Math.max(1, Number(kind[0]) || 1)
   const needA = n - 1, needB = n
+  const ally = Math.max(0, Math.min(needA, (squadSize || 1) - 1))
   const slots: { id: string; team: Team }[] = []
   let a = 0, b = 0, i = 2
   while (a < needA || b < needB) {
+    if (a < ally) { slots.push({ id: `p${i++}`, team: 'A' }); a++; continue }
     if (a < needA && (b >= needB || a <= b)) { slots.push({ id: `p${i++}`, team: 'A' }); a++ }
     else { slots.push({ id: `p${i++}`, team: 'B' }); b++ }
   }
@@ -131,6 +136,8 @@ export class NetClient {
   }
 
   private mapId: MapId = 'ciudad'
+  /** v15: humans deploying with the host (party size) — squad slots + auto-start */
+  private squadExpected = 1
 
   // v9: registro de fin de partida (solo una vez por sesión)
   private matchRecorded = false
@@ -212,12 +219,15 @@ export class NetClient {
     this.duoDifficulty = difficulty
     this.duoGameMode = gameMode
     this.hostName = name
+    // v15: si el anfitrión despliega con su escuadrón, los amigos ocupan
+    // primero los huecos ÁMBAR (juntos en tu equipo, estilo Fortnite)
+    this.squadExpected = esNet.squadDeploySize()
     // sincronizar el código de sala con el store (puede haberse regenerado)
     if (useGame.getState().roomCode !== code) useGame.getState().setHud({ roomCode: code })
 
     if (kind !== '1v1') {
       // ---- NvN / COOP: NO arrancar la simulación todavía — primero el lobby ----
-      this.duoSlots = teamSlotsFor(kind).map(s => ({ ...s, conn: null, name: '', joined: false, outbox: [] as PeerMsg[] }))
+      this.duoSlots = teamSlotsFor(kind, this.squadExpected).map(s => ({ ...s, conn: null, name: '', joined: false, outbox: [] as PeerMsg[] }))
       this.pushLobby() // lobby con solo el anfitrión
       // v9: la campaña cooperativa NO rellena huecos con bots NUNCA
       if (kind === 'coop') this.fillEmpty = false
@@ -420,11 +430,27 @@ export class NetClient {
         useGame.getState().addAnnouncement(`${slot.name} joined the ${this.roomKind === 'coop' ? 'squad' : `room (team ${slot.team === 'A' ? 'AMBER' : 'GREEN'})`}`, 'info')
         // sala llena → inicio automático con cuenta atrás breve
         // (coop también arranca sola al llegar 5/5 operadores)
-        if (this.duoSlots.every(s => s.conn && s.joined) && !this.worker) {
-          useGame.getState().addAnnouncement('ROOM FULL — the match starts…', 'info')
+        // v15: SQUAD DEPLOY — el escuadrón del anfitrión ya está completo
+        // aunque queden huecos LIBRES: arranca sola (con bots si rellenas,
+        // sin bots en coop o si el anfitrión quiso esperar humanos)
+        const guestsJoined = this.duoSlots.filter(s => s.conn && s.joined).length
+        const roomFull = this.duoSlots.every(s => s.conn && s.joined)
+        const squadHere = this.squadExpected > 1 && guestsJoined >= this.squadExpected - 1
+        const squadGo = squadHere && (this.fillEmpty || this.roomKind === 'coop' || roomFull)
+        if ((roomFull || squadGo) && !this.worker) {
+          useGame.getState().addAnnouncement(
+            squadGo && !roomFull
+              ? 'SQUAD COMPLETE — the match starts…'
+              : 'ROOM FULL — the match starts…',
+            'info',
+          )
           setTimeout(() => {
             if (this.disposed || this.worker) return
-            if (!this.duoSlots.every(s => s.conn && s.joined)) return // alguien salió
+            if (!this.duoSlots.every(s => s.conn && s.joined)) {
+              // someone left AND the squad is no longer complete → wait
+              const gj = this.duoSlots.filter(s => s.conn && s.joined).length
+              if (!(this.squadExpected > 1 && gj >= this.squadExpected - 1 && (this.fillEmpty || this.roomKind === 'coop'))) return
+            }
             this.startTeamMatch()
           }, 2600)
         }
