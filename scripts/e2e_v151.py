@@ -162,7 +162,8 @@ try:
             check('0 pageerrors (member)', len(eb) == 0)
             ctxA.close(); ctxB.close()
         if ONLY == 'A':
-            browser.close(); server.terminate()
+            browser.close()
+            if server: server.terminate()
             print(f'\n=== v15.1 E2E [A]: {len(ok)} PASS / {len(fail)} FAIL ===')
             sys.exit(1 if fail else 0)
 
@@ -226,7 +227,8 @@ try:
         check('0 pageerrors (guest)', len(ed) == 0)
         ctxC.close(); ctxD.close()
         if ONLY == 'B':
-            browser.close(); server.terminate()
+            browser.close()
+            if server: server.terminate()
             print(f'\n=== v15.1 E2E [B]: {len(ok)} PASS / {len(fail)} FAIL ===')
             sys.exit(1 if fail else 0)
 
