@@ -109,6 +109,26 @@ const SOLDIER_AIM_PISTOL = {
   sArm: { x: 0.95, y: 0.77, z: 1.24 },     // hombro apoyo → mano (−0.06, 1.23, 0.34)
   sFore: { x: -0.02, z: 0.02 },            // codo apoyo extendido cruzando al centro
 }
+// v14.1 — pose de COMBATE sin arma (lobby estilo Fortnite): posición de
+// ataque tipo guardia de boxeo — codos pegados al cuerpo (A-pose natural)
+// con los antebrazos plegados hacia ARRIBA: puños a la altura del mentón
+// delante del cuerpo. CALIBRADA NUMÉRICAMENTE contra el rig real (probe
+// de huesos con scripts/probe_pose.py + ?lobbytest=1): puños
+// (−0.29, 1.44, 0.30) y (0.37, 1.43, 0.22), codos a 1.29.
+const SOLDIER_COMBAT = {
+  tArm: { x: 1.28, y: 0, z: -0.3 },       // hombro gatillo (RightArm, −X): A-pose natural
+  tFore: { x: -2.5, z: -1.6 },            // codo plegado ARRIBA → puño (−0.16, 1.35, 0.36): mentón
+  sArm: { x: 1.28, y: 0, z: 0.3 },        // hombro apoyo (LeftArm, +X): A-pose natural
+  sFore: { x: -2.5, z: 1.6 },             // codo plegado ARRIBA → puño (0.25, 1.35, 0.31): mentón
+  /** v14.1: cerrar los dedos → PUÑOS de verdad (calibrado por VLM) */
+  fingerCurl: { axis: 'z' as 'x' | 'z', amount: 0.7, mirror: true },
+}
+/** v14.1: override de depuración — calibración de la guardia por URL
+ *  (?lobbytest=1&tax=…&tfz=…); null en producción. */
+let combatOverride: Partial<typeof SOLDIER_COMBAT> | null = null
+export function setCombatPoseOverride(o: Partial<typeof SOLDIER_COMBAT> | null): void {
+  combatOverride = o
+}
 /** v13.3: ¿es un arma corta (empuñadura a una/two manos pegadas)? */
 export function isPistolWeapon(w: WeaponId | null | undefined): boolean {
   return w === 'p9' || w === 'aguila'
@@ -335,8 +355,11 @@ function buildSoldier(team: Team): THREE.Object3D | null {
   return rig
 }
 
-/** v14: tiñe los materiales del uniforme (dorado del LOBBY incluido) */
-export function tintRig(rig: THREE.Object3D, color: number): void {
+/** v14: tiñe los materiales del uniforme (dorado del LOBBY incluido).
+ *  v14.1: applyRest=false para NO pisar la pose (el lobby tiñe DESPUÉS de
+ *  poner la guardia de combate; buildSoldier/swapToSoldier siguen usando
+ *  el reposo como pose base). */
+export function tintRig(rig: THREE.Object3D, color: number, applyRest = true): void {
   rig.traverse(o => {
     if (o instanceof THREE.Mesh) {
       const mats = Array.isArray(o.material) ? o.material : [o.material]
@@ -352,6 +375,7 @@ export function tintRig(rig: THREE.Object3D, color: number): void {
       o.frustumCulled = false
     }
   })
+  if (!applyRest) return
   // pose de reposo: brazos abajo (eje x) + codos flexionados
   const armL = findBone(rig, /^mixamorigLeftArm_/)
   const armR = findBone(rig, /^mixamorigRightArm_/)
@@ -371,7 +395,7 @@ export function tintRig(rig: THREE.Object3D, color: number): void {
 // inspeccionando) + refs de huesos para animar en vivo, y pose
 // de PISTOLA cuando el arma es corta (empuñadura correcta).
 // ----------------------------------------------------------
-export type CinePoseVariant = 'stand' | 'kneel' | 'crouch' | 'scan'
+export type CinePoseVariant = 'stand' | 'kneel' | 'crouch' | 'scan' | 'combat'
 export interface CineSoldierParts {
   root: THREE.Group
   body: THREE.Group
@@ -385,7 +409,7 @@ export interface CineSoldierParts {
   torso?: THREE.Object3D
 }
 
-export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePoseVariant = 'stand'): CineSoldierParts {
+export function buildCineSoldier(team: Team, weapon: WeaponId | null, variant: CinePoseVariant = 'stand'): CineSoldierParts {
   const root = new THREE.Group()
   const body = new THREE.Group()
   root.add(body)
@@ -393,17 +417,37 @@ export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePose
   const weaponHolder = new THREE.Group()
 
   if (rig) {
-    // ---- soldado GLB: pose de APUNTADO estática (aim = 1) ----
+    // ---- soldado GLB: con arma → pose de APUNTADO; sin arma → GUARDIA ----
     body.add(rig)
-    const AIM = aimPoseFor(weapon)
     const arms = [findBone(rig, /^mixamorigLeftArm_/), findBone(rig, /^mixamorigRightArm_/)]
     const fores = [findBone(rig, /^mixamorigLeftForeArm_/), findBone(rig, /^mixamorigRightForeArm_/)]
     const head = findBone(rig, /^mixamorigHead_/) ?? null
     const torso = findBone(rig, /^mixamorigSpine1?_/) ?? null
-    if (arms[0]) arms[0].rotation.set(AIM.sArm.x, AIM.sArm.y, AIM.sArm.z)
-    if (arms[1]) arms[1].rotation.set(AIM.tArm.x, AIM.tArm.y, AIM.tArm.z)
-    if (fores[0]) fores[0].rotation.set(AIM.sFore.x, 0, AIM.sFore.z)
-    if (fores[1]) fores[1].rotation.set(AIM.tFore.x, 0, AIM.tFore.z)
+    if (weapon) {
+      const AIM = aimPoseFor(weapon)
+      if (arms[0]) arms[0].rotation.set(AIM.sArm.x, AIM.sArm.y, AIM.sArm.z)
+      if (arms[1]) arms[1].rotation.set(AIM.tArm.x, AIM.tArm.y, AIM.tArm.z)
+      if (fores[0]) fores[0].rotation.set(AIM.sFore.x, 0, AIM.sFore.z)
+      if (fores[1]) fores[1].rotation.set(AIM.tFore.x, 0, AIM.tFore.z)
+    } else {
+      // v14.1: GUARDIA DE ATAQUE — puños arriba, codos doblados
+      const C = combatOverride ? { ...SOLDIER_COMBAT, ...combatOverride } : SOLDIER_COMBAT
+      if (arms[0]) arms[0].rotation.set(C.sArm.x, C.sArm.y, C.sArm.z)
+      if (arms[1]) arms[1].rotation.set(C.tArm.x, C.tArm.y, C.tArm.z)
+      if (fores[0]) fores[0].rotation.set(C.sFore.x, 0, C.sFore.z)
+      if (fores[1]) fores[1].rotation.set(C.tFore.x, 0, C.tFore.z)
+      // v14.1: cerrar los dedos → PUÑOS (solo en la guardia sin arma)
+      const FC = C.fingerCurl
+      if (FC) {
+        rig.traverse(o => {
+          const mm = /^mixamorig(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d/.exec(o.name)
+          if (!mm) return
+          const amt = (FC.mirror && mm[1] === 'Left') ? -FC.amount : FC.amount
+          if (FC.axis === 'x') o.rotation.x = amt
+          else o.rotation.z = amt
+        })
+      }
+    }
     const legs = [findBone(rig, /^mixamorigLeftUpLeg_/), findBone(rig, /^mixamorigRightUpLeg_/)]
     const knees = [findBone(rig, /^mixamorigLeftLeg_/), findBone(rig, /^mixamorigRightLeg_/)]
     // v13.3: VARIANTE de pose — piernas/torso según el papel del soldado
@@ -419,6 +463,15 @@ export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePose
       if (knees[0]) knees[0].rotation.x = 1.6
       if (knees[1]) knees[1].rotation.x = 1.3
       body.position.y = -0.42
+    } else if (variant === 'combat') {
+      // v14.1: POSICIÓN DE ATAQUE — pies escalonados (izq. adelantada),
+      // rodillas flexionadas, peso al frente
+      if (legs[0]) legs[0].rotation.x = -0.5
+      if (knees[0]) knees[0].rotation.x = 0.6
+      if (legs[1]) legs[1].rotation.x = 0.4
+      if (knees[1]) knees[1].rotation.x = 0.5
+      if (torso) { torso.rotation.x = 0.06; torso.rotation.y = 0.12 }
+      body.position.y = -0.06
     } else {
       // stand / scan: base con ligera separación de pies
       if (legs[0]) legs[0].rotation.x = -0.14
@@ -430,7 +483,7 @@ export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePose
     // IK de una sola pasada: manos tras la pose → posición del arma
     const handT = findBone(rig, /^mixamorigRightHand_/)
     const handS = findBone(rig, /^mixamorigLeftHand_/)
-    if (handT && handS) {
+    if (weapon && handT && handS) {
       handT.updateWorldMatrix(true, false)
       handS.updateWorldMatrix(true, false)
       const v1 = new THREE.Vector3().setFromMatrixPosition(handT.matrixWorld)
@@ -452,7 +505,8 @@ export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePose
       weaponHolder.position.y += 0.02
       weaponHolder.quaternion.setFromUnitVectors(_Z, dir)
     } else {
-      weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
+      // v14.1: sin arma (o sin huesos de mano) — holder en reposo al hombro
+      weaponHolder.position.set(WPN_REST.x, WPN_REST.y, WPN_REST.z)
     }
     const parts = finalizeCineSoldier(root, body, weaponHolder, weapon, true)
     parts.arms = arms as [THREE.Object3D, THREE.Object3D]
@@ -461,22 +515,30 @@ export function buildCineSoldier(team: Team, weapon: WeaponId, variant: CinePose
     parts.torso = torso ?? undefined
     return parts
   }
-  // ---- humanoide low-poly (fallback sin GLB): brazos al arma ----
+  // ---- humanoide low-poly (fallback sin GLB): brazos al arma o guardia ----
   const h = buildHumanoid(team)
   body.add(h.bodyGroup)
   h.tag.visible = false
   h.tagBg.visible = false
-  h.arms[0].rotation.set(HUM_AIM.tArm.x, 0, HUM_AIM.tArm.z)
-  h.arms[1].rotation.set(HUM_AIM.sArm.x, 0, HUM_AIM.sArm.z)
+  if (weapon) {
+    h.arms[0].rotation.set(HUM_AIM.tArm.x, 0, HUM_AIM.tArm.z)
+    h.arms[1].rotation.set(HUM_AIM.sArm.x, 0, HUM_AIM.sArm.z)
+  } else {
+    // v14.1: guardia de combate — brazos al frente levantados (sin codos
+    // en el humanoide: ángulo de guardia a la altura del pecho)
+    h.arms[0].rotation.set(-0.85, 0, 0.3)
+    h.arms[1].rotation.set(-0.85, 0, -0.3)
+  }
   if (variant === 'kneel' || variant === 'crouch') body.scale.y = 0.72
+  else if (variant === 'combat') body.position.y = -0.04
   // el holder del humanoide ya cuelga de su bodyGroup (movido a body)
-  h.weaponHolder.position.set(WPN_AIM.x, WPN_AIM.y, WPN_AIM.z)
+  h.weaponHolder.position.set(WPN_REST.x, WPN_REST.y, WPN_REST.z)
   h.weaponHolder.rotation.x = -0.06
   return finalizeCineSoldier(root, body, h.weaponHolder, weapon, false)
 }
 
 /** acopla el arma al soporte y devuelve las partes listas */
-function finalizeCineSoldier(root: THREE.Group, body: THREE.Group, holder: THREE.Group, weapon: WeaponId, usingSoldier: boolean): CineSoldierParts {
+function finalizeCineSoldier(root: THREE.Group, body: THREE.Group, holder: THREE.Group, weapon: WeaponId | null, usingSoldier: boolean): CineSoldierParts {
   let muzzle: THREE.Object3D | null = null
   if (weapon && weapon !== 'knife') {
     const built = buildGLBWeapon(weapon) ?? buildWeaponModel(weapon)

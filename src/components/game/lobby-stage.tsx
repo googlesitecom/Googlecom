@@ -10,16 +10,13 @@
 // ============================================================
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { ensureSoldierLoaded, buildCineSoldier, tintRig, type CineSoldierParts } from '@/game/remote-players'
-import type { WeaponId } from '@/game/shared'
+import { ensureSoldierLoaded, buildCineSoldier, tintRig, setCombatPoseOverride, type CineSoldierParts } from '@/game/remote-players'
 
 export interface LobbyChar {
   id: string
   name: string
   leader: boolean
   you: boolean
-  /** weapon the character holds (preview of the loadout) */
-  weapon: WeaponId
 }
 
 const GOLD = 0xd9a441     // the player's exclusive tint (like in-game)
@@ -88,19 +85,45 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
     scene.add(platform)
 
     // ---- characters ----
-    const soldiers: { parts: CineSoldierParts; bones: { torso?: THREE.Object3D; head?: THREE.Object3D }; phase: number }[] = []
+    const soldiers: { parts: CineSoldierParts; bones: { torso?: THREE.Object3D; head?: THREE.Object3D }; phase: number; foreBase: number }[] = []
     const buildRow = (row: LobbyChar[]): void => {
       if (disposed || !row.length) return
       for (const old of soldiers) scene.remove(old.parts.root)
       soldiers.length = 0
       tagRefs.current.length = 0
+      // v14.1: calibración de la guardia por URL (?lobbytest=1&tax=1.3&tfz=0.3…)
+      if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('lobbytest')) {
+        const lp = new URLSearchParams(location.search)
+        const n = (k: string): number | undefined => {
+          const v = lp.get(k)
+          return v !== null && v !== '' && !Number.isNaN(+v) ? +v : undefined
+        }
+        const o: { tArm?: { x: number; y: number; z: number }; tFore?: { x: number; z: number }; sArm?: { x: number; y: number; z: number }; sFore?: { x: number; z: number }; fingerCurl?: { axis: 'x' | 'z'; amount: number; mirror: boolean } } = {}
+        const tax = n('tax'), tay = n('tay'), taz = n('taz')
+        const tfx = n('tfx'), tfz = n('tfz')
+        const sax = n('sax'), say = n('say'), saz = n('saz')
+        const sfx = n('sfx'), sfz = n('sfz')
+        const fca = n('fca'), fcax = lp.get('fcax'), fcm = lp.get('fcm')
+        if (tax !== undefined || tay !== undefined || taz !== undefined) o.tArm = { x: tax ?? 1.3, y: tay ?? 0, z: taz ?? -0.12 }
+        if (tfx !== undefined || tfz !== undefined) o.tFore = { x: tfx ?? -1.35, z: tfz ?? -0.3 }
+        if (sax !== undefined || say !== undefined || saz !== undefined) o.sArm = { x: sax ?? 1.3, y: say ?? 0, z: saz ?? 0.12 }
+        if (sfx !== undefined || sfz !== undefined) o.sFore = { x: sfx ?? -1.35, z: sfz ?? 0.25 }
+        if (fca !== undefined || fcax !== null || fcm !== null) o.fingerCurl = {
+          axis: fcax === 'x' ? 'x' : 'z',
+          amount: fca ?? 0.7,
+          mirror: fcm !== '0',
+        }
+        setCombatPoseOverride(Object.keys(o).length ? o : null)
+      }
       const n = row.length
       const spacing = n > 3 ? 1.28 : 1.42
       row.forEach((c, i) => {
-        const parts = buildCineSoldier('A', c.weapon, i === 0 ? 'stand' : (i % 2 === 1 ? 'scan' : 'stand'))
-        if (c.you) tintRig(parts.root, GOLD)
-        else if (c.leader) tintRig(parts.root, 0xe0b053)
-        else tintRig(parts.root, SQUAD)
+        // v14.1: SIN arma y en POSICIÓN DE ATAQUE (guardia), como Fortnite
+        const parts = buildCineSoldier('A', null, 'combat')
+        // v14.1: tintar SIN pose de reposo para no pisar la guardia
+        if (c.you) tintRig(parts.root, GOLD, false)
+        else if (c.leader) tintRig(parts.root, 0xe0b053, false)
+        else tintRig(parts.root, SQUAD, false)
         // face the camera (models look toward +Z)
         parts.root.position.x = (i - (n - 1) / 2) * spacing
         parts.root.position.y = 0.14
@@ -110,8 +133,17 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
           parts,
           bones: { torso: parts.torso, head: parts.head },
           phase: i * 1.37 + Math.random() * 0.6,
+          foreBase: parts.forearms?.[1]?.rotation.x ?? 0,
         })
       })
+      // v14.1: hook de depuración para el E2E (?lobbytest=1) — permite
+      // contar meshes de arma en la escena del lobby desde Playwright
+      if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('lobbytest')) {
+        ;(window as unknown as { __lobbyDebug?: unknown }).__lobbyDebug = {
+          scene, soldiers: soldiers.length,
+          weaponless: soldiers.every(s => !s.parts.muzzle),
+        }
+      }
     }
 
     // initial placeholder row (low-poly fallback) then upgrade when GLB lands
@@ -171,12 +203,13 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
       camera.position.x = Math.sin(t * 0.12) * 0.22 + mx * 0.34
       camera.position.y = 1.62 - my * 0.16 + Math.sin(t * 0.21) * 0.035
       camera.lookAt(0, 1.12, 0)
-      // breathing
+      // breathing + guard micro-sway (fists stay up, alive)
       for (const s of soldiers) {
         const b = Math.sin(t * 1.45 + s.phase)
         if (s.bones.torso) s.bones.torso.rotation.z = b * 0.018
         if (s.bones.head) s.bones.head.rotation.y = Math.sin(t * 0.4 + s.phase) * 0.06
-        s.parts.body.position.y = b * 0.008
+        s.parts.body.position.y = b * 0.008 - 0.06
+        if (s.parts.forearms?.[1]) s.parts.forearms[1].rotation.x = s.foreBase + Math.sin(t * 1.9 + s.phase) * 0.035
       }
       // platform ring pulse
       const ringMat = ring.material as THREE.MeshBasicMaterial
@@ -235,14 +268,5 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
       ))}
     </div>
   )
-}
-
-/** small helper: does the GLB weapon exist (for the weapon preview picker) */
-export function lobbyWeaponLabel(w: WeaponId): string {
-  const names: Partial<Record<WeaponId, string>> = {
-    p9: 'P9 SIDEARM', mp9: 'MP-9 SMG', ar47: 'AR-47 RIFLE', cr4: 'CR-4 CARBINE',
-    aguila: 'EAGLE .50', awp338: 'FR-338 SNIPER', breacher: 'BREACHER-12', knife: 'COMBAT KNIFE',
-  }
-  return names[w] ?? 'RIFLE'
 }
 

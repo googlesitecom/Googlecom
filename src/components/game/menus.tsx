@@ -16,7 +16,7 @@ import { useAuth, getProfile, fmtKD, myOid, MODE_STAT_KEYS, MODE_STAT_LABELS, ge
 import { esNet, useNet, useFriends, useParty, useNetToasts, useRooms, type FriendEntryUI, type PartyMemberUI } from '@/game/esnet'
 import { useVoice, voiceChat } from '@/game/voice'
 import { teamSlotsFor, roomCapacity, type RoomKind } from '@/game/net'
-import { LobbyStage, lobbyWeaponLabel, type LobbyChar } from '@/components/game/lobby-stage'
+import { LobbyStage, type LobbyChar } from '@/components/game/lobby-stage'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -31,7 +31,7 @@ import {
 } from 'lucide-react'
 import {
   DIFFICULTY_LABELS, ACTION_LABELS, DEFAULT_KEYBINDS, keyLabel, MODES, MODE_LIST, padButtonLabel, PAD_ACTION_LABELS,
-  type BotDifficulty, type ActionId, type GameMode, type PadAction, type WeaponId,
+  type BotDifficulty, type ActionId, type GameMode, type PadAction,
 } from '@/game/shared'
 
 // ============================================================
@@ -1112,7 +1112,6 @@ export function MainMenu() {
   const [code, setCode] = useState('')
   const [coop, setCoop] = useState(false)
   const [source, setSource] = useState<PlaySource>('bots')
-  const [previewWeapon, setPreviewWeapon] = useState<WeaponId>('ar47')
   const [quickState, setQuickState] = useState<'' | 'scanning' | 'joining'>('')
   const quickIv = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -1264,10 +1263,10 @@ export function MainMenu() {
                 : 'QUICK PLAY'
 
   const lobbyChars: LobbyChar[] = [
-    { id: 'me', name: effectiveName || 'Operator', leader: amLeader, you: true, weapon: previewWeapon },
+    { id: 'me', name: effectiveName || 'Operator', leader: amLeader, you: true },
     ...partyMembers
       .filter(m => m.u !== oid)
-      .map(m => ({ id: m.u, name: m.n, leader: m.leader, you: false, weapon: 'cr4' as WeaponId })),
+      .map(m => ({ id: m.u, name: m.n, leader: m.leader, you: false })),
   ]
 
   return (
@@ -1427,7 +1426,7 @@ export function MainMenu() {
               {modeInfo.name}
             </div>
             <div className="font-tac-md text-[9px] text-amber-300/70 tracking-widest mt-0.5 truncate">
-              {sourceLabel} · {lobbyWeaponLabel(previewWeapon)}
+              {sourceLabel}
             </div>
           </button>
 
@@ -1459,7 +1458,7 @@ export function MainMenu() {
               ? 'THE LEADER LAUNCHES THE MATCH FOR THE WHOLE SQUAD'
               : partyActive && amLeader && partyMembers.length > 1
                 ? `${readyCount}/${partyMembers.length - 1} SQUADMATES READY — LAUNCH WHEN YOU WANT`
-                : 'PICK A MODE ↑ · CHANGE LOADOUT PREVIEW IN THE PANEL'}
+                : 'PICK A MODE ↑ · INVITE FRIENDS FROM THE SQUAD PANEL'}
           </p>
         </div>
       </div>
@@ -1488,8 +1487,6 @@ export function MainMenu() {
           name={name}
           setName={setName}
           error={error}
-          previewWeapon={previewWeapon}
-          setPreviewWeapon={setPreviewWeapon}
           rooms={rooms}
           netStatus={netStatus}
           onJoinRoom={(c) => launch('guest', c)}
@@ -1555,8 +1552,6 @@ function ModeSelectPanel(p: {
   name: string
   setName: (n: string) => void
   error: string
-  previewWeapon: WeaponId
-  setPreviewWeapon: (w: WeaponId) => void
   rooms: { code: string; host: string; kind: string; mode: string; players: number; cap: number; t: number }[]
   netStatus: string
   onJoinRoom: (code: string) => void
@@ -1821,21 +1816,6 @@ function ModeSelectPanel(p: {
                 )}
               </div>
             )}
-
-            {/* ---- loadout preview ---- */}
-            <div>
-              <p className="font-tac-md text-stone-400 text-[11px] mb-2 flex items-center gap-2">
-                <Crosshair className="w-3.5 h-3.5" /> Lobby loadout preview
-                <span className="text-stone-600">· what your operator holds</span>
-              </p>
-              <div className="grid grid-cols-5 gap-2">
-                {(['mp9', 'ar47', 'cr4', 'aguila', 'awp338'] as WeaponId[]).map(w => (
-                  <Chip key={w} active={p.previewWeapon === w} onClick={() => { getAudio().uiClick(); p.setPreviewWeapon(w) }}>
-                    {lobbyWeaponLabel(w).split(' ')[0]}
-                  </Chip>
-                ))}
-              </div>
-            </div>
 
             {/* ---- operator name ---- */}
             <div>

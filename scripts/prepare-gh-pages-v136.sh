@@ -21,7 +21,7 @@ touch .nojekyll   # imprescindible: sin esto Jekyll ignora _next/
 
 git add -A
 git -c user.name="Super Z" -c user.email="dev@fronteracero.local" \
-  commit -m "deploy: v13.6 — espalda 3.ª persona + bots del avión + edición Fortnite + balas vs estructuras + pausa + gráficos" >/dev/null
+  commit -m "deploy: v14.1 — lobby sin arma + posición de ataque (guardia con puños) + squad a tu lado" >/dev/null
 
 echo "gh-pages local lista:"
 git log --oneline -1
