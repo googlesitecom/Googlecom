@@ -1,0 +1,1 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,50220,e=>{e.v("/Googlecom/_next/static/media/sim-worker.02175cef.ts")},40425,e=>{e.v(t=>Promise.all(["static/chunks/83de221c50778554.js"].map(t=>e.l(t))).then(()=>t(68555)))}]);
