@@ -509,6 +509,11 @@ export const PICKUP_SPOTS: PickupSpot[] = [
   { kind: 'shieldBig', x: -80, z: -80 },     // patio de contenedores NO
   { kind: 'bandage', x: 88, z: 88 },         // anillo SE
   { kind: 'shieldSmall', x: -88, z: -88 },   // anillo NO
+  // v14.2: mega market (banda SE) y arsenal (banda SO)
+  { kind: 'medkit', x: 78, z: 19 },          // hall central del súper
+  { kind: 'shieldSmall', x: 81.5, z: 24 },   // pasillo este del súper
+  { kind: 'shieldBig', x: -78, z: 21 },      // pasillo central del arsenal
+  { kind: 'bandage', x: -73.5, z: 25 },      // junto al banco del armero
 ]
 
 export interface NetPickup { id: string; kind: PickupKind; x: number; z: number; active: boolean }
@@ -550,7 +555,7 @@ export interface NetCrate {
   opened: boolean
 }
 
-export type MatKey = 'sand' | 'concrete' | 'floor' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock'
+export type MatKey = 'sand' | 'concrete' | 'floor' | 'wood' | 'metalRed' | 'metalBlue' | 'metalGreen' | 'metalOrange' | 'metalGrey' | 'sandbag' | 'crate' | 'barrel' | 'roof' | 'explosive' | 'rock' | 'dirt'
 
 export interface MapBox {
   x: number; y: number; z: number
@@ -1261,10 +1266,13 @@ function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): voi
   // techo
   BR(cx, cz, f, 0, H + 0.15, 0, XW * 2 + 1.2, 0.3, ZW * 2 + 1.2, 'roof')
   // estanterías interiores (dos hileras dobles + una central de palets)
+  // v14.2: el palet central se CORRE del eje de la puerta (antes tapaba
+  // el pasillo de entrada) y se apila con cajas
   const rackH = 2.6, rackD = ZW * 0.62
   BR(cx, cz, f, -XW * 0.62, 1.3, -ZW * 0.18, 2.6, rackH, rackD, 'metalGreen')
   BR(cx, cz, f, XW * 0.62, 1.3, -ZW * 0.18, 2.6, rackH, rackD, 'metalGreen')
-  BR(cx, cz, f, 0, 0.5, 0, 2.4, 1.0, 3.2, 'wood')                          // palet central
+  BR(cx, cz, f, -XW * 0.3, 0.5, 2.0, 2.4, 1.0, 3.2, 'wood')      // palet central (fuera del eje)
+  BR(cx, cz, f, -XW * 0.3, 1.5, 2.0, 1.2, 1.0, 1.2, 'crate')     // cajas sobre el palet
   // cajas sobre las estanterías y bidones
   for (const [bx, bz] of [[-XW * 0.62, -ZW * 0.5], [XW * 0.62, -ZW * 0.5], [-XW * 0.62, 0], [XW * 0.62, 0]] as [number, number][]) {
     BR(cx, cz, f, bx, 2.9, bz, 1.4, 1.2, 1.4, 'crate')
@@ -1274,6 +1282,28 @@ function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): voi
   BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.55, 0.7, 0.9, 0.7, 'barrel')
   BR(cx, cz, f, XW * 0.45, 0.45, ZW * 0.55, 0.7, 0.9, 0.7, 'barrel')
   BR(cx, cz, f, XW * 0.3, 0.45, ZW * 0.4, 0.7, 0.9, 0.7, 'barrel')
+  // v14.2: MÁS COSAS DEL INTERIOR (pedido: "interiores grandes con varias cosas")
+  // carretilla elevadora estacionada (cuerpo + mástil + horquillas + asiento)
+  BR(cx, cz, f, XW * 0.32, 0.55, -ZW * 0.62, 1.3, 1.1, 2.1, 'metalOrange')   // cuerpo
+  BR(cx, cz, f, XW * 0.32, 0.65, -ZW * 0.62 - 1.05, 0.9, 0.7, 0.7, 'metalGrey') // contrapeso
+  BR(cx, cz, f, XW * 0.32, 1.55, -ZW * 0.62 + 1.05, 0.28, 2.0, 0.28, 'metalGrey') // mástil
+  BR(cx, cz, f, XW * 0.32, 0.72, -ZW * 0.62 + 1.62, 0.9, 0.08, 0.5, 'metalGrey')  // horquillas
+  BR(cx, cz, f, XW * 0.32, 1.25, -ZW * 0.62 + 0.3, 0.55, 0.3, 0.55, 'crate')  // asiento
+  // bobinas de cable (2, tumbadas: bidón + tablón)
+  BR(cx, cz, f, XW * 0.72, 0.45, ZW * 0.3, 0.9, 0.9, 0.9, 'barrel')
+  BR(cx, cz, f, XW * 0.72, 0.98, ZW * 0.3, 1.1, 0.12, 1.1, 'wood')
+  BR(cx, cz, f, XW * 0.72, 0.45, ZW * 0.3 - 1.4, 0.9, 0.9, 0.9, 'barrel')
+  BR(cx, cz, f, XW * 0.72, 0.98, ZW * 0.3 - 1.4, 1.1, 0.12, 1.1, 'wood')
+  // banco de trabajo con herramientas (junto a la oficina)
+  BR(cx, cz, f, -XW + 2.2, 0.45, ZW * 0.68, 3.0, 0.9, 0.9, 'wood')
+  BR(cx, cz, f, -XW + 1.2, 1.0, ZW * 0.68, 0.5, 0.25, 0.5, 'metalOrange')
+  BR(cx, cz, f, -XW + 2.6, 1.0, ZW * 0.68, 0.5, 0.25, 0.5, 'metalGrey')
+  // pila de sacos junto a la puerta lateral este
+  BR(cx, cz, f, XW - 1.2, 0.4, -ZW * 0.5, 1.4, 0.8, 1.0, 'sandbag')
+  BR(cx, cz, f, XW - 1.2, 1.1, -ZW * 0.5, 1.2, 0.55, 0.9, 'sandbag')
+  // extintor + botiquín de pared (cerca del muelle)
+  BR(cx, cz, f, XW - 0.6, 1.0, -ZW + 2.0, 0.35, 0.7, 0.35, 'metalRed')
+  BR(cx, cz, f, XW - 1.6, 1.0, -ZW + 2.0, 0.4, 0.4, 0.2, 'metalGrey')
   // muelle de carga frente a la puerta (plataforma + rampas laterales)
   BR(cx, cz, f, 0, 0.225, -ZW - 1.4, 9, 0.45, 2, 'concrete')
   stairsBR(cx, cz, f, -5.4, -ZW - 2.9, 1, 0, 2, 0.225, 0.9, 1.2, 0)
@@ -1289,6 +1319,11 @@ function almacen(cx: number, cz: number, f: Facing, XW = 11, ZW = 8, H = 6): voi
   for (const vx of [-XW * 0.5, XW * 0.5]) {
     BR(cx, cz, f, vx, H + 0.65, 0, 1.6, 0.7, 1.6, 'metalGrey')
     BR(cx, cz, f, vx, H + 1.2, 0, 1.2, 0.4, 1.2, 'metalOrange')
+  }
+  // v14.2: lucernarios corridos (franjas translúcidas sobre la nave)
+  for (const vz of [-ZW * 0.45, ZW * 0.45]) {
+    BR(cx, cz, f, 0, H + 0.52, vz, XW * 1.2, 0.28, 1.8, 'metalGrey')
+    BR(cx, cz, f, 0, H + 0.72, vz, XW * 1.1, 0.14, 1.4, 'metalOrange')
   }
   WP_EXTRA.push(
     wpTransform(cx, cz, f, 0, -ZW - 3.6),
@@ -1329,6 +1364,218 @@ function shop(cx: number, cz: number, f: Facing): void {
     wpTransform(cx, cz, f, 2.2, -5.6),
     wpTransform(cx, cz, f, 0, 0),
   )
+}
+
+// ------------------------------------------------------------
+// v14.2 — MEGA MARKET: supermercado de las afueras SE (13×14) con
+// interior GRANDE y abierto: 4 pasillos dobles de estanterías, 3
+// cajas de checkout, muro de congeladores, trastienda amurallada,
+// frutería con cajas y tejado con lucernarios + escalera exterior.
+// ------------------------------------------------------------
+function supermarket(cx: number, cz: number, f: Facing): void {
+  const HW = 6.5, HD = 7, H = 4.6, T = 0.4
+  const o: WallOpts = { H, T }
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  pilasters(cx, cz, f, HW, HD, H)
+  cornice(cx, cz, f, HW, HD, H + 0.26)
+  // fachada norte (−z, hacia la avenida): puerta DOBLE ancha + escaparate corrido
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'sand', { ...o, door: 0, doorHalf: 1.6, doorH: 2.6, wins: [-4.6, 4.6], winW: 2.6 })
+  // fachada sur (+z, hacia la trinchera): ventanas altas
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'sand', { ...o, wins: [-4, 0, 4], bandLo: 2.4, bandHi: 3.4 })
+  // laterales: puerta de servicio SOLO al este (hacia el anillo, lado
+  // opuesto a la escalera exterior para no pisarse)
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'sand', { ...o, door: -4.2, doorHalf: 0.95, doorH: 2.35, wins: [3.2], bandLo: 2.4, bandHi: 3.4 })
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'sand', { ...o, wins: [-3.2, 3.2], bandLo: 2.4, bandHi: 3.4 })
+  // ---- pasillos de estanterías (4 dobles, dejan el hall central ±2.35 libre) ----
+  for (const lx of [-4.6, -2.6, 2.6, 4.6]) {
+    shelf(cx, cz, f, lx, 0, true, 0, 7.6, 2.05)
+    // mercancía en el pasillo (cajas junto a las baldas)
+    BR(cx, cz, f, lx + (lx > 0 ? -0.75 : 0.75), 0.35, -2.2, 0.75, 0.7, 0.75, 'crate')
+  }
+  // ---- cajas de checkout (4, a los lados del hall: el centro queda libre) ----
+  for (const kx of [-4.2, -2.4, 2.0, 3.8]) {
+    BR(cx, cz, f, kx, 0.5, -5.1, 1.5, 1.0, 0.9, 'wood')          // mostrador
+    BR(cx, cz, f, kx + 0.62, 0.55, -5.1, 0.25, 0.5, 0.55, 'metalGrey') // escáner
+    BR(cx, cz, f, kx - 0.6, 0.3, -4.35, 0.45, 0.6, 0.45, 'crate')  // carro bajo
+  }
+  // ---- muro de congeladores (parece del fondo, z +5.9) ----
+  for (const fx of [-4.2, -1.4, 1.4, 4.2]) {
+    BR(cx, cz, f, fx, 1.05, 5.9, 2.4, 2.1, 1.3, 'metalBlue')
+    BR(cx, cz, f, fx, 1.55, 5.32, 0.1, 0.5, 0.2, 'metalGrey')     // tirador
+  }
+  // ---- frutería (esquina NE): cajas apiladas + pallet ----
+  BR(cx, cz, f, -5.4, 0.3, -5.2, 1.2, 0.6, 1.2, 'crate')
+  BR(cx, cz, f, -5.4, 0.9, -5.2, 1.2, 0.6, 1.2, 'crate')
+  BR(cx, cz, f, -4.3, 0.25, -5.6, 0.9, 0.5, 0.9, 'wood')
+  BR(cx, cz, f, -3.2, 0.45, -5.5, 0.8, 0.9, 0.8, 'barrel')
+  // ---- trastienda (esquina SO, amurallada con puerta) ----
+  wallL(cx, cz, f, 'z', 4.4, -HW + T, -1.4, 'sand', { H: H, T: 0.22, door: -3.6, doorHalf: 0.85, doorH: 2.1, bandLo: 3.2, bandHi: 3.1 })
+  BR(cx, cz, f, -5.6, 1.05, 4.2, 0.22, 2.1, 4.8, 'sand')
+  // mobiliario de la trastienda
+  BR(cx, cz, f, -2.9, 0.5, 5.4, 1.6, 1.0, 1.6, 'wood')           // mesa de trabajo
+  BR(cx, cz, f, -4.6, 0.6, 5.6, 1.0, 1.2, 1.0, 'crate')
+  BR(cx, cz, f, -4.6, 1.8, 5.6, 1.0, 1.2, 1.0, 'crate')
+  BR(cx, cz, f, -1.6, 0.5, 5.8, 0.7, 1.0, 0.7, 'barrel')
+  BR(cx, cz, f, -5.6, 0.5, 2.2, 0.8, 1.0, 0.8, 'metalGrey')      // fregadero industrial
+  // ---- tejado: losa + pretil + lucernarios + climas ----
+  BR(cx, cz, f, 0, H + 0.15, 0, HW * 2 + 0.8, 0.3, HD * 2 + 0.8, 'roof')
+  const py = H + 0.45
+  BR(cx, cz, f, 0, py, -HD - 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, 0, py, +HD + 0.12, HW * 2 + 0.8, 0.35, 0.22, 'concrete')
+  BR(cx, cz, f, +HW + 0.12, py, -4.5, 0.22, 0.35, 9, 'concrete')
+  BR(cx, cz, f, +HW + 0.12, py, 5.0, 0.22, 0.35, 4, 'concrete')
+  BR(cx, cz, f, -HW - 0.12, py, 0, 0.22, 0.35, HD * 2 + 0.8, 'concrete')
+  // lucernarios (2 franjas translúcidas sobre los pasillos)
+  for (const kx of [-3.6, 3.6]) {
+    BR(cx, cz, f, kx, H + 0.42, 0, 2.4, 0.28, 10, 'metalGrey')
+    BR(cx, cz, f, kx, H + 0.62, 0, 2.0, 0.16, 9.4, 'metalOrange')
+  }
+  acUnit(cx, cz, f, 0, -5.4, H + 0.3)
+  acUnit(cx, cz, f, 0, 5.6, H + 0.3)
+  // rótulo del escaparate + visera de la entrada
+  BR(cx, cz, f, 0, 2.9, -HD - 1.35, 10.0, 0.28, 2.2, 'metalOrange')
+  BR(cx, cz, f, -4.6, 1.35, -HD - 2.35, 0.2, 2.7, 0.2, 'metalGrey')
+  BR(cx, cz, f, 4.6, 1.35, -HD - 2.35, 0.2, 2.7, 0.2, 'metalGrey')
+  BR(cx, cz, f, 0, H + 0.8, -HD + 0.4, 7.0, 1.1, 0.5, 'metalOrange')   // rótulo de tejado
+  // escalera exterior al tejado (pared ESTE hacia el anillo, sube hacia −z;
+  // la puerta lateral está en la mitad norte y la escalera en la sur)
+  stairsBR(cx, cz, f, HW + 1.05, HD + 1.4, 0, -1, 10, 0.5, 0.62, 1.3, 0)
+  BR(cx, cz, f, HW + 1.05, H + 0.02, -HD - 1.6, 2.6, 0.3, 2.2, 'roof')  // rellano de llegada
+  // muelle de carga bajo (fachada sur, sin escalera encima)
+  BR(cx, cz, f, 2.2, 0.25, HD + 0.9, 5.4, 0.5, 1.8, 'concrete')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 0, -9.4),
+    wpTransform(cx, cz, f, 0, -4.5),
+    wpTransform(cx, cz, f, 0, 0),
+    wpTransform(cx, cz, f, 0, 4.6),
+    wpTransform(cx, cz, f, 8.5, -4.2),
+  )
+}
+
+// ------------------------------------------------------------
+// v14.2 — ARSENAL: polvorín de las afueras SO (13×14) con interior
+// GRANDE: muros de hormigón, 6 hastiales de munición, estantes de
+// cajas, proyectiles, banco de armero y barriles de propelente.
+// ------------------------------------------------------------
+function arsenal(cx: number, cz: number, f: Facing): void {
+  const HW = 6.5, HD = 7, H = 4.2, T = 0.55
+  const o: WallOpts = { H, T }
+  interiorFloor(cx, cz, f, HW - T, HD - T)
+  pilasters(cx, cz, f, HW, HD, H)
+  cornice(cx, cz, f, HW, HD, H + 0.26)
+  // fachada norte (−z, hacia la avenida): portal de carga DOBLE + ventanas altas
+  wallL(cx, cz, f, 'z', -HD, -HW, HW, 'concrete', { ...o, door: 1.6, doorHalf: 1.7, doorH: 3.0, wins: [-4.6], winW: 1.6, bandLo: 2.6, bandHi: 3.4 })
+  wallL(cx, cz, f, 'z', +HD, -HW, HW, 'concrete', { ...o, wins: [-4, 0, 4], bandLo: 2.6, bandHi: 3.4 })
+  // puerta de servicio SOLO al oeste (hacia el anillo); la escalera exterior
+  // corre por esa misma pared en la mitad sur
+  wallL(cx, cz, f, 'x', -HW, -HD, HD, 'concrete', { ...o, door: -4.2, doorHalf: 0.9, doorH: 2.3, wins: [3.2], bandLo: 2.6, bandHi: 3.4 })
+  wallL(cx, cz, f, 'x', +HW, -HD, HD, 'concrete', { ...o, wins: [-2.6, 2.6], bandLo: 2.6, bandHi: 3.4 })
+  // hastiales de munición (6 torres de palets a los dos lados, dejan el pasillo central ±1.6 libre)
+  for (const [lx, lz] of [[-4.9, -3.6], [-2.9, -3.6], [-4.9, 1.2], [-2.9, 1.2], [-4.9, 5.0], [-2.9, 5.0]] as [number, number][]) {
+    BR(cx, cz, f, lx, 0.5, lz, 1.5, 1.0, 1.6, 'wood')             // base palet
+    BR(cx, cz, f, lx, 1.4, lz, 1.35, 0.8, 1.45, 'crate')
+    BR(cx, cz, f, lx, 2.2, lz, 1.35, 0.8, 1.45, 'crate')
+    BR(cx, cz, f, lx, 2.9, lz, 1.2, 0.6, 1.3, 'metalOrange')      // tapa señalizada
+  }
+  // estantes de la pared este
+  shelf(cx, cz, f, 5.6, -3.5, true, 0, 4.5, 1.9)
+  shelf(cx, cz, f, 5.6, 2.0, true, 0, 4.5, 1.9)
+  // banco del armero (mesa larga con cajas de herramientas)
+  BR(cx, cz, f, 2.2, 0.5, 5.3, 3.6, 1.0, 1.1, 'wood')
+  BR(cx, cz, f, 1.2, 1.1, 5.3, 0.8, 0.25, 0.6, 'metalGrey')
+  BR(cx, cz, f, 3.2, 1.1, 5.3, 0.8, 0.25, 0.6, 'metalOrange')
+  // proyectiles en hilera (bidones) + barriles de propelente
+  for (const pz of [-5.4, -4.6]) BR(cx, cz, f, 4.6, 0.5, pz, 0.7, 1.0, 0.7, 'barrel')
+  BR(cx, cz, f, 0.8, 0.45, -5.6, 0.7, 0.9, 0.7, 'barrel')
+  BR(cx, cz, f, -0.7, 0.45, -5.6, 0.7, 0.9, 0.7, 'barrel')
+  BR(cx, cz, f, -1.9, 0.45, 5.7, 0.7, 0.9, 0.7, 'barrel')
+  // parapeto interior de sacos (cobertura dentro del polvorín, pegada
+  // al pasillo este — NO corta la línea de waypoints del pasillo central)
+  BR(cx, cz, f, 4.0, 0.4, -1.5, 2.2, 0.8, 0.6, 'sandbag')
+  BR(cx, cz, f, 4.0, 0.4, 2.6, 2.2, 0.8, 0.6, 'sandbag')
+  // tejado: losa gruesa + pretil alto + ventiladores y pararrayos
+  BR(cx, cz, f, 0, H + 0.18, 0, HW * 2 + 0.9, 0.36, HD * 2 + 0.9, 'roof')
+  const py = H + 0.55
+  BR(cx, cz, f, 0, py, -HD - 0.13, HW * 2 + 0.9, 0.55, 0.24, 'concrete')
+  BR(cx, cz, f, 0, py, +HD + 0.13, HW * 2 + 0.9, 0.55, 0.24, 'concrete')
+  BR(cx, cz, f, +HW + 0.13, py, 0, 0.24, 0.55, HD * 2 + 0.9, 'concrete')
+  BR(cx, cz, f, -HW - 0.13, py, 0, 0.24, 0.55, HD * 2 + 0.9, 'concrete')
+  for (const vx of [-3.8, 0, 3.8]) {
+    BR(cx, cz, f, vx, H + 0.75, 0, 1.4, 0.5, 1.4, 'metalGrey')   // extractores
+    BR(cx, cz, f, vx, H + 1.15, 0, 1.0, 0.3, 1.0, 'metalOrange')
+  }
+  BR(cx, cz, f, 0, H + 2.2, 4.8, 0.14, 2.6, 0.14, 'metalGrey')   // pararrayos
+  BR(cx, cz, f, 0, H + 3.4, 4.8, 0.4, 0.2, 0.4, 'metalOrange')
+  // muelle de carga exterior (portal norte, h 0.45 para no cortar el LOS
+  // de los bots a 0.5 m) + escalera al tejado
+  BR(cx, cz, f, 1.6, 0.225, -HD - 1.0, 6.0, 0.45, 2.0, 'concrete')
+  stairsBR(cx, cz, f, -5.6, -HD - 2.6, 1, 0, 2, 0.25, 0.9, 1.2, 0)
+  stairsBR(cx, cz, f, -HW - 1.1, HD + 1.4, 0, -1, 10, 0.45, 0.66, 1.3, 0)
+  BR(cx, cz, f, -HW - 1.1, H + 0.05, -HD - 1.6, 2.6, 0.3, 2.2, 'roof')
+  WP_EXTRA.push(
+    wpTransform(cx, cz, f, 1.5, -9.4),
+    wpTransform(cx, cz, f, 1.5, -4.5),
+    wpTransform(cx, cz, f, 1.5, 0),
+    wpTransform(cx, cz, f, 1.5, 3.8),
+    wpTransform(cx, cz, f, -8.5, -4.2),
+  )
+}
+
+// ------------------------------------------------------------
+// v14.2 — TRINCHERAS en las afueras nuevas: red en peine (espina
+// dorsal junto al muro del núcleo + dientes que asoman al anillo
+// de circunvalación). Suelo de tierra excavada + duckboards de
+// madera, parapetos de sacos de 1,1 m, alacenas de munición,
+// puestos de fuego y alambre de espino. Todo ALINEADO A EJES con
+// corredores de 2,7 m → jugadores y bots entran por las bocas de
+// los dientes (este del anillo) y por los extremos de la espina.
+// ------------------------------------------------------------
+function trenchNetwork(sideX: 1 | -1, zs: number[]): void {
+  const sx = sideX
+  const xSpine = sx * 74                       // espina dorsal (junto al muro, x ±74)
+  const zLo = Math.min(zs[0], zs[zs.length - 1])
+  const zHi = Math.max(zs[0], zs[zs.length - 1])
+  const mid = (zLo + zHi) / 2, L = zHi - zLo + 2.7
+  // ---- espina: suelo + duckboard + parapeto continuo (lado muro) ----
+  B(xSpine, 0.04, mid, 2.7, 0.08, L, 'dirt')
+  B(xSpine, 0.11, mid, 1.7, 0.05, L - 0.6, 'wood')
+  B(xSpine - sx * 1.7, 0.55, mid, 0.7, 1.1, L, 'sandbag')
+  // parapeto interior a trozos (entre dientes, deja las bocas abiertas)
+  for (let i = 0; i < zs.length - 1; i++) {
+    const zm = (zs[i] + zs[i + 1]) / 2
+    B(xSpine + sx * 1.7, 0.55, zm, 0.7, 1.1, 2.3, 'sandbag')
+  }
+  // ---- dientes: parapetos de |x| 75.4 → 84.9; la boca (74.65..75.4)
+  //      queda ABIERTA hacia el corredor de la espina ----
+  const p0 = xSpine + sx * 1.4                 // arranque del parapeto
+  const p1 = sx * 84.9                         // punta del diente (antes de la acera 86.2)
+  const cLen = Math.abs(p1 - p0)
+  const cMid = (p0 + p1) / 2
+  for (const zt of zs) {
+    B(cMid, 0.04, zt, cLen + 1.0, 0.08, 2.7, 'dirt')
+    B(cMid, 0.11, zt, cLen - 0.2, 0.05, 1.7, 'wood')
+    B(cMid, 0.55, zt - 1.7, cLen, 1.1, 0.7, 'sandbag')
+    B(cMid, 0.55, zt + 1.7, cLen, 1.1, 0.7, 'sandbag')
+  }
+  // ---- alacenas de munición (2 por red, pegadas al parapeto interior) ----
+  const xNook = xSpine + sx * 0.85
+  B(xNook, 0.45, zLo + 1.1, 0.9, 0.9, 0.9, 'crate')
+  B(xNook, 0.4, zHi - 1.1, 0.7, 0.8, 0.7, 'barrel')
+  B(xNook, 0.25, zHi - 2.1, 0.7, 0.5, 0.7, 'crate')
+  // ---- puestos de fuego (escalón de sacos para asomarse) ----
+  B(sx * 81.8, 0.28, zs[1] + 0.85, 1.3, 0.55, 0.8, 'sandbag')
+  B(sx * 81.8, 0.28, zs[zs.length - 2] - 0.85, 1.3, 0.55, 0.8, 'sandbag')
+  // ---- alambre de espino en las bocas exteriores (2 marcos) ----
+  for (const zw of [zLo - 1.6, zHi + 1.6]) {
+    const xw = sx * 85.6
+    B(xw, 0.8, zw - 1.1, 0.12, 1.6, 0.12, 'metalGrey')
+    B(xw, 0.8, zw + 1.1, 0.12, 1.6, 0.12, 'metalGrey')
+    B(xw, 1.45, zw, 0.08, 0.08, 2.4, 'metalGrey')
+    B(xw, 0.7, zw, 0.06, 1.4, 2.2, 'metalGrey')                 // hilo del alambre
+  }
+  // ---- waypoints: bocas de los dientes + espina + conexión al anillo ----
+  for (const zt of zs) WP_EXTRA.push([sx * 83.2, zt], [xSpine, zt])
+  WP_EXTRA.push([sx * 86.4, zLo], [sx * 86.4, zHi])
 }
 
 // ------------------------------------------------------------
@@ -1640,7 +1887,9 @@ export const EXPLODING_BARRELS: ExplosiveBarrel[] = [
   // v14: depósito de combustible SO (gasolinera exterior + tanques)
   { x: -78, z: 74.5 }, { x: -86, z: 88.5 },
   // v14: patio de contenedores NO y nave NE
-  { x: -74, z: -82 }, { x: 78, z: -76 },
+  { x: -74, z: -82 }, { x: 76.2, z: -75.4 },
+  // v14.2: arsenal de las afueras SO (propelente)
+  { x: -76, z: 22 }, { x: -79.8, z: 21.5 },
   // aparcamiento NE / parque
   { x: 54, z: -48 }, { x: 58, z: 44 },
   // planta de tanques / radar
@@ -1709,11 +1958,9 @@ B(-84, 0.55, -6.2, 3, 1.1, 0.5, 'concrete')
 B(6.2, 0.55, -84, 0.5, 1.1, 3, 'concrete')
 B(-6.2, 0.55, 84, 0.5, 1.1, 3, 'concrete')
 
-// === NE exterior (x 70..86 · z -86..-70): nave industrial ===
-almacen(78, -78, 'S', 8, 6, 6)               // x 70..86 · z -84..-72 (puerta al sur)
-watchTower(84, -64, 1)                        // torreta en la franja del brazo este
-car(72, -78, false, 'metalGrey')             // coche aparcado junto a la nave
-B(78, 0.4, -70.5, 3, 0.8, 0.6, 'sandbag')    // cobertura al norte de la nave
+// === NE exterior (x 70..86 · z -86..-70): nave industrial (v14.2: HANGAR 16×14, altura 7) ===
+almacen(78, -78, 'S', 8, 7, 7)               // x 70..86 · z -85..-71 (puerta al sur, interior ampliado)
+watchTower(84, -68, 1)                        // torreta junto al muelle de la nave
 WP_EXTRA.push([78, -68], [78, -87])
 
 // === SE exterior (x 70..86 · z 70..86): suburbio + plaza ===
@@ -1750,6 +1997,29 @@ B(86, 0.4, 40, 0.5, 0.8, 3, 'sandbag')
 B(-86, 0.4, -40, 0.5, 0.8, 3, 'sandbag')
 B(40, 0.4, 86, 3, 0.8, 0.5, 'sandbag')
 B(-40, 0.4, -86, 3, 0.8, 0.5, 'sandbag')
+
+// ------------------------------------------------------------
+// v14.2 — FRANJAS DE GUERRA de las afueras nuevas (bandas entre el
+// muro del núcleo y la circunvalación, x ±71..86 · z ±16..64):
+// dos EDIFICIOS NUEVOS con interiores grandes (MEGA MARKET en la
+// banda SE y ARSENAL en la SO) + 4 REDES DE TRINCHERAS en peine
+// (una por cuadrante). Las puertas del muro (z ±35) desembarcan
+// en las plazas de bandera de cada franja.
+// ------------------------------------------------------------
+// === banda SE (x 71..86 · z 14..62): supermercado + trinchera ===
+supermarket(78, 21, 'N')                      // x 71.5..84.5 · z 14..28 (puerta hacia la avenida)
+trenchNetwork(1, [45, 50, 55, 60])
+WP_EXTRA.push([73, 38], [78, 11])             // plaza de la puerta del muro + frente del súper
+// === banda SO (x -86..-71 · z 14..62): arsenal + trinchera ===
+arsenal(-78, 21, 'N')                         // x -84.5..-71.5 · z 14..28 (portal hacia la avenida)
+trenchNetwork(-1, [45, 50, 55, 60])
+WP_EXTRA.push([-73, 38], [-78, 11])
+// === banda NE (x 71..86 · z -62..-14): trinchera ===
+trenchNetwork(1, [-45, -50, -55, -60])
+WP_EXTRA.push([73, -38])
+// === banda NO (x -86..-71 · z -62..-14): trinchera ===
+trenchNetwork(-1, [-45, -50, -55, -60])
+WP_EXTRA.push([-73, -38])
 
 // ------------------------------------------------------------
 // v6.3 — GRÁFICOS DEL VALLE PARA TODOS LOS MODOS (ciudad):
@@ -1952,6 +2222,9 @@ export const NEONS: NeonSpec[] = [
   { text: 'RADAR', x: -38.8, y: 2.1, z: 51, ry: Math.PI / 2, color: '#4ade80', w: 4.5 },
   { text: 'WAREHOUSE', x: -19.5, y: 3.4, z: -27.6, ry: Math.PI, color: '#fbbf24', w: 4.5 },
   { text: 'DEPOT', x: -19, y: 3.2, z: -38.6, ry: 0, color: '#fbbf24', w: 4.5 },
+  // v14.2: edificios de las franjas exteriores
+  { text: 'MEGA MARKET', x: 78, y: 4.1, z: 13.5, ry: Math.PI, color: '#22d3ee', w: 5.5 },
+  { text: 'ARSENAL', x: -78, y: 3.9, z: 13.5, ry: Math.PI, color: '#fbbf24', w: 4.5 },
 ]
 
 export interface PuddleSpec { x: number; z: number; r: number }

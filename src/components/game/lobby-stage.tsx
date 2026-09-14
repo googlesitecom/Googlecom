@@ -91,7 +91,7 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
       for (const old of soldiers) scene.remove(old.parts.root)
       soldiers.length = 0
       tagRefs.current.length = 0
-      // v14.1: calibración de la guardia por URL (?lobbytest=1&tax=1.3&tfz=0.3…)
+      // v14.2: calibración de la pose por URL (?lobbytest=1&tax=1.3&tfz=0.3…)
       if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('lobbytest')) {
         const lp = new URLSearchParams(location.search)
         const n = (k: string): number | undefined => {
@@ -104,13 +104,13 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
         const sax = n('sax'), say = n('say'), saz = n('saz')
         const sfx = n('sfx'), sfz = n('sfz')
         const fca = n('fca'), fcax = lp.get('fcax'), fcm = lp.get('fcm')
-        if (tax !== undefined || tay !== undefined || taz !== undefined) o.tArm = { x: tax ?? 1.3, y: tay ?? 0, z: taz ?? -0.12 }
-        if (tfx !== undefined || tfz !== undefined) o.tFore = { x: tfx ?? -1.35, z: tfz ?? -0.3 }
-        if (sax !== undefined || say !== undefined || saz !== undefined) o.sArm = { x: sax ?? 1.3, y: say ?? 0, z: saz ?? 0.12 }
-        if (sfx !== undefined || sfz !== undefined) o.sFore = { x: sfx ?? -1.35, z: sfz ?? 0.25 }
+        if (tax !== undefined || tay !== undefined || taz !== undefined) o.tArm = { x: tax ?? 1.28, y: tay ?? 0, z: taz ?? -0.12 }
+        if (tfx !== undefined || tfz !== undefined) o.tFore = { x: tfx ?? -0.45, z: tfz ?? -0.14 }
+        if (sax !== undefined || say !== undefined || saz !== undefined) o.sArm = { x: sax ?? 1.28, y: say ?? 0, z: saz ?? 0.12 }
+        if (sfx !== undefined || sfz !== undefined) o.sFore = { x: sfx ?? -0.45, z: sfz ?? 0.14 }
         if (fca !== undefined || fcax !== null || fcm !== null) o.fingerCurl = {
           axis: fcax === 'x' ? 'x' : 'z',
-          amount: fca ?? 0.7,
+          amount: fca ?? 0.14,
           mirror: fcm !== '0',
         }
         setCombatPoseOverride(Object.keys(o).length ? o : null)
@@ -118,9 +118,10 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
       const n = row.length
       const spacing = n > 3 ? 1.28 : 1.42
       row.forEach((c, i) => {
-        // v14.1: SIN arma y en POSICIÓN DE ATAQUE (guardia), como Fortnite
-        const parts = buildCineSoldier('A', null, 'combat')
-        // v14.1: tintar SIN pose de reposo para no pisar la guardia
+        // v14.2: SIN arma y en pose de DESCANSO (brazos relajados), como Fortnite
+        const parts = buildCineSoldier('A', null, 'rest')
+        // v14.1: tintar SIN aplicar el reposo de tintRig para no pisar la
+        // pose del lobby (los ángulos son los mismos, pero evitamos el doble set)
         if (c.you) tintRig(parts.root, GOLD, false)
         else if (c.leader) tintRig(parts.root, 0xe0b053, false)
         else tintRig(parts.root, SQUAD, false)
@@ -203,13 +204,13 @@ export function LobbyStage({ chars }: { chars: LobbyChar[] }) {
       camera.position.x = Math.sin(t * 0.12) * 0.22 + mx * 0.34
       camera.position.y = 1.62 - my * 0.16 + Math.sin(t * 0.21) * 0.035
       camera.lookAt(0, 1.12, 0)
-      // breathing + guard micro-sway (fists stay up, alive)
+      // breathing + relaxed sway (arms hang loose, alive)
       for (const s of soldiers) {
         const b = Math.sin(t * 1.45 + s.phase)
-        if (s.bones.torso) s.bones.torso.rotation.z = b * 0.018
-        if (s.bones.head) s.bones.head.rotation.y = Math.sin(t * 0.4 + s.phase) * 0.06
-        s.parts.body.position.y = b * 0.008 - 0.06
-        if (s.parts.forearms?.[1]) s.parts.forearms[1].rotation.x = s.foreBase + Math.sin(t * 1.9 + s.phase) * 0.035
+        if (s.bones.torso) s.bones.torso.rotation.z = b * 0.014
+        if (s.bones.head) s.bones.head.rotation.y = Math.sin(t * 0.4 + s.phase) * 0.055
+        s.parts.body.position.y = b * 0.006
+        if (s.parts.forearms?.[1]) s.parts.forearms[1].rotation.x = s.foreBase + Math.sin(t * 1.7 + s.phase) * 0.018
       }
       // platform ring pulse
       const ringMat = ring.material as THREE.MeshBasicMaterial

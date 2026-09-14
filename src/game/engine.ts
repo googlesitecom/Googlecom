@@ -47,7 +47,7 @@ interface PickupView { group: THREE.Group; glow: THREE.Sprite; phase: number }
 interface CrateView {
   id: number
   group: THREE.Group          // caja + canopy + haz + anillo (todo junto)
-  crate: THREE.Mesh
+  crate: THREE.Group          // v14.2: la caja ahora es un GRUPO (caja + palé + cinchas)
   canopy: THREE.Group
   beam: THREE.Mesh
   ring: THREE.Mesh
@@ -60,7 +60,7 @@ interface CrateView {
   bornAt: number
   phase: number
   sway: number
-  plane?: { group: THREE.Group; props: THREE.Object3D[]; dir: THREE.Vector3; bornAt: number }
+  plane?: { group: THREE.Group; props: THREE.Object3D[]; lights: THREE.Object3D[]; dir: THREE.Vector3; bornAt: number }
 }
 
 interface WeaponRuntime { mag: number; reserve: number }
@@ -140,13 +140,19 @@ interface DropTrooper {
   } | null
 }
 
-/** avión de transporte procedural estilo C-130 (sin GLB) */
-function buildDropPlane(): { plane: THREE.Group, props: THREE.Object3D[] } {
+/** v14.2: avión de transporte procedural estilo C-130H (sin GLB), rediseñado:
+ *  fuselaje con cola elevada y RAMPA de carga ABIERTA, cabina con cristales,
+ *  4 turbohélices con ASPAS reales + discos de motion blur, luces de
+ *  navegación (babor rojo / estribor verde / estrobe blanco parpadeante),
+ *  franja de escuadrón ámbar y portón de salto abierto.
+ *  Los `props` giran (z) y los `lights` parpadean (userData.blink). */
+function buildDropPlane(): { plane: THREE.Group, props: THREE.Object3D[], lights: THREE.Object3D[] } {
   const plane = new THREE.Group()
   const OLIVE = 0x5c6350
   const OLIVE2 = 0x707a63
   const BELLY = 0x8a917d
   const DARK = 0x23261f
+  const AMBER = 0xd9a441
   const mat = (c: number, rough = 0.7, metal = 0.25): THREE.MeshStandardMaterial =>
     new THREE.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal })
   const box = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh => {
@@ -154,81 +160,206 @@ function buildDropPlane(): { plane: THREE.Group, props: THREE.Object3D[] } {
     mesh.position.set(x, y, z)
     return mesh
   }
-  // fuselaje (eje Z: -Z nariz · +Z cola) — morirá mirando a -Z, el grupo
-  // se orienta luego con setFromUnitVectors
-  const fus = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 12.5, 14), mat(OLIVE))
+  const props: THREE.Object3D[] = []
+  const lights: THREE.Object3D[] = []
+
+  // ---- fuselaje (eje Z: -Z nariz · +Z cola) ----
+  const fusMat = mat(OLIVE)
+  const fus = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 10.8, 16), fusMat)
   fus.rotation.x = Math.PI / 2
+  fus.position.z = -1.0
   plane.add(fus)
-  // morro cónico + cabina
-  const nose = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.42, 2.6, 12), mat(OLIVE2, 0.55, 0.3))
+  // cola elevada (upsweep C-130) + rampa de carga ABIERTA inclinada
+  const tailBox = box(2.0, 1.5, 3.6, mat(OLIVE, 0.7, 0.25), 0, 0.55, 5.4)
+  tailBox.rotation.x = -0.30
+  plane.add(tailBox)
+  const ramp = box(1.9, 0.16, 3.4, mat(OLIVE2, 0.6, 0.3), 0, -0.35, 5.2)
+  ramp.rotation.x = -0.55          // rampa desplegada hacia abajo
+  plane.add(ramp)
+  const rampLip = box(1.9, 0.1, 0.5, mat(DARK, 0.6, 0.4), 0, -1.18, 6.7)
+  plane.add(rampLip)
+  // boca de la bodega (interior oscuro visible con la rampa abierta)
+  plane.add(box(1.7, 1.2, 0.1, mat(0x0d0f0c, 0.95, 0.05), 0, 0.35, 3.4))
+
+  // ---- morro: radomo + cabina con cristales ----
+  const nose = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.42, 2.6, 14), mat(OLIVE2, 0.55, 0.3))
   nose.rotation.x = -Math.PI / 2
-  nose.position.z = -7.5
+  nose.position.z = -7.7
   plane.add(nose)
-  const cockpit = box(1.5, 0.55, 0.9, mat(DARK, 0.25, 0.8), 0, 0.78, -6.6)
-  plane.add(cockpit)
-  // panza más clara (look típico de transporte)
-  const belly = new THREE.Mesh(new THREE.CylinderGeometry(1.06, 1.06, 12.4, 14, 1, false, Math.PI, Math.PI), mat(BELLY, 0.75, 0.2))
+  const radome = new THREE.Mesh(new THREE.SphereGeometry(0.44, 10, 8), mat(DARK, 0.5, 0.3))
+  radome.position.z = -8.9
+  plane.add(radome)
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x1c2b33, roughness: 0.15, metalness: 0.85, emissive: 0x0c1a20, emissiveIntensity: 0.5 })
+  const windL = box(0.5, 0.42, 0.08, glassMat, -0.34, 0.72, -7.35)
+  windL.rotation.x = 0.35
+  plane.add(windL)
+  const windR = box(0.5, 0.42, 0.08, glassMat, 0.34, 0.72, -7.35)
+  windR.rotation.x = 0.35
+  plane.add(windR)
+  // ventanillas laterales de cabina
+  plane.add(box(0.06, 0.3, 0.5, glassMat, -1.04, 0.55, -6.8))
+  plane.add(box(0.06, 0.3, 0.5, glassMat, 1.04, 0.55, -6.8))
+
+  // ---- panza más clara (look típico de transporte) ----
+  const belly = new THREE.Mesh(new THREE.CylinderGeometry(1.06, 1.06, 10.7, 16, 1, false, Math.PI, Math.PI), mat(BELLY, 0.75, 0.2))
   belly.rotation.x = Math.PI / 2
+  belly.position.z = -1.0
   plane.add(belly)
-  // ala alta con leve diedro
+  // franja de escuadrón ámbar (banda a lo largo del fuselaje)
+  const stripe = new THREE.Mesh(new THREE.CylinderGeometry(1.062, 1.062, 10.7, 16, 1, true, Math.PI * 0.15, Math.PI * 0.42), mat(AMBER, 0.55, 0.3))
+  stripe.rotation.x = Math.PI / 2
+  stripe.position.z = -1.0
+  plane.add(stripe)
+
+  // ---- ala alta con leve diedro + carenado raíz ----
   const wing = box(19, 0.22, 2.9, mat(OLIVE), 0, 1.05, -1.1)
   wing.rotation.z = 0.045
   plane.add(wing)
+  plane.add(box(3.4, 0.5, 3.2, mat(OLIVE2, 0.65, 0.3), 0, 0.85, -1.1))   // carenado raíz del ala
   const wingTipL = box(0.9, 0.5, 1.7, mat(OLIVE2), -9.2, 1.55, -1.2)
   wingTipL.rotation.z = 0.12
   plane.add(wingTipL)
   const wingTipR = box(0.9, 0.5, 1.7, mat(OLIVE2), 9.2, 1.55, -1.2)
   wingTipR.rotation.z = -0.12
   plane.add(wingTipR)
-  // 4 hélices bajo el ala (discos giratorios + buje)
-  const props: THREE.Object3D[] = []
-  const propMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.4, transparent: true, opacity: 0.42, side: THREE.DoubleSide })
+
+  // ---- 4 turbohélices: góndola + escape + ASPAS + disco de blur ----
+  const bladeMat = mat(0x14140f, 0.5, 0.35)
+  const propMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.4, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
   for (const ex of [-6.4, -3.9, 3.9, 6.4]) {
-    const nac = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 1.5, 10), mat(DARK, 0.5, 0.6))
+    const nac = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 1.6, 12), mat(DARK, 0.5, 0.6))
     nac.rotation.x = Math.PI / 2
-    nac.position.set(ex, 0.78, -1.7)
+    nac.position.set(ex, 0.72, -1.8)
     plane.add(nac)
-    const disc = new THREE.Mesh(new THREE.CircleGeometry(1.15, 20), propMat)
-    disc.position.set(ex, 0.78, -2.6)
-    plane.add(disc)
-    props.push(disc)
-    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), mat(0x666666, 0.4, 0.7))
-    hub.position.set(ex, 0.78, -2.55)
+    // pylon bajo el ala
+    plane.add(box(0.24, 0.5, 1.2, mat(OLIVE2, 0.6, 0.4), ex, 0.95, -1.6))
+    // escape del turboprop
+    const exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 0.5, 8), mat(0x181818, 0.5, 0.7))
+    exhaust.rotation.x = Math.PI / 2
+    exhaust.position.set(ex, 0.72, -0.9)
+    plane.add(exhaust)
+    // buje giratorio + 4 ASPAS de verdad (par de pares en X)
+    const hub = new THREE.Group()
+    hub.position.set(ex, 0.72, -2.65)
+    const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.36, 10), mat(0x666666, 0.4, 0.7))
+    spinner.rotation.x = -Math.PI / 2
+    spinner.position.z = -0.12
+    hub.add(spinner)
+    for (let b = 0; b < 4; b++) {
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.13, 1.05, 0.2), bladeMat)
+      blade.position.y = 0.56
+      const arm = new THREE.Group()
+      arm.rotation.z = (b / 4) * Math.PI * 2
+      arm.add(blade)
+      hub.add(arm)
+    }
     plane.add(hub)
+    props.push(hub)
+    // disco de motion blur por delante de las aspas
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(1.18, 24), propMat)
+    disc.position.set(ex, 0.72, -2.78)
+    plane.add(disc)
   }
-  // cola: estabilizador vertical + horizontal
-  const fin = box(0.22, 2.6, 2.1, mat(OLIVE), 0, 1.7, 6.3)
+
+  // ---- cola: deriva (con destello ámbar) + estabilizadores + ADF ----
+  const fin = box(0.22, 2.9, 2.4, mat(OLIVE), 0, 2.0, 6.3)
   plane.add(fin)
-  const hstab = box(5.6, 0.18, 1.6, mat(OLIVE2), 0, 0.9, 6.4)
-  plane.add(hstab)
-  // puerto de salto abierto (lateral derecho trasero) — boca oscura
-  const door = box(1.1, 1.5, 0.1, mat(0x0d0f0c, 0.95, 0.05), 1.02, 0, 3.2)
-  plane.add(door)
-  // tren recogido (bulbos)
+  plane.add(box(0.24, 0.9, 0.7, mat(AMBER, 0.55, 0.3), 0, 3.0, 6.3))     // flash de cola
+  const finCap = box(0.3, 0.24, 2.6, mat(OLIVE2), 0, 3.4, 6.35)
+  plane.add(finCap)
+  const hstabL = box(2.7, 0.18, 1.5, mat(OLIVE), -2.7, 0.95, 6.4)
+  hstabL.rotation.z = 0.06
+  plane.add(hstabL)
+  const hstabR = box(2.7, 0.18, 1.5, mat(OLIVE), 2.7, 0.95, 6.4)
+  hstabR.rotation.z = -0.06
+  plane.add(hstabR)
+  plane.add(box(0.1, 0.8, 0.1, mat(DARK, 0.6, 0.5), 0, 4.0, 6.3))        // varilla ADF
+
+  // ---- portón de salto ABIERTO (lateral derecho, panel girado fuera) ----
+  plane.add(box(0.08, 1.35, 0.95, mat(0x0d0f0c, 0.95, 0.05), 1.02, 0.05, 3.1))
+  const doorPanel = box(0.08, 1.35, 0.95, mat(OLIVE2, 0.65, 0.3), 1.55, 0.05, 3.65)
+  doorPanel.rotation.y = -1.15
+  plane.add(doorPanel)
+  // cable de estática (línea fina sobre el portón)
+  const staticLine = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 3.2, 5), mat(0x2a2a2a, 0.8, 0.2))
+  staticLine.rotation.z = Math.PI / 2
+  staticLine.position.set(0, 1.02, 3.2)
+  plane.add(staticLine)
+
+  // ---- tren recogido (bulbos) ----
   for (const pz of [-2.5, 2.5]) {
-    const pod = new THREE.Mesh(new THREE.SphereGeometry(0.42, 8, 6), mat(DARK, 0.6, 0.5))
+    const pod = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), mat(DARK, 0.6, 0.5))
     pod.scale.y = 0.6
     pod.position.set(pz > 0 ? 0.9 : -0.9, -1.02, pz)
     plane.add(pod)
   }
+
+  // ---- luces de navegación (babor rojo · estribor verde · estrobe) ----
+  const navLight = (color: number, x: number, y: number, z: number, blink: number): THREE.Mesh => {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 8, 6),
+      new THREE.MeshBasicMaterial({ color }),
+    )
+    m.position.set(x, y, z)
+    m.userData.blink = blink        // 0 = fija · >0 = periodo de parpadeo (s)
+    lights.push(m)
+    plane.add(m)
+    return m
+  }
+  navLight(0xff2a2a, -9.6, 1.58, -1.2, 0)      // rojo babor (fija)
+  navLight(0x2aff5a, 9.6, 1.58, -1.2, 0)       // verde estribor (fija)
+  navLight(0xffffff, 0, 3.55, 6.3, 1.1)        // estrobe de cola (parpadea)
+  navLight(0xffb02a, 0, -1.15, -5.5, 2.2)      // baliza ventral (parpadeo lento)
+
   plane.traverse(o => { o.frustumCulled = false })
-  return { plane, props }
+  return { plane, props, lights }
 }
 
-/** paracaídas procedural: campana hemisférica + suspentes + mochila */
+/** v14.2: FX del avión — hélices girando + luces de navegación parpadeando */
+function updatePlaneFX(props: THREE.Object3D[], lights: THREE.Object3D[], t: number): void {
+  for (let i = 0; i < props.length; i++) props[i].rotation.z = t * (34 + (i % 2) * 6)
+  for (const l of lights) {
+    const blink = l.userData.blink as number
+    if (blink > 0) {
+      const ph = (t % blink) / blink
+      l.visible = ph < 0.28 || (ph > 0.38 && ph < 0.5)   // doble destello anti-colisión
+    }
+  }
+}
+
+/** v14.2: paracaídas procedural MEJORADO: campana hemisférica con paneles
+ *  (gajos alternos), 12 suspentes, línea de ventilación central y mochila
+ *  contenedora — se usa tanto para los paracaidistas como para las cajas. */
 function buildParachute(color: number): THREE.Group {
   const g = new THREE.Group()
-  const canopy = new THREE.Mesh(
-    new THREE.SphereGeometry(2.55, 14, 7, 0, Math.PI * 2, 0, Math.PI / 2.6),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide }),
-  )
+  const canopy = new THREE.Group()
+  // gajos alternos: la mitad teñida más oscura → look de campana real
+  const segMatA = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide })
+  const segMatB = new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.78), roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide })
+  const SEGS = 8
+  for (let i = 0; i < SEGS; i++) {
+    const a0 = (i / SEGS) * Math.PI * 2
+    const a1 = ((i + 1) / SEGS) * Math.PI * 2
+    const gore = new THREE.Mesh(
+      new THREE.SphereGeometry(2.55, 4, 7, a0, a1 - a0, 0, Math.PI / 2.6),
+      i % 2 === 0 ? segMatA : segMatB,
+    )
+    canopy.add(gore)
+  }
   canopy.scale.y = 0.62
   canopy.position.y = 5.1
   g.add(canopy)
-  // 8 suspentes finas desde el borde de la campana al arnés (hombros)
+  // v14.2: corona de ventilación (anillo superior + vértice)
+  const vent = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.3, 0.42, 0.22, 10, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x3a3a34, roughness: 0.95, side: THREE.DoubleSide }),
+  )
+  vent.position.y = 5.05
+  g.add(vent)
+  // 12 suspentes finas desde el borde de la campana al arnés (hombros)
   const pts: THREE.Vector3[] = []
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2
     pts.push(new THREE.Vector3(Math.cos(a) * 2.3, 4.85, Math.sin(a) * 2.3))
     pts.push(new THREE.Vector3(Math.cos(a) * 0.24, 0.42, Math.sin(a) * 0.24))
   }
@@ -279,6 +410,7 @@ const MAT_PBR: Record<MatKey, { roughness: number; metalness: number }> = {
   roof: { roughness: 0.65, metalness: 0.3 },
   explosive: { roughness: 0.42, metalness: 0.45 },
   rock: { roughness: 0.96, metalness: 0.0 },
+  dirt: { roughness: 0.98, metalness: 0.0 },
 }
 
 /** colores de locutor para los diálogos de cinemática (v6.3) */
@@ -448,10 +580,11 @@ export class Game {
 
   // ---- v13.3: LANZAMIENTO AÉREO — cinemática de entrada nueva ----
   // llega un avión de transporte, los operadores se tiran en paracaídas,
-  // el héroes aterriza en el punto de despliegue y el juego empieza como siempre
+  // el héroe aterriza en el punto de despliegue y el juego empieza como siempre
   private dropCine: {
     plane: THREE.Group | null
     props: THREE.Object3D[]
+    lights: THREE.Object3D[]   // v14.2: luces de navegación (parpadean)
     dir: THREE.Vector3          // rumbo unitario del avión
     speed: number
     start: THREE.Vector3        // posición inicial del avión
@@ -3991,13 +4124,13 @@ export class Game {
     // ---- avión: rumbo fijo atravesando el mapa a 55 m ----
     const dir = new THREE.Vector3(-m, 0, -m).normalize()
     const start = new THREE.Vector3(m * 150, 55, m * 150)
-    const { plane, props } = buildDropPlane()
+    const { plane, props, lights } = buildDropPlane()
     plane.position.copy(start)
     // el modelo mira a -Z (nariz) → orientar -Z al rumbo
     plane.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir)
     this.scene.add(plane)
     this.dropCine = {
-      plane, props, dir,
+      plane, props, lights, dir,
       speed: 46,
       start,
       troopers: [],
@@ -4136,14 +4269,12 @@ export class Game {
     dc.t += dt                 // reloj simulado (mismo ritmo que la física)
     const tCine = dc.t
 
-    // ---- avión: avance recto + hélices girando ----
+    // ---- avión: avance recto + hélices/luces (FX v14.2) ----
     if (dc.plane) {
       dc.plane.position.copy(dc.start).addScaledVector(dc.dir, dc.speed * tCine)
       dc.plane.position.y = 55 + Math.sin(tCine * 0.7) * 0.6   // leve cabeceo
       dc.plane.rotation.z = Math.sin(tCine * 0.5) * 0.02
-      for (let i = 0; i < dc.props.length; i++) {
-        dc.props[i].rotation.z = tCine * (38 + (i % 2) * 6)
-      }
+      updatePlaneFX(dc.props, dc.lights, tCine)
     }
 
     // ---- paracaidistas ----
@@ -4613,24 +4744,63 @@ export class Game {
     const group = new THREE.Group()
     group.position.set(x, 0, z)
 
-    // ---- caja de suministros (madera + refuerzos) ----
+    // ---- v14.2: caja de suministros MILITAR (grupo: caja verde oliva +
+    //      bandas ámbar reflectantes + cinchas + estarcidos + palé de
+    //      lanzamiento con paneles honeycomb) ----
     const texs = makeWorldTextures()
-    const crateMat = new THREE.MeshStandardMaterial({ map: texs.crate, roughness: 0.8, metalness: 0.05 })
-    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.15, 1.5), crateMat)
+    const crateGroup = new THREE.Group()
+    const OLIVE = 0x5f6a50
+    const oliveMat = new THREE.MeshStandardMaterial({ color: OLIVE, roughness: 0.7, metalness: 0.2 })
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.2, 1.9), oliveMat)
     crate.castShadow = true
     crate.receiveShadow = true
-    crate.position.y = 0.6
-    // banda ámbar para leerla a distancia
-    const band = new THREE.Mesh(
-      new THREE.BoxGeometry(1.54, 0.18, 1.54),
-      new THREE.MeshStandardMaterial({ color: 0xd9a441, emissive: 0x8a5f1e, emissiveIntensity: 0.55, roughness: 0.5 }),
+    crateGroup.add(crate)
+    // marco metáico de esquinas (aros de refuerzo)
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a4034, roughness: 0.55, metalness: 0.45 })
+    for (const fx of [-0.95, 0.95]) for (const fz of [-0.95, 0.95]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.26, 0.14), frameMat)
+      post.position.set(fx, 0.0, fz)
+      crateGroup.add(post)
+    }
+    // bandas ámbar de identificación (arriba + centro)
+    const bandMat = new THREE.MeshStandardMaterial({ color: 0xd9a441, emissive: 0x8a5f1e, emissiveIntensity: 0.55, roughness: 0.5 })
+    const bandTop = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.16, 1.94), bandMat)
+    bandTop.position.y = 0.52
+    crateGroup.add(bandTop)
+    const bandMid = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.12, 1.94), bandMat)
+    bandMid.position.y = -0.18
+    crateGroup.add(bandMid)
+    // estarcido: bloque de identificación (panel oscuro)
+    const stencil = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.42, 0.02), new THREE.MeshStandardMaterial({ color: 0x23261f, roughness: 0.8 }))
+    stencil.position.set(0, 0.18, 0.965)
+    crateGroup.add(stencil)
+    // cinchas de sujeción (2 correas cruzadas + hebillas)
+    const strapMat = new THREE.MeshStandardMaterial({ color: 0x2c2c28, roughness: 0.85, metalness: 0.1 })
+    for (const sx of [-0.55, 0.55]) {
+      const strap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.3, 0.12), strapMat)
+      strap.position.set(sx, 0, 0)
+      crateGroup.add(strap)
+    }
+    // palé de lanzamiento (madera + cojín honeycomb debajo)
+    const pallet = new THREE.Mesh(
+      new THREE.BoxGeometry(2.3, 0.18, 2.3),
+      new THREE.MeshStandardMaterial({ map: texs.crate, roughness: 0.85, metalness: 0.02 }),
     )
-    band.position.y = 0.62
-    group.add(crate, band)
+    pallet.position.y = -0.71
+    pallet.castShadow = true
+    crateGroup.add(pallet)
+    const honey = new THREE.Mesh(
+      new THREE.BoxGeometry(2.1, 0.12, 2.1),
+      new THREE.MeshStandardMaterial({ color: 0xb0a184, roughness: 0.95 }),
+    )
+    honey.position.y = -0.86
+    crateGroup.add(honey)
+    crateGroup.position.y = 0.95          // reposo: palé a ras de suelo
+    group.add(crateGroup)
 
     // ---- paracaídas (plegado hasta la apertura) ----
     const canopy = buildParachute(0xd9a441)
-    canopy.position.y = 4.4
+    canopy.position.y = 5.1
     canopy.scale.setScalar(0.02)
     group.add(canopy)
 
@@ -4667,19 +4837,19 @@ export class Game {
     const willFall = landAt - Date.now() > 400
     let plane: CrateView['plane'] | undefined
     if (willFall) {
-      const { plane: pGroup, props } = buildDropPlane()
+      const { plane: pGroup, props, lights } = buildDropPlane()
       const ang = Math.random() * Math.PI * 2
       const dir = new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang)).normalize()
       pGroup.position.set(x - dir.x * 14, 55, z - dir.z * 14)
       pGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir)
       this.scene.add(pGroup)
-      plane = { group: pGroup, props, dir, bornAt: performance.now() }
+      plane = { group: pGroup, props, lights, dir, bornAt: performance.now() }
     }
 
     // posición inicial de caída
     const fallTotal = Math.max(0.2, landIn)
     const cv: CrateView = {
-      id, group, crate, canopy, beam, ring, glow,
+      id, group, crate: crateGroup, canopy, beam, ring, glow,
       x, z, label,
       landAt: performance.now() + fallTotal,
       landed: fallTotal <= 0,
@@ -4689,11 +4859,11 @@ export class Game {
       plane,
     }
     if (cv.landed) {
-      crate.position.y = 0.6
+      crateGroup.position.y = 0.95
       canopy.visible = false
     } else {
       group.position.y = 0
-      crate.position.y = 105
+      crateGroup.position.y = 105.4
     }
     this.crateViews.set(id, cv)
   }
@@ -4728,7 +4898,7 @@ export class Game {
         const pl = cv.plane
         pl.group.position.addScaledVector(pl.dir, 46 * dt)
         pl.group.position.y = 55 + Math.sin(t * 0.7 + cv.phase) * 0.5
-        for (let i = 0; i < pl.props.length; i++) pl.props[i].rotation.z = t * (38 + (i % 2) * 6)
+        updatePlaneFX(pl.props, pl.lights, t)
         if (age > 14) {
           this.scene.remove(pl.group)
           cv.plane = undefined
@@ -4741,7 +4911,7 @@ export class Game {
         if (remain <= 0) {
           // aterrizaje
           cv.landed = true
-          cv.crate.position.y = 0.6
+          cv.crate.position.y = 0.95
           cv.group.position.set(cv.x, 0, cv.z)
           cv.canopy.visible = false
           const beamMat = cv.beam.material as THREE.MeshBasicMaterial
@@ -4759,13 +4929,15 @@ export class Game {
           const total = Math.max(0.2, cv.landAt - cv.bornAt)
           const prog = remain / total            // 1 arriba · 0 abajo
           const eased = prog * prog * 0.35 + prog * 0.65
-          cv.crate.position.y = 0.6 + eased * 104
+          cv.crate.position.y = 0.95 + eased * 104
+          // v14.2 (bugfix): el paracaídas SIGUE A LA CAJA (antes quedaba
+          // clavado a 4 m del suelo mientras la caja caía desde 105 m)
           // canopy: se abre al 12 % de la caída
           const opened = Math.min(1, (1 - prog) / 0.12)
           const elast = 1 + Math.sin(opened * Math.PI) * 0.15
-          cv.canopy.scale.setScalar(Math.max(0.02, opened * elast))
-          cv.canopy.position.y = 4.0
-          // vaivén del paracaídas
+          cv.canopy.scale.setScalar(Math.max(0.02, opened * elast) * 1.25)
+          cv.canopy.position.y = cv.crate.position.y + 4.15
+          // vaivén del paracaídas (la campana derivando con el viento)
           cv.sway += dt * 1.1
           cv.group.position.x = cv.x + Math.sin(cv.sway) * 1.5
           cv.group.position.z = cv.z + Math.cos(cv.sway * 0.8) * 1.2

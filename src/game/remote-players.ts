@@ -109,24 +109,24 @@ const SOLDIER_AIM_PISTOL = {
   sArm: { x: 0.95, y: 0.77, z: 1.24 },     // hombro apoyo → mano (−0.06, 1.23, 0.34)
   sFore: { x: -0.02, z: 0.02 },            // codo apoyo extendido cruzando al centro
 }
-// v14.1 — pose de COMBATE sin arma (lobby estilo Fortnite): posición de
-// ataque tipo guardia de boxeo — codos pegados al cuerpo (A-pose natural)
-// con los antebrazos plegados hacia ARRIBA: puños a la altura del mentón
-// delante del cuerpo. CALIBRADA NUMÉRICAMENTE contra el rig real (probe
-// de huesos con scripts/probe_pose.py + ?lobbytest=1): puños
-// (−0.29, 1.44, 0.30) y (0.37, 1.43, 0.22), codos a 1.29.
-const SOLDIER_COMBAT = {
-  tArm: { x: 1.28, y: 0, z: -0.3 },       // hombro gatillo (RightArm, −X): A-pose natural
-  tFore: { x: -2.5, z: -1.6 },            // codo plegado ARRIBA → puño (−0.16, 1.35, 0.36): mentón
-  sArm: { x: 1.28, y: 0, z: 0.3 },        // hombro apoyo (LeftArm, +X): A-pose natural
-  sFore: { x: -2.5, z: 1.6 },             // codo plegado ARRIBA → puño (0.25, 1.35, 0.31): mentón
-  /** v14.1: cerrar los dedos → PUÑOS de verdad (calibrado por VLM) */
-  fingerCurl: { axis: 'z' as 'x' | 'z', amount: 0.7, mirror: true },
+// v14.2 — pose de DESCANSO sin arma (lobby estilo Fortnite): brazos
+// relajados a los costados con el codo ligeramente flexionado (los
+// MISMOS ángulos del reposo en partida, probados desde v13: ARM_REST_X
+// 1.28 → manos a ~0,95 m), dedos casi abiertos y pies en descanso.
+// El usuario pidió cambiar la guardia de ataque v14.1 ("la pose está
+// muy rara, que esté mejor en descanso").
+const SOLDIER_REST = {
+  tArm: { x: 1.28, y: 0, z: -0.12 },       // hombro gatillo (RightArm, −X): brazo caído
+  tFore: { x: -0.45, z: -0.14 },            // codo relajado (leve flexión natural)
+  sArm: { x: 1.28, y: 0, z: 0.12 },        // hombro apoyo (LeftArm, +X): brazo caído
+  sFore: { x: -0.45, z: 0.14 },             // codo relajado
+  /** v14.2: dedos relajados — casi abiertos, caída natural de la mano */
+  fingerCurl: { axis: 'z' as 'x' | 'z', amount: 0.14, mirror: true },
 }
-/** v14.1: override de depuración — calibración de la guardia por URL
+/** v14.1/v14.2: override de depuración — calibración de la pose por URL
  *  (?lobbytest=1&tax=…&tfz=…); null en producción. */
-let combatOverride: Partial<typeof SOLDIER_COMBAT> | null = null
-export function setCombatPoseOverride(o: Partial<typeof SOLDIER_COMBAT> | null): void {
+let combatOverride: Partial<typeof SOLDIER_REST> | null = null
+export function setCombatPoseOverride(o: Partial<typeof SOLDIER_REST> | null): void {
   combatOverride = o
 }
 /** v13.3: ¿es un arma corta (empuñadura a una/two manos pegadas)? */
@@ -395,7 +395,7 @@ export function tintRig(rig: THREE.Object3D, color: number, applyRest = true): v
 // inspeccionando) + refs de huesos para animar en vivo, y pose
 // de PISTOLA cuando el arma es corta (empuñadura correcta).
 // ----------------------------------------------------------
-export type CinePoseVariant = 'stand' | 'kneel' | 'crouch' | 'scan' | 'combat'
+export type CinePoseVariant = 'stand' | 'kneel' | 'crouch' | 'scan' | 'combat' | 'rest'
 export interface CineSoldierParts {
   root: THREE.Group
   body: THREE.Group
@@ -430,13 +430,13 @@ export function buildCineSoldier(team: Team, weapon: WeaponId | null, variant: C
       if (fores[0]) fores[0].rotation.set(AIM.sFore.x, 0, AIM.sFore.z)
       if (fores[1]) fores[1].rotation.set(AIM.tFore.x, 0, AIM.tFore.z)
     } else {
-      // v14.1: GUARDIA DE ATAQUE — puños arriba, codos doblados
-      const C = combatOverride ? { ...SOLDIER_COMBAT, ...combatOverride } : SOLDIER_COMBAT
+      // v14.2: DESCANSO — brazos relajados a los costados, codos flojos
+      const C = combatOverride ? { ...SOLDIER_REST, ...combatOverride } : SOLDIER_REST
       if (arms[0]) arms[0].rotation.set(C.sArm.x, C.sArm.y, C.sArm.z)
       if (arms[1]) arms[1].rotation.set(C.tArm.x, C.tArm.y, C.tArm.z)
       if (fores[0]) fores[0].rotation.set(C.sFore.x, 0, C.sFore.z)
       if (fores[1]) fores[1].rotation.set(C.tFore.x, 0, C.tFore.z)
-      // v14.1: cerrar los dedos → PUÑOS (solo en la guardia sin arma)
+      // v14.2: dedos relajados (manos casi abiertas) — solo sin arma
       const FC = C.fingerCurl
       if (FC) {
         rig.traverse(o => {
@@ -464,14 +464,21 @@ export function buildCineSoldier(team: Team, weapon: WeaponId | null, variant: C
       if (knees[1]) knees[1].rotation.x = 1.3
       body.position.y = -0.42
     } else if (variant === 'combat') {
-      // v14.1: POSICIÓN DE ATAQUE — pies escalonados (izq. adelantada),
-      // rodillas flexionadas, peso al frente
+      // v14.1 (sin uso): pies escalonados (izq. adelantada), rodillas flexionadas
       if (legs[0]) legs[0].rotation.x = -0.5
       if (knees[0]) knees[0].rotation.x = 0.6
       if (legs[1]) legs[1].rotation.x = 0.4
       if (knees[1]) knees[1].rotation.x = 0.5
       if (torso) { torso.rotation.x = 0.06; torso.rotation.y = 0.12 }
       body.position.y = -0.06
+    } else if (variant === 'rest') {
+      // v14.2: DESCANSO — pies ligeramente separados, peso repartido,
+      // torso erguido y relajado (ligera caída de hombros)
+      if (legs[0]) legs[0].rotation.x = -0.12
+      if (legs[1]) legs[1].rotation.x = 0.09
+      if (knees[0]) knees[0].rotation.x = 0.1
+      if (knees[1]) knees[1].rotation.x = 0.05
+      if (torso) { torso.rotation.x = -0.015; torso.rotation.y = 0.045 }
     } else {
       // stand / scan: base con ligera separación de pies
       if (legs[0]) legs[0].rotation.x = -0.14
@@ -524,10 +531,9 @@ export function buildCineSoldier(team: Team, weapon: WeaponId | null, variant: C
     h.arms[0].rotation.set(HUM_AIM.tArm.x, 0, HUM_AIM.tArm.z)
     h.arms[1].rotation.set(HUM_AIM.sArm.x, 0, HUM_AIM.sArm.z)
   } else {
-    // v14.1: guardia de combate — brazos al frente levantados (sin codos
-    // en el humanoide: ángulo de guardia a la altura del pecho)
-    h.arms[0].rotation.set(-0.85, 0, 0.3)
-    h.arms[1].rotation.set(-0.85, 0, -0.3)
+    // v14.2: descanso — brazos caídos a los costados (relajados)
+    h.arms[0].rotation.set(-0.04, 0, 0.06)
+    h.arms[1].rotation.set(-0.04, 0, -0.06)
   }
   if (variant === 'kneel' || variant === 'crouch') body.scale.y = 0.72
   else if (variant === 'combat') body.position.y = -0.04

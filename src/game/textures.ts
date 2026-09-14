@@ -332,6 +332,35 @@ export function makeWorldTextures(): Record<MatKey, THREE.Texture> {
     T.rock = toTexture(c, 1)
   }
 
+  // --- v14.2: Tierra excavada (suelo de trincheras) ---
+  {
+    const [c, ctx] = makeCanvas(512)
+    ctx.fillStyle = '#7a5f40'
+    ctx.fillRect(0, 0, 512, 512)
+    // removido: manchas oscuras y claras
+    splotches(ctx, 512, 26, '#5f4830', 55, 0.45)
+    splotches(ctx, 512, 18, '#8f7050', 45, 0.35)
+    splotches(ctx, 512, 10, '#4a3826', 70, 0.3)
+    // surcos de pala
+    ctx.strokeStyle = 'rgba(60,45,28,0.4)'
+    ctx.lineWidth = 6
+    for (let i = 0; i < 7; i++) {
+      ctx.beginPath()
+      ctx.moveTo(Math.random() * 512, 0)
+      ctx.bezierCurveTo(Math.random() * 512, 170, Math.random() * 512, 340, Math.random() * 512, 512)
+      ctx.stroke()
+    }
+    // piedritas
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = `rgba(${140 + Math.random() * 60},${120 + Math.random() * 50},${95 + Math.random() * 45},0.5)`
+      ctx.beginPath()
+      ctx.arc(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 4, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    noiseOverlay(ctx, 512, 24, 0)
+    T.dirt = toTexture(c, 1)
+  }
+
   return T as Record<MatKey, THREE.Texture>
 }
 
