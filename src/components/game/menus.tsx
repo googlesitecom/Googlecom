@@ -1134,11 +1134,18 @@ export function MainMenu() {
   const [left, setLeft] = useState(0)
   const launchedRef = useRef(false)
   const seededRef = useRef(false)   // v15 E2E party seeding (once)
+  // v15.1: room code this client already deployed with — a stray/repeated
+  // pcode (QoS 0 re-publish) must NOT re-join a dead room after the match
+  const lastJoinedRef = useRef('')
 
   // v11: the squad leader opened a room → auto-join with the shared code
   // v15: the guest launches with the LEADER'S synced mode (not a default)
+  // v15.1: consumes each code ONCE (the host re-publishes pcode every 5s
+  // for QoS-0 self-healing — a late echo must not re-join a dead room)
   useEffect(() => {
     if (!squadRoomCode || phase !== 'menu') return
+    if (lastJoinedRef.current === squadRoomCode) { useParty.getState().clearRoom(); return }
+    lastJoinedRef.current = squadRoomCode
     useParty.getState().clearRoom()
     useParty.getState().setLaunchAt(0)
     esNet.setPartyReady(false)   // back to NOT ready for the next deploy
@@ -1152,6 +1159,7 @@ export function MainMenu() {
       gameMode: (partyMode?.mode as GameMode) ?? 'escaramuza',
       roomKind: (squadRoomKind as RoomKind) || '2v2',
       fillEmptyWithBots: true,
+      quickPlay: false,
       lobby: null,
       netStatus: 'connecting',
       netError: '',
@@ -1248,6 +1256,9 @@ export function MainMenu() {
       gameMode: forceMode ?? gameMode,
       roomKind: kind,
       fillEmptyWithBots: kind === 'coop' ? false : fillEmpty,
+      // v15.1: quick match — the net client gets fallback-to-host + solo
+      // auto-deploy so quick play ALWAYS ends inside a match
+      quickPlay: !inSquad && source === 'quick',
       lobby: null,
       netStatus: 'connecting',
       netError: '',
@@ -1271,13 +1282,18 @@ export function MainMenu() {
   }
 
   // v15: the LEADER's pick is THE pick — publish it to the squad live
+  // v15.1: publish ONLY on change — setMembers rebuilds the array on every
+  // heartbeat (3s), which used to re-publish the same pick endlessly and
+  // could stomp a fresh selection mid-flight
+  const lastModePubRef = useRef('')
   useEffect(() => {
     if (!inSquad || !amLeader || phase !== 'menu') return
-    esNet.setPartyModeSel({
-      mode: gameMode,
-      source: gameMode === 'historia' ? 'coop' : 'room',
-      kind: gameMode === 'historia' ? 'coop' : kindForSquad(roomKind, partyMembers.length),
-    })
+    const source = gameMode === 'historia' ? 'coop' : 'room'
+    const kind = gameMode === 'historia' ? 'coop' : kindForSquad(roomKind, partyMembers.length)
+    const key = `${gameMode}|${source}|${kind}`
+    if (key === lastModePubRef.current) return
+    lastModePubRef.current = key
+    esNet.setPartyModeSel({ mode: gameMode, source, kind })
   }, [inSquad, amLeader, phase, gameMode, roomKind, partyMembers.length])
 
   // v15: countdown to the auto-deploy (both roles see the same overlay)
@@ -1301,21 +1317,43 @@ export function MainMenu() {
 
   // v15: LEADER — countdown reached zero → deploy the squad exactly once
   // (deferred through a timeout so no setState runs in the effect body)
+  // v15.1: fire-and-forget — the cleanup clearTimeout could CANCEL the
+  // deploy when a re-render landed between scheduling and the 0ms timer
+  // (the body already guards "still in the menu", so cleanup is redundant)
   useEffect(() => {
     if (!inSquad || !amLeader || phase !== 'menu' || !partyLaunchAt) return
     if (Date.now() < partyLaunchAt - 400) return   // countdown still running
     if (launchedRef.current) return
     launchedRef.current = true
-    const t = setTimeout(() => {
+    setTimeout(() => {
       if (useGame.getState().phase !== 'menu') return   // left the lobby meanwhile
       if (effMode === 'historia') launch('host', '', 'historia', 'coop')
       else launch('host', '', effMode, effKind)
     }, 0)
-    return () => clearTimeout(t)
   }, [left, partyLaunchAt, inSquad, amLeader, phase, effMode, effKind])
 
   // v15: countdown cleared → re-arm the deploy guard
   useEffect(() => { if (!partyLaunchAt) launchedRef.current = false }, [partyLaunchAt])
+
+  // v15.1: MEMBER SAFETY — the countdown hit zero but the leader's room
+  // code never arrived (room failed to open / packet lost and the 5s
+  // re-publish also failed): un-stick the lobby after 10s with a clear
+  // toast instead of hanging on the DEPLOYING overlay forever
+  useEffect(() => {
+    if (phase !== 'menu' || !partyLaunchAt || Date.now() < partyLaunchAt) return
+    const t = setTimeout(() => {
+      const st = useParty.getState()
+      if (st.launchAt && Date.now() >= st.launchAt && !st.roomCode && useGame.getState().phase === 'menu') {
+        st.setLaunchAt(0)
+        useNetToasts.getState().push({
+          kind: 'error', title: 'SQUAD DEPLOY FAILED',
+          body: "The leader's room didn't open — hit READY to try again",
+          ttl: 9000,
+        })
+      }
+    }, 10000)
+    return () => clearTimeout(t)
+  }, [left, partyLaunchAt, phase])
 
   if (phase !== 'menu') return null
 
@@ -2330,7 +2368,7 @@ export function ConnectingScreen() {
               </p>
             </div>
           )}
-          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v15</div>
+          <div className="font-tac-md text-stone-700 text-[10px] tracking-[0.3em] uppercase">Emergency Strike · v15.1</div>
         </div>
       )}
     </div>

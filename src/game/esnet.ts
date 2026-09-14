@@ -19,6 +19,7 @@
 import { create } from 'zustand'
 import { useAuth, myOid, myOperatorName, addFriendLocal, removeFriendLocal, getFriendsSafe } from './auth'
 import { getAudio } from './audio'
+import { useGame } from './store'
 
 // ------------------------------------------------------------
 // Tiny MQTT 3.1.1 client over WebSocket (QoS 0 + retained)
@@ -332,6 +333,12 @@ class EsNet {
   private presTick: ReturnType<typeof setInterval> | null = null
   private partyHb: ReturnType<typeof setInterval> | null = null
   private partyGid = ''
+  /** v15.1: when I joined/created the party (grace window before any
+   *  leader-election attempt — a fresh joiner's roster still lacks the
+   *  leader and must NOT steal leadership from their own join echo) */
+  private partyJoinedAt = 0
+  /** v15.1: last time a message from the CURRENT leader was seen */
+  private leaderLastSeen = 0
   private outgoing = new Map<string, { name: string; t: number }>()
   private incoming = new Map<string, { name: string; t: number }>()
   private dirWaiters = new Map<string, (oid: string | null) => void>()
@@ -759,6 +766,8 @@ class EsNet {
     const gid = `p${now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
     const clean = name.trim().slice(0, 22) || 'SQUAD'
     this.partyGid = gid
+    this.partyJoinedAt = now()
+    this.leaderLastSeen = now()
     this.sub(T.party(gid), this.onPartyMsg)
     useParty.getState().setParty({
       active: true, gid, name: clean, leaderOid: oid, leaderName: myOperatorName(),
@@ -775,6 +784,8 @@ class EsNet {
     if (!oid || !gid) return
     if (useParty.getState().active) return
     this.partyGid = gid
+    this.partyJoinedAt = now()
+    this.leaderLastSeen = 0
     this.sub(T.party(gid), this.onPartyMsg)
     useParty.getState().setParty({
       active: true, gid, name: 'SQUAD', leaderOid: '', leaderName: leaderName ?? '',
@@ -784,13 +795,14 @@ class EsNet {
     this.startPartyHb(false)
   }
 
-  private startPartyHb(leader: boolean): void {
+  private startPartyHb(_leader: boolean): void {
     if (this.partyHb) clearInterval(this.partyHb)
     const oid = myOid()
     this.partyHb = setInterval(() => {
       if (!this.partyGid) return
-      // v15: the leader's heartbeat carries the current mode pick so
-      // newcomers (and anyone who lost a packet) converge within 3s
+      // v15.1: leadership is computed LIVE per beat (it used to be captured
+      // at start — a stale host kept beating ldr=1 after losing leadership)
+      const leader = useParty.getState().leaderOid === oid
       const beat: Rec = { ty: 'hb', u: oid, n: myOperatorName(), ldr: leader ? 1 : 0, t: now() }
       if (leader) {
         const pm = useParty.getState().partyMode
@@ -803,26 +815,42 @@ class EsNet {
 
   private pruneParty(): void {
     const t = now()
+    const oid = myOid()
+    const st = useParty.getState()
     const alive = new Map<string, { n: string; leader: boolean }>()
     for (const [u, m] of this.partyRoster) {
       if (t - m.t < 9000) alive.set(u, { n: m.n, leader: m.leader })
     }
-    const oid = myOid()
+    // v15.1: SELF is always alive — the roster only fills from RECEIVED
+    // heartbeats, so a fresh host (or a fresh joiner before the first
+    // echo) used to vanish from its OWN squad list
     const me = alive.get(oid)
-    if (me) alive.set(oid, { ...me, leader: me.leader || useParty.getState().leaderOid === oid })
+    alive.set(oid, { n: myOperatorName(), leader: (me?.leader ?? false) || st.leaderOid === oid })
     const members = [...alive.entries()].map(([u, v]) => ({ u, n: v.n, leader: v.leader }))
-    useParty.getState().setMembers(members)
-    // leader gone and I'm the lowest remaining member → promote myself
+    st.setMembers(members)
+    // v15.1: LEADER-ELECTION FIX — the leader is only "gone" when we KNOW
+    // one (retained meta / heartbeats) and nothing from them arrived for
+    // >12s, with a 15s grace window after joining. Before this guard, every
+    // fresh joiner's own join echo triggered a self-promotion that STOLE
+    // leadership and flipped host/member roles. A party with NO known
+    // leader NEVER elects one blindly — createParty always publishes a
+    // retained meta, so the real leader is always revealed within seconds.
     const leaderHere = members.some(m => m.leader)
     if (!leaderHere && members.length > 0) {
-      const lowest = [...members].sort((a, b) => a.u.localeCompare(b.u))[0]
-      if (lowest && lowest.u === oid) {
-        useParty.getState().setParty({ leaderOid: oid, leaderName: myOperatorName() })
-        // v15: the promoted leader takes over the protocol — restart the
-        // heartbeat as leader (it now carries the mode pick) and re-publish
-        // the squad meta so everyone learns who leads now
-        this.startPartyHb(true)
-        this.pub(T.party(this.partyGid!), { ty: 'meta', gid: this.partyGid, name: useParty.getState().name, leader: oid, leaderName: myOperatorName(), t: now() }, true)
+      const known = st.leaderOid
+      const leaderSeenRecently = !!known && t - this.leaderLastSeen < 12000
+      const joinedRecently = t - this.partyJoinedAt < 15000
+      if (known && !leaderSeenRecently && !joinedRecently) {
+        const lowest = [...members].sort((a, b) => a.u.localeCompare(b.u))[0]
+        if (lowest && lowest.u === oid) {
+          st.setParty({ leaderOid: oid, leaderName: myOperatorName() })
+          // v15: the promoted leader takes over the protocol — restart the
+          // heartbeat as leader (it now carries the mode pick) and re-publish
+          // the squad meta so everyone learns who leads now
+          this.leaderLastSeen = now()
+          this.startPartyHb(true)
+          this.pub(T.party(this.partyGid!), { ty: 'meta', gid: this.partyGid, name: st.name, leader: oid, leaderName: myOperatorName(), t: now() }, true)
+        }
       }
     }
   }
@@ -836,6 +864,8 @@ class EsNet {
       if (!u) return
       const isFirst = ty === 'join' && !this.partyRoster.has(u) && u !== oid
       this.partyRoster.set(u, { n: str(p.n, 'Operator'), t: now(), leader: p.ldr === 1 })
+      // v15.1: track leader liveness for the fixed leader election
+      if (u === useParty.getState().leaderOid) this.leaderLastSeen = now()
       // v15: a (re)joining operator starts NOT ready
       if (ty === 'join') useParty.getState().setReady(u, false)
       if (isFirst) {
@@ -877,8 +907,30 @@ class EsNet {
       useParty.getState().setLaunchAt(0)
       return
     }
+    if (ty === 'pcode') {
+      // v15.1 FIX (THE squad-deploy bug): the leader's room code travels
+      // on the PARTY channel — this used to be handled ONLY on the DM
+      // channel, so members NEVER received the code and hung at the
+      // deploy countdown forever ("it never starts when you hit ready",
+      // "the non-host never connects"). Now members auto-join the room.
+      const code = str(p.code)
+      const kind = str(p.kind, '2v2')
+      if (code && useParty.getState().active) {
+        useParty.getState().setRoom(code, kind)
+      }
+      return
+    }
     if (ty === 'meta') {
-      useParty.getState().setParty({ name: str(p.name, 'SQUAD'), leaderOid: str(p.leader), leaderName: str(p.leaderName) })
+      const leader = str(p.leader)
+      useParty.getState().setParty({ name: str(p.name, 'SQUAD'), leaderOid: leader, leaderName: str(p.leaderName) })
+      // v15.1: retained meta → seed the leader into the roster so a fresh
+      // joiner's squad list includes them IMMEDIATELY (and leadership
+      // never looks "missing" before the leader's first heartbeat)
+      if (leader) {
+        this.leaderLastSeen = now()
+        this.partyRoster.set(leader, { n: str(p.leaderName, 'Operator'), t: now(), leader: true })
+        this.pruneParty()
+      }
       return
     }
     if (ty === 'leave') {
@@ -905,6 +957,7 @@ class EsNet {
 
   private resumeParty(): void {
     if (!this.partyGid) return
+    if (!this.partyJoinedAt) this.partyJoinedAt = now()
     this.sub(T.party(this.partyGid), this.onPartyMsg)
     this.startPartyHb(useParty.getState().leaderOid === myOid())
   }
@@ -1080,4 +1133,10 @@ if (typeof window !== 'undefined') {
   setInterval(() => {
     if (useNet.getState().status === 'online') esNet.refreshPresenceUI()
   }, 12000)
+  // v15.1 E2E hook (?netdebug=1): expose the network singleton + stores so
+  // automated tests can drive REAL MQTT party flows end to end (the fake
+  // ?partytest= seeds can't exercise the actual network path)
+  if (new URLSearchParams(window.location.search).get('netdebug') === '1') {
+    ;(window as unknown as Record<string, unknown>).__esNet = { esNet, useParty, useNet, useRooms, useGame }
+  }
 }

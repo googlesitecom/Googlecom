@@ -63,6 +63,10 @@ export interface ConnectOpts {
   /** v6.2 */
   roomKind?: RoomKind
   fillEmpty?: boolean
+  /** v15.1: launched from QUICK MATCH — guests fall back to hosting when
+   *  the picked room is dead, and lone hosts auto-deploy with bots so
+   *  quick play ALWAYS ends inside a match */
+  quick?: boolean
 }
 
 /** hueco de invitado en la sala 2v2 (identidad + canal + cola de salida) */
@@ -75,14 +79,22 @@ interface GuestSlot {
   outbox: PeerMsg[]
 }
 
-/** servidores STUN públicos para atravesar NAT (fiabilidad P2P) */
+/** v15.1: NAT traversal — Google + Cloudflare STUN, and free public TURN
+ *  relays (OpenRelay + PeerJS cloud) as the fallback for strict/symmetric
+ *  NATs where STUN alone can't open a direct link (the dead Twilio STUN
+ *  was removed — it no longer resolves) */
 const PEER_OPTS = {
   debug: 0 as const,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:eu-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
+      { urls: 'turn:us-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
     ],
   },
 }
@@ -120,6 +132,8 @@ export class NetClient {
     this.fillEmpty = opts.fillEmpty ?? true
     this.duoDifficulty = opts.difficulty ?? 'normal'
     this.duoGameMode = opts.gameMode ?? 'escaramuza'
+    // v15.1: quick-match launch flag (fallback + auto-deploy behavior)
+    this.quickLaunch = opts.quick === true
     const s = useGame.getState()
     s.setPhase('connecting')
     s.setHud({ netStatus: 'connecting', netError: '', ping: 0 })
@@ -138,6 +152,15 @@ export class NetClient {
   private mapId: MapId = 'ciudad'
   /** v15: humans deploying with the host (party size) — squad slots + auto-start */
   private squadExpected = 1
+  /** v15.1: quick-match launch — enables the auto-deploy/fallback behavior */
+  private quickLaunch = false
+  /** v15.1: re-publish the room code to the squad while the lobby waits
+   *  (MQTT is QoS 0 — a lost pcode packet self-heals within 5s) */
+  private squadCodeTimer: ReturnType<typeof setInterval> | null = null
+  /** v15.1: public room auto-start — 2+ humans with bot fill start soon */
+  private pubAutoTimer: ReturnType<typeof setTimeout> | null = null
+  /** v15.1: quick host alone — deploy with bots instead of waiting forever */
+  private quickSoloTimer: ReturnType<typeof setTimeout> | null = null
 
   // v9: registro de fin de partida (solo una vez por sesión)
   private matchRecorded = false
@@ -253,6 +276,21 @@ export class NetClient {
       )
       // v11: REAL squad — members auto-join with the code over the network
       esNet.shareRoomCode(code, kind)
+      // v15.1: MQTT is QoS 0 — a lost pcode packet used to strand squad
+      // members at the deploy countdown forever. Re-publish the code every
+      // 5s while the lobby waits so delivery self-heals (stops when the
+      // squad is complete / the match starts).
+      if (kind !== '1v1' && this.squadExpected > 1) {
+        this.stopSquadCodeShare()
+        this.squadCodeTimer = setInterval(() => {
+          if (this.disposed || this.worker) { this.stopSquadCodeShare(); return }
+          esNet.shareRoomCode(code, kind)
+        }, 5000)
+      }
+      // v15.1: QUICK MATCH host — if no operator joins within 15s, deploy
+      // with an AI squad instead of waiting forever (quick play ALWAYS
+      // ends inside a match)
+      if (this.quickLaunch && kind !== '1v1') this.armQuickSolo()
       // v14: DYNAMIC ONLINE — announce the room on the public network so
       // the room browser + quick match can discover it
       esNet.roomPublish(code, kind, gameMode, 1, roomCapacity(kind))
@@ -396,6 +434,14 @@ export class NetClient {
   // ------------------------------------------------------------
   /** v9: invitado conectado a sala NvN/coop: asignar hueco libre y gestionar su ciclo */
   private acceptDuoGuest(conn: DataConnection, hostName: string, code: string, fill: number, difficulty: BotDifficulty, attempt: number, gameMode: GameMode, fillEmpty: boolean): void {
+    // v15.1: the match is already LIVE — late joiners used to land in the
+    // lobby and wait forever (no welcome ever comes). Tell them clearly
+    // instead; quick-match guests then fall back to hosting a fresh room.
+    if (this.worker) {
+      try { conn.send({ e: 'roomLive', d: { code } }) } catch { /* canal cerrado */ }
+      setTimeout(() => { try { conn.close() } catch { /* ok */ } }, 400)
+      return
+    }
     const slot = this.duoSlots.find(s => s.conn === null)
     if (!slot) {
       // sala completa (4/4): rechazar con aviso
@@ -438,6 +484,7 @@ export class NetClient {
         const squadHere = this.squadExpected > 1 && guestsJoined >= this.squadExpected - 1
         const squadGo = squadHere && (this.fillEmpty || this.roomKind === 'coop' || roomFull)
         if ((roomFull || squadGo) && !this.worker) {
+          if (squadHere) this.stopSquadCodeShare()   // v15.1: squad complete — stop re-publishing
           useGame.getState().addAnnouncement(
             squadGo && !roomFull
               ? 'SQUAD COMPLETE — the match starts…'
@@ -453,6 +500,12 @@ export class NetClient {
             }
             this.startTeamMatch()
           }, 2600)
+        } else if (!this.worker && this.fillEmpty && this.roomKind !== 'coop' && this.squadExpected === 1 && guestsJoined >= 1) {
+          // v15.1: PUBLIC ROOM fix — a bot-fill room with 2+ humans no
+          // longer waits for a full 4/4 of humans (that almost never
+          // happened): the match auto-starts ~9s after the first guest,
+          // leaving a window for more operators to pile in
+          this.armPublicAutoStart()
         }
         return
       }
@@ -503,6 +556,15 @@ export class NetClient {
       if (!this.worker) {
         // antes de iniciar: simplemente sale del lobby
         this.pushLobby()
+        // v15.1: lobby state changed — re-evaluate the auto-start timers
+        const humans = this.lobbyPlayers().length
+        if (humans < 2) {
+          if (this.pubAutoTimer) { clearTimeout(this.pubAutoTimer); this.pubAutoTimer = null }
+          if (this.quickLaunch && this.roomKind !== '1v1' && this.squadExpected === 1) {
+            useGame.getState().addAnnouncement('Waiting for operators…', 'info')
+            this.armQuickSolo()
+          }
+        }
         return
       }
       if (wasJoined) {
@@ -561,6 +623,8 @@ export class NetClient {
   startTeamMatch(): void {
     if (this.disposed) return
     if (this.roomKind === '1v1' || this.worker) return // ya iniciada / no es sala con lobby
+    this.stopSquadCodeShare()
+    this.stopLobbyTimers()
     const kind = this.roomKind
     const players = this.lobbyPlayers()
     // v14: the room leaves the public browser once the match is live
@@ -623,6 +687,45 @@ export class NetClient {
   sendStoryRemote(d: { chapter: number; label: string; kind: string }): void {
     if (this.mode !== 'guest') return
     if (this.hostConn?.open) this.sendToPeer(this.hostConn, { e: 'storyRemote', d })
+  }
+
+  /** v15.1: stop re-publishing the room code to the squad */
+  private stopSquadCodeShare(): void {
+    if (this.squadCodeTimer) { clearInterval(this.squadCodeTimer); this.squadCodeTimer = null }
+  }
+
+  /** v15.1: PUBLIC ROOM auto-start — 2+ humans (host + guest) with bot
+   *  fill start the match after a ~9s window; every new operator resets
+   *  the window so fuller rooms win. Cancels itself if we drop to 1. */
+  private armPublicAutoStart(): void {
+    if (this.pubAutoTimer) clearTimeout(this.pubAutoTimer)
+    useGame.getState().addAnnouncement('PUBLIC ROOM — match starts in ~9s, more operators can still join…', 'info')
+    this.pubAutoTimer = setTimeout(() => {
+      this.pubAutoTimer = null
+      if (this.disposed || this.worker) return
+      const humans = this.lobbyPlayers().length
+      if (humans < 2) return   // everyone left → back to waiting
+      this.startTeamMatch()
+    }, 9000)
+  }
+
+  /** v15.1: QUICK host alone — deploy with bots after 15s (quick play
+   *  must ALWAYS end inside a match). Re-armed if the last guest leaves. */
+  private armQuickSolo(): void {
+    if (this.quickSoloTimer) clearTimeout(this.quickSoloTimer)
+    this.quickSoloTimer = setTimeout(() => {
+      this.quickSoloTimer = null
+      if (this.disposed || this.worker) return
+      if (this.lobbyPlayers().length > 1) return   // humans arrived — public auto-start handles it
+      useGame.getState().addAnnouncement('QUICK MATCH — no operators found, deploying with an AI squad…', 'info')
+      this.startTeamMatch()
+    }, 15000)
+  }
+
+  /** v15.1: cancel the public auto-start / quick-solo timers (lobby state changed) */
+  private stopLobbyTimers(): void {
+    if (this.pubAutoTimer) { clearTimeout(this.pubAutoTimer); this.pubAutoTimer = null }
+    if (this.quickSoloTimer) { clearTimeout(this.quickSoloTimer); this.quickSoloTimer = null }
   }
 
   private guestJoined = false
@@ -750,6 +853,15 @@ export class NetClient {
           this.fail('The room is full. Ask for a new code.')
           return
         }
+        if (msg.e === 'roomLive') {
+          // v15.1: the host's match already started — clear error instead
+          // of hanging in the lobby forever (quick match self-heals by
+          // hosting a fresh room via the fail() fallback)
+          this.fail(this.quickLaunch
+            ? 'The match already started'
+            : 'The match already started. Ask the host for a new code.')
+          return
+        }
         if (msg.e === 'pong') {
           const t = (msg.d as { t?: number })?.t
           if (t) useGame.getState().setHud({ ping: Math.max(0, Math.round(performance.now() - t)) })
@@ -801,6 +913,23 @@ export class NetClient {
 
   private fail(msg: string): void {
     if (this.welcomeTimeout) { clearTimeout(this.welcomeTimeout); this.welcomeTimeout = null }
+    // v15.1: QUICK MATCH fallback — the room we picked vanished (stale
+    // public announcement) or never opened: host a fresh public room with
+    // bot fill instead of dumping the player into an error screen. Quick
+    // play ALWAYS ends inside a match ("público nunca conecta" fix).
+    if (this.quickLaunch && this.mode === 'guest') {
+      useGame.getState().addAnnouncement('QUICK MATCH — that room is gone, hosting a fresh room…', 'info')
+      try { this.hostConn?.close() } catch { /* ok */ }
+      this.hostConn = null
+      try { this.peer?.destroy() } catch { /* ok */ }
+      this.peer = null
+      const code = generateRoomCode()
+      const st = useGame.getState()
+      this.mode = 'host'
+      st.setHud({ mode: 'host', roomCode: code, netStatus: 'connecting', netError: '', lobby: null })
+      this.connectHost(st.playerName || 'Operator', code, 0, st.botDifficulty, 0, st.gameMode, st.roomKind || '2v2', st.fillEmptyWithBots)
+      return
+    }
     useGame.getState().setHud({ netStatus: 'error', netError: msg })
   }
 
@@ -933,6 +1062,8 @@ export class NetClient {
   disconnect(): void {
     this.disposed = true
     setRoomChatRelay(null)
+    this.stopSquadCodeShare()
+    this.stopLobbyTimers()
     // v14: the room stops being visible on the public browser
     esNet.stopRoomPublish()
     // v12: voice chat goes down with the room

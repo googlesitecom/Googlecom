@@ -34,6 +34,7 @@ export function GameMount() {
       gameMode: st.gameMode,
       roomKind: st.roomKind,          // classic 1v1 or 2v2 with lobby
       fillEmpty: st.fillEmptyWithBots,// fill empty slots with bots
+      quick: st.quickPlay,            // v15.1: quick match — fallback + auto-deploy
     })
     if (process.env.NODE_ENV === 'development') {
       ;(window as unknown as Record<string, unknown>).__game = game

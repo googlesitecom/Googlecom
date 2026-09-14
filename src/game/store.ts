@@ -72,6 +72,9 @@ interface GameState {
   roomKind: RoomKind
   /** v6.2: en 2v2, rellenar con bots los huecos vacíos al iniciar */
   fillEmptyWithBots: boolean
+  /** v15.1: lanzado desde QUICK MATCH — habilita fallback a host y
+   *  auto-despliegue con bots (quick play SIEMPRE acaba en partida) */
+  quickPlay: boolean
   /** v6.2: estado del lobby (anfitrión e invitados 2v2) */
   lobby: LobbyState | null
 
@@ -167,6 +170,7 @@ export const useGame = create<GameState>((set) => ({
   netError: '',
   roomKind: '1v1',
   fillEmptyWithBots: true,
+  quickPlay: false,
   lobby: null,
 
   hp: 100,
